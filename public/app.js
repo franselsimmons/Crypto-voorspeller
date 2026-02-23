@@ -28,11 +28,11 @@ async function init(){
     `Source: ${data.source} • TF: ${data.interval} • Truth weeks: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"}`;
 
   $("debug").textContent = JSON.stringify({
-    regimeNow: data.regimeNow,
-    freezeNow: data.freezeNow
+    freezeNow: data.freezeNow,
+    bandsNow: data.bandsNow
   }, null, 2);
 
-  // ================= PRICE CHART =================
+  // -------- PRICE CHART --------
   const priceEl = $("priceChart");
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
@@ -60,7 +60,7 @@ async function init(){
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
 
-  // ================= FOREST Z CHART =================
+  // -------- Z CHART --------
   const forestEl = $("forestChart");
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
@@ -83,27 +83,44 @@ async function init(){
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // ================= SYNCHRONISATIE =================
+  // ✅ BELANGRIJK:
+  // Onderste chart mag GEEN fitContent doen, want z-data begint later.
+  // We gebruiken de tijd-range van de bovenste chart als "waarheid".
 
-  // Als je boven beweegt → onder mee
-  priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-    forestChart.timeScale().setVisibleLogicalRange(range);
-  });
-
-  // Als je onder beweegt → boven mee
-  forestChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-    priceChart.timeScale().setVisibleLogicalRange(range);
-  });
-
-  // Start netjes ingezoomd
+  // 1) Eerst boven netjes fitten
   priceChart.timeScale().fitContent();
-  forestChart.timeScale().fitContent();
+
+  // 2) Pak range van boven en zet hem op onder
+  const initialRange = priceChart.timeScale().getVisibleLogicalRange();
+  if (initialRange) forestChart.timeScale().setVisibleLogicalRange(initialRange);
+
+  // 3) Sync: boven stuurt onder (zonder loop)
+  let isSyncing = false;
+
+  priceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (!range || isSyncing) return;
+    isSyncing = true;
+    forestChart.timeScale().setVisibleLogicalRange(range);
+    isSyncing = false;
+  });
+
+  // (optioneel) Als je óók onder wilt kunnen scrollen, zet dit aan:
+  forestChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (!range || isSyncing) return;
+    isSyncing = true;
+    priceChart.timeScale().setVisibleLogicalRange(range);
+    isSyncing = false;
+  });
 
   setPill(data.regimeLabel);
 
   window.addEventListener("resize", () => {
     priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
     forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
+
+    // na resize opnieuw range kopiëren (anders verschuift hij soms)
+    const r = priceChart.timeScale().getVisibleLogicalRange();
+    if (r) forestChart.timeScale().setVisibleLogicalRange(r);
   });
 }
 
