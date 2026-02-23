@@ -14,6 +14,7 @@ export default async function handler(req, res) {
 
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
 
+    // altijd ophalen voor gekozen TF
     if (tf === "1w") {
       ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
       intervalLabel = "1w";
@@ -22,11 +23,11 @@ export default async function handler(req, res) {
       intervalLabel = "1d";
     }
 
-    // extra: weekly truth voor multi-timeframe als we in 1D zitten
+    // extra: weekly anker voor 1d
     let weeklyTruthCandles = null;
     if (intervalLabel === "1d") {
       const w = await getWeeklyBtcCandlesKraken();
-      weeklyTruthCandles = w.candlesTruth || null;
+      weeklyTruthCandles = w.candlesTruth;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
@@ -59,13 +60,16 @@ export default async function handler(req, res) {
       forestOverlayTruth: out.forestOverlayTruth,
       forestOverlayLive: out.forestOverlayLive,
 
+      // forward (mid + fan bands)
       forestOverlayForwardMid: out.forestOverlayForwardMid,
       forestOverlayForwardUpper: out.forestOverlayForwardUpper,
       forestOverlayForwardLower: out.forestOverlayForwardLower,
 
+      // 4-kleur segmenten (mid)
+      forestOverlayForwardMidSeg: out.forestOverlayForwardMidSeg,
+
       forestZTruth: out.forestZTruth,
       forestZLive: out.forestZLive,
-
       nowPoint: out.nowPoint,
 
       bandsNow: out.bandsNow,
