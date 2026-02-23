@@ -12,25 +12,13 @@ function makeChart(el, { height }) {
   return LightweightCharts.createChart(el, {
     width: el.clientWidth,
     height,
-
     layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222" },
     timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
     crosshair: { mode: 1 },
-
-    // ✅ iPhone / normaal zoomen & slepen
-    handleScroll: {
-      mouseWheel: true,
-      pressedMouseMove: true,
-      horzTouchDrag: true,
-      vertTouchDrag: false
-    },
-    handleScale: {
-      axisPressedMouseMove: true,
-      mouseWheel: true,
-      pinch: true
-    }
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
+    handleScale: { mouseWheel: true, pinch: true }
   });
 }
 
@@ -49,41 +37,18 @@ function addNowMarker(series, point, label){
   }]);
 }
 
-// ✅ Sync alleen VAN boven -> onder (geen terugkoppeling = normaal zoomen)
-function syncTimeOneWay(masterChart, followerChart){
-  let raf = 0;
-  masterChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    if (!range) return;
-    if (raf) cancelAnimationFrame(raf);
-    raf = requestAnimationFrame(() => {
-      followerChart.timeScale().setVisibleLogicalRange(range);
-      raf = 0;
-    });
-  });
-}
-
 async function init(){
   setPill("Loading…");
   const data = await loadData();
 
-  $("meta").textContent =
-    `Source: ${data.source} • TF: ${data.interval} • Truth weeks: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"}`;
-
-  $("debug").textContent = JSON.stringify({
-    freezeNow: data.freezeNow,
-    bandsNow: data.bandsNow
-  }, null, 2);
-
-  // -------- PRICE CHART --------
   const priceEl = $("priceChart");
-  // ✅ BELANGRIJK voor iPhone: anders vecht Safari met je pinch/drag
   priceEl.style.touchAction = "none";
-
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
+  // ====== VERLEDEN (TRUTH) ======
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 3,
     priceLineVisible: false,
@@ -91,29 +56,41 @@ async function init(){
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
-  const forestLive = priceChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "rgba(127,211,255,0.95)"
-  });
-  if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
-
-  const forestFwd = priceChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dotted,
-    color: "rgba(255,255,255,0.75)"
-  });
-  forestFwd.setData(data.forestOverlayForward || []);
-
   const nowOverlay = lastPoint(data.forestOverlayTruth || []);
   addNowMarker(forestTruth, nowOverlay, "NOW");
 
-  // -------- Z CHART --------
+  // ====== FORWARD 4 WEKEN MET 4 KLEUREN ======
+  const fwd = data.forestOverlayForward || [];
+
+  if (fwd.length >= 5) {
+    // fwd[0] = huidige punt
+    const colors = [
+      "rgba(255,255,255,0.95)",   // week 1
+      "rgba(255,200,0,0.95)",     // week 2
+      "rgba(255,120,0,0.95)",     // week 3
+      "rgba(255,0,0,0.95)"        // week 4
+    ];
+
+    for (let i = 0; i < 4; i++) {
+      const segment = priceChart.addLineSeries({
+        lineWidth: 3,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        priceLineVisible: false,
+        color: colors[i]
+      });
+
+      segment.setData([
+        fwd[i],     // start
+        fwd[i + 1]  // end
+      ]);
+    }
+  }
+
+  priceChart.timeScale().fitContent();
+
+  // ====== Z SCORE CHART ======
   const forestEl = $("forestChart");
   forestEl.style.touchAction = "none";
-
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
   forestChart.priceScale("right").applyOptions({
@@ -128,23 +105,10 @@ async function init(){
   });
   zTruth.setData(data.forestZTruth || []);
 
-  const zLive = forestChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "rgba(127,211,255,0.95)"
-  });
-  if (data.forestZLive?.length) zLive.setData(data.forestZLive);
-
   const nowZ = lastPoint(data.forestZTruth || []);
   addNowMarker(zTruth, nowZ, "NOW Z");
 
-  // ✅ Start netjes
-  priceChart.timeScale().fitContent();
   forestChart.timeScale().fitContent();
-
-  // ✅ Normaal zoomen boven, onder volgt
-  syncTimeOneWay(priceChart, forestChart);
 
   setPill(data.regimeLabel);
 
