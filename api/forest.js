@@ -6,21 +6,23 @@ export const config = { runtime: "nodejs" };
 
 export default async function handler(req, res) {
   try {
-    // tf = 1d of 1w
     const tf = String(req.query?.tf || "1d").toLowerCase();
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
-    // horizon in "bars" (days for 1d, weeks for 1w)
     const hRaw = Number(req.query?.h || 90);
-    const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
+    const horizonBars = Number.isFinite(hRaw)
+      ? Math.max(1, Math.min(hRaw, 180))
+      : 90;
 
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
 
     if (tf === "1w") {
-      ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
+      ({ candlesTruth, candlesWithLive, hasLive } =
+        await getWeeklyBtcCandlesKraken());
       intervalLabel = "1w";
     } else {
-      ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
+      ({ candlesTruth, candlesWithLive, hasLive } =
+        await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
     }
 
@@ -35,40 +37,42 @@ export default async function handler(req, res) {
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.status(200).send(JSON.stringify({
-      source: "kraken",
-      interval: intervalLabel,
-      truthCount: candlesTruth.length,
-      hasLive,
-      horizonBars,
+    res.status(200).send(
+      JSON.stringify({
+        source: "kraken",
+        interval: intervalLabel,
+        truthCount: candlesTruth.length,
+        hasLive,
+        horizonBars,
 
-      candles: candles.map(c => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close
-      })),
+        candles: candles.map(c => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close
+        })),
 
-      // overlay op prijs-chart
-      forestOverlayTruth: out.forestOverlayTruth,
-      forestOverlayLive: out.forestOverlayLive,
+        forestOverlayTruth: out.forestOverlayTruth,
+        forestOverlayLive: out.forestOverlayLive,
 
-      // forward (mid) + fan bands
-      forestOverlayForwardMid: out.forestOverlayForwardMid,
-      forestOverlayForwardUpper: out.forestOverlayForwardUpper,
-      forestOverlayForwardLower: out.forestOverlayForwardLower,
+        forestOverlayForwardMid: out.forestOverlayForwardMid,
+        forestOverlayForwardUpper: out.forestOverlayForwardUpper,
+        forestOverlayForwardLower: out.forestOverlayForwardLower,
 
-      // z-score paneel
-      forestZTruth: out.forestZTruth,
-      forestZLive: out.forestZLive,
-      nowPoint: out.nowPoint,
+        forestZTruth: out.forestZTruth,
+        forestZLive: out.forestZLive,
+        nowPoint: out.nowPoint,
 
-      // debug
-      bandsNow: out.bandsNow,
-      freezeNow: out.freezeNow,
-      regimeLabel: out.regimeLabel
-    }));
+        directionNow: out.directionNow,
+        confidenceNow: out.confidenceNow,
+        reasonNow: out.reasonNow,
+
+        bandsNow: out.bandsNow,
+        freezeNow: out.freezeNow,
+        regimeLabel: out.regimeLabel
+      })
+    );
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
