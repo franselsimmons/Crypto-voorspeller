@@ -15,7 +15,7 @@ function makeChart(el, { height }) {
     layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222" },
-    timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
+    timeScale: { borderColor: "#222", timeVisible: true },
     crosshair: { mode: 1 }
   });
 }
@@ -29,19 +29,16 @@ async function init(){
 
   $("debug").textContent = JSON.stringify({
     regimeNow: data.regimeNow,
-    freezeNow: data.freezeNow,
-    bandsNow: data.bandsNow,
-    structureNow: data.structureNow
+    freezeNow: data.freezeNow
   }, null, 2);
 
-  // -------- PRICE CHART --------
+  // ================= PRICE CHART =================
   const priceEl = $("priceChart");
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
-  // Truth overlay (SOLID, duidelijk)
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 3,
     priceLineVisible: false,
@@ -49,27 +46,21 @@ async function init(){
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
-  // Live overlay (DASHED)
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
-  // Forward (DASHED, iets dikker zodat je hem echt ziet)
   const forestFwd = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
 
-  priceChart.timeScale().fitContent();
-
-  // -------- Z CHART --------
+  // ================= FOREST Z CHART =================
   const forestEl = $("forestChart");
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
@@ -88,11 +79,24 @@ async function init(){
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
+  // ================= SYNCHRONISATIE =================
+
+  // Als je boven beweegt → onder mee
+  priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    forestChart.timeScale().setVisibleLogicalRange(range);
+  });
+
+  // Als je onder beweegt → boven mee
+  forestChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    priceChart.timeScale().setVisibleLogicalRange(range);
+  });
+
+  // Start netjes ingezoomd
+  priceChart.timeScale().fitContent();
   forestChart.timeScale().fitContent();
 
   setPill(data.regimeLabel);
