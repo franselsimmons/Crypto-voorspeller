@@ -28,7 +28,6 @@ function makeChart(el, { height }) {
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222", autoScale: true },
     timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
-
     handleScroll: {
       mouseWheel: true,
       pressedMouseMove: true,
@@ -45,14 +44,22 @@ function makeChart(el, { height }) {
   });
 }
 
+function isNum(x){ return typeof x === "number" && Number.isFinite(x); }
+function cleanLine(points){
+  return (points || []).filter(p => p && isNum(p.time) && isNum(p.value));
+}
+function cleanCandles(c){
+  return (c || []).filter(x =>
+    x && isNum(x.time) && isNum(x.open) && isNum(x.high) && isNum(x.low) && isNum(x.close)
+  );
+}
+
 function chunkInto4(points) {
   if (!points || points.length < 2) return [[],[],[],[]];
   const n = points.length;
   const cut1 = Math.floor(n * 0.25);
   const cut2 = Math.floor(n * 0.50);
   const cut3 = Math.floor(n * 0.75);
-
-  // Zorg dat elk segment netjes aansluit (dupliceer overgangspunt)
   const s1 = points.slice(0, cut1 + 1);
   const s2 = points.slice(cut1, cut2 + 1);
   const s3 = points.slice(cut2, cut3 + 1);
@@ -62,6 +69,11 @@ function chunkInto4(points) {
 
 let priceChart = null;
 let forestChart = null;
+
+function destroyChart(el, chart){
+  try { chart?.remove?.(); } catch {}
+  el.innerHTML = "";
+}
 
 async function render(){
   setActiveButtons();
@@ -87,69 +99,57 @@ async function render(){
     nowPoint: data.nowPoint
   }, null, 2);
 
-  // ---------- PRICE CHART ----------
+  // ----- PRICE CHART (rebuild) -----
   const priceEl = $("priceChart");
-  if (!priceChart) priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
-  else priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
-
-  priceChart.removeSeries?.(); // sommige builds hebben dit niet, daarom hieronder safe reset
-  // safe reset: nieuwe chart als removeSeries niet bestaat
-  if (typeof priceChart.removeSeries !== "function") {
-    priceEl.innerHTML = "";
-    priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
-  } else {
-    // remove all series
-    const series = priceChart._private__serieses || [];
-    for (const s of series) { try { priceChart.removeSeries(s); } catch {} }
-  }
+  destroyChart(priceEl, priceChart);
+  priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
   const candles = priceChart.addCandlestickSeries();
-  candles.setData(data.candles);
+  candles.setData(cleanCandles(data.candles));
 
-  const forestTruth = priceChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false
-  });
-  forestTruth.setData(data.forestOverlayTruth || []);
+  const forestTruth = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false });
+  forestTruth.setData(cleanLine(data.forestOverlayTruth));
 
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
-  if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
+  forestLive.setData(cleanLine(data.forestOverlayLive));
 
-  // Forward bands (upper/lower) dotted
   const fUpper = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dotted
   });
+  fUpper.setData(cleanLine(data.forestOverlayForwardUpper));
+
   const fLower = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dotted
   });
-  if (data.forestOverlayForwardUpper?.length) fUpper.setData(data.forestOverlayForwardUpper);
-  if (data.forestOverlayForwardLower?.length) fLower.setData(data.forestOverlayForwardLower);
+  fLower.setData(cleanLine(data.forestOverlayForwardLower));
 
-  // Forward MID in 4 kleuren (week/segment 1/2/3/4)
-  const mid = data.forestOverlayForwardMid || [];
+  const mid = cleanLine(data.forestOverlayForwardMid);
   const [m1, m2, m3, m4] = chunkInto4(mid);
 
-  const f1 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#fbbf24" });
-  const f2 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#fb923c" });
-  const f3 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#ef4444" });
-  const f4 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#a78bfa" });
+  const f1 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  f1.applyOptions({ color: "#fbbf24" });
+  const f2 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  f2.applyOptions({ color: "#fb923c" });
+  const f3 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  f3.applyOptions({ color: "#ef4444" });
+  const f4 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  f4.applyOptions({ color: "#a78bfa" });
 
-  if (m1.length) f1.setData(m1);
-  if (m2.length) f2.setData(m2);
-  if (m3.length) f3.setData(m3);
-  if (m4.length) f4.setData(m4);
+  f1.setData(m1);
+  f2.setData(m2);
+  f3.setData(m3);
+  f4.setData(m4);
 
-  // NOW marker (op de candles serie)
   const nowTime = data?.nowPoint?.time;
-  if (nowTime) {
+  if (isNum(nowTime)) {
     candles.setMarkers([{
       time: nowTime,
       position: "inBar",
@@ -161,39 +161,22 @@ async function render(){
 
   priceChart.timeScale().fitContent();
 
-  // ---------- Z CHART ----------
+  // ----- Z CHART (rebuild) -----
   const forestEl = $("forestChart");
-  if (!forestChart) forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
-  else forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
+  destroyChart(forestEl, forestChart);
+  forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
-  if (typeof forestChart.removeSeries !== "function") {
-    forestEl.innerHTML = "";
-    forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
-  } else {
-    const series = forestChart._private__serieses || [];
-    for (const s of series) { try { forestChart.removeSeries(s); } catch {} }
-  }
-
-  forestChart.priceScale("right").applyOptions({
-    autoScale: true,
-    scaleMargins: { top: 0.2, bottom: 0.2 }
-  });
-
-  const zTruth = forestChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false
-  });
-  zTruth.setData(data.forestZTruth || []);
+  const zTruth = forestChart.addLineSeries({ lineWidth: 2, priceLineVisible: false });
+  zTruth.setData(cleanLine(data.forestZTruth));
 
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
-  if (data.forestZLive?.length) zLive.setData(data.forestZLive);
+  zLive.setData(cleanLine(data.forestZLive));
 
-  // NOW Z marker
-  if (nowTime) {
+  if (isNum(nowTime)) {
     zTruth.setMarkers([{
       time: nowTime,
       position: "inBar",
@@ -207,11 +190,7 @@ async function render(){
 
   setPill(data.regimeLabel);
 
-  // resize (zonder steeds fitContent te resetten)
-  window.onresize = () => {
-    priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
-    forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
-  };
+  window.onresize = () => render().catch(console.error);
 }
 
 function wireUI() {
@@ -228,7 +207,6 @@ function wireUI() {
     });
   });
 
-  // defaults
   state.tf = "1d";
   state.h = 90;
   setActiveButtons();
