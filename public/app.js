@@ -1,19 +1,23 @@
 function $(id){ return document.getElementById(id); }
 function setPill(text){ $("statusPill").textContent = text; }
 
-let state = { tf: "1d", h: 90 };
+let state = {
+  tf: "1d",
+  h: 90,
+  firstRender: true
+};
 
 function setActiveButtons(){
-  document.querySelectorAll(".btn[data-tf]").forEach(b => {
-    b.classList.toggle("active", b.getAttribute("data-tf") === state.tf);
-  });
-  document.querySelectorAll(".btn[data-h]").forEach(b => {
-    b.classList.toggle("active", Number(b.getAttribute("data-h")) === state.h);
+  $("btnTf1d").classList.toggle("active", state.tf === "1d");
+  $("btnTf1w").classList.toggle("active", state.tf === "1w");
+
+  document.querySelectorAll('button.btn[data-h]').forEach(b=>{
+    b.classList.toggle("active", Number(b.dataset.h) === state.h);
   });
 }
 
 async function loadData(){
-  const url = `/api/forest?includeLive=1&tf=${encodeURIComponent(state.tf)}&h=${encodeURIComponent(state.h)}`;
+  const url = `/api/forest?tf=${encodeURIComponent(state.tf)}&h=${encodeURIComponent(state.h)}&includeLive=1`;
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const text = await r.text();
   if (!r.ok) throw new Error(text || "API failed");
@@ -27,38 +31,86 @@ function makeChart(el, { height }) {
     layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222" },
-    timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
+    timeScale: {
+      borderColor: "#222",
+      timeVisible: true,
+      secondsVisible: false,
+      rightOffset: 8
+    },
     crosshair: { mode: 1 },
-    handleScroll: true,
-    handleScale: true,
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { axisPressedMouseMove: true, pinch: true, mouseWheel: true }
   });
 }
 
-function clearEl(el){ el.innerHTML = ""; }
+function splitForecastIntoWeeks(points, tf){
+  // points bevat [now + horizon]
+  const barsPerWeek = (tf === "1w") ? 1 : 7;
 
-async function init(){
-  setActiveButtons();
+  // neem alleen forward (zonder eerste "now" punt) voor segmenten
+  const forward = points.slice(1);
 
-  document.querySelectorAll(".btn[data-tf]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      state.tf = btn.getAttribute("data-tf");
-      setActiveButtons();
-      await render();
-    });
+  const week1 = forward.slice(0, 1 * barsPerWeek);
+  const week2 = forward.slice(1 * barsPerWeek, 2 * barsPerWeek);
+  const week3 = forward.slice(2 * barsPerWeek, 3 * barsPerWeek);
+  const week4 = forward.slice(3 * barsPerWeek, 4 * barsPerWeek);
+  const rest  = forward.slice(4 * barsPerWeek);
+
+  // we willen dat elke weekserie netjes aansluit:
+  // start elk segment met het vorige eindpunt
+  function withJoin(prevEnd, seg){
+    if (!seg.length) return [];
+    return prevEnd ? [prevEnd, ...seg] : seg;
+  }
+
+  const now = points[0] || null;
+  const w1 = withJoin(now, week1);
+
+  const end1 = w1.length ? w1[w1.length - 1] : now;
+  const w2 = withJoin(end1, week2);
+
+  const end2 = w2.length ? w2[w2.length - 1] : end1;
+  const w3 = withJoin(end2, week3);
+
+  const end3 = w3.length ? w3[w3.length - 1] : end2;
+  const w4 = withJoin(end3, week4);
+
+  const end4 = w4.length ? w4[w4.length - 1] : end3;
+  const r  = withJoin(end4, rest);
+
+  return { w1, w2, w3, w4, rest: r };
+}
+
+let priceChart, forestChart;
+let series = {};
+
+function clearSeries(){
+  if (!priceChart || !forestChart) return;
+
+  Object.values(series).forEach(s=>{
+    try { priceChart.removeSeries(s); } catch {}
+    try { forestChart.removeSeries(s); } catch {}
   });
+  series = {};
+}
 
-  document.querySelectorAll(".btn[data-h]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      state.h = Number(btn.getAttribute("data-h"));
-      setActiveButtons();
-      await render();
-    });
-  });
+function setVisibleRangeNice(chart, candles, tf, horizonBars){
+  if (!candles?.length) return;
 
-  await render();
+  const stepSec = (tf === "1w") ? 7 * 24 * 60 * 60 : 24 * 60 * 60;
+
+  const n = candles.length;
+  const fromIdx = Math.max(0, n - 220); // “normale zoom”
+  const from = candles[fromIdx].time;
+
+  const lastTime = candles[n - 1].time;
+  const to = lastTime + stepSec * (horizonBars + 5);
+
+  chart.timeScale().setVisibleRange({ from, to });
 }
 
 async function render(){
+  setActiveButtons();
   setPill("Loading…");
 
   const data = await loadData();
@@ -66,95 +118,78 @@ async function render(){
   $("meta").textContent =
     `Source: ${data.source} • TF: ${data.interval} • Truth: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"} • Forward: ${data.horizonBars}`;
 
-  $("bigChance").textContent = `Grootste kans: ${data.biggestChance}`;
-
   $("debug").textContent = JSON.stringify({
+    regimeNow: data.regimeNow,
     confidence: data.confidence,
-    adxNow: data.adxNow,
     freezeNow: data.freezeNow,
-    weeklyBias: data.weeklyBias,
-    bandsNow: data.bandsNow
+    bandsNow: data.bandsNow,
+    nowPoint: data.nowPoint
   }, null, 2);
 
-  // Reset charts
-  const priceEl = $("priceChart");
-  const forestEl = $("forestChart");
-  clearEl(priceEl); clearEl(forestEl);
+  clearSeries();
 
   // -------- PRICE CHART --------
-  const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
-
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
-  // Truth overlay (solid)
+  // Forest overlay truth
   const forestTruth = priceChart.addLineSeries({
-    lineWidth: 2,
+    lineWidth: 3,
     priceLineVisible: false
   });
   forestTruth.setData(data.forestOverlayTruth || []);
+  series.forestTruth = forestTruth;
 
-  // Live overlay (dashed)
+  // Forest overlay live
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
+  series.forestLive = forestLive;
 
-  // Forward fan (upper/lower thin dashed)
-  const fUp = priceChart.addLineSeries({
+  // Forecast fan (upper/lower)
+  const fUpper = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dotted
   });
-  const fLo = priceChart.addLineSeries({
+  const fLower = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dotted
   });
-  if (data.forestOverlayForwardUpper?.length) fUp.setData(data.forestOverlayForwardUpper);
-  if (data.forestOverlayForwardLower?.length) fLo.setData(data.forestOverlayForwardLower);
+  if (data.forestOverlayForwardUpper?.length) fUpper.setData(data.forestOverlayForwardUpper);
+  if (data.forestOverlayForwardLower?.length) fLower.setData(data.forestOverlayForwardLower);
+  series.fUpper = fUpper;
+  series.fLower = fLower;
 
-  // Forward MID in 4 kleuren (week1-4)
-  const f1 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#FFD166" });
-  const f2 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#F8961E" });
-  const f3 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#F3722C" });
-  const f4 = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed, color: "#F94144" });
+  // Forecast mid in 4 week-kleuren
+  const mid = data.forestOverlayForwardMid || [];
+  const parts = splitForecastIntoWeeks(mid, data.interval);
 
-  if (data.forestOverlayForwardMidW1?.length) f1.setData(data.forestOverlayForwardMidW1);
-  if (data.forestOverlayForwardMidW2?.length) f2.setData(data.forestOverlayForwardMidW2);
-  if (data.forestOverlayForwardMidW3?.length) f3.setData(data.forestOverlayForwardMidW3);
-  if (data.forestOverlayForwardMidW4?.length) f4.setData(data.forestOverlayForwardMidW4);
+  const w1 = priceChart.addLineSeries({ lineWidth: 3, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  const w2 = priceChart.addLineSeries({ lineWidth: 3, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  const w3 = priceChart.addLineSeries({ lineWidth: 3, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
+  const w4 = priceChart.addLineSeries({ lineWidth: 3, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
 
-  priceChart.timeScale().fitContent();
+  // kleuren: (bewust 4 duidelijk verschillende)
+  w1.applyOptions({ color: "#ffd166" }); // week 1
+  w2.applyOptions({ color: "#f77f00" }); // week 2
+  w3.applyOptions({ color: "#ef233c" }); // week 3
+  w4.applyOptions({ color: "#8d99ae" }); // week 4 (meer “mist”)
 
-  // -------- Z CHART --------
-  const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
+  if (parts.w1.length) w1.setData(parts.w1);
+  if (parts.w2.length) w2.setData(parts.w2);
+  if (parts.w3.length) w3.setData(parts.w3);
+  if (parts.w4.length) w4.setData(parts.w4);
 
-  forestChart.priceScale("right").applyOptions({
-    autoScale: true,
-    scaleMargins: { top: 0.2, bottom: 0.2 }
-  });
+  series.w1 = w1; series.w2 = w2; series.w3 = w3; series.w4 = w4;
 
-  const zTruth = forestChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false
-  });
-  zTruth.setData(data.forestZTruth || []);
-
-  const zLive = forestChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed
-  });
-  if (data.forestZLive?.length) zLive.setData(data.forestZLive);
-
-  // NOW bolletje op Z
-  if (data.nowPoint?.time != null && data.nowPoint?.value != null) {
-    const zNowSeries = forestChart.addLineSeries({ lineWidth: 0, priceLineVisible: false });
-    zNowSeries.setData([{ time: data.nowPoint.time, value: data.nowPoint.value }]);
-    zNowSeries.setMarkers([{
+  // “NOW” marker op prijs: use overlay value (duidelijk)
+  if (data.nowPoint?.time && data.nowPoint?.overlay != null) {
+    forestTruth.setMarkers([{
       time: data.nowPoint.time,
       position: "inBar",
       color: "#ffffff",
@@ -163,18 +198,81 @@ async function render(){
     }]);
   }
 
-  forestChart.timeScale().fitContent();
+  // normale zoom + future zichtbaar zonder dat hij alles mini maakt
+  setVisibleRangeNice(priceChart, data.candles, data.interval, data.horizonBars);
 
-  setPill(data.regimeLabel);
+  // -------- Z CHART --------
+  const zTruth = forestChart.addLineSeries({ lineWidth: 2, priceLineVisible: false });
+  zTruth.setData(data.forestZTruth || []);
+  series.zTruth = zTruth;
+
+  const zLive = forestChart.addLineSeries({
+    lineWidth: 2,
+    priceLineVisible: false,
+    lineStyle: LightweightCharts.LineStyle.Dashed
+  });
+  if (data.forestZLive?.length) zLive.setData(data.forestZLive);
+  series.zLive = zLive;
+
+  // NOW marker op Z
+  if (data.nowPoint?.time && data.nowPoint?.z != null) {
+    zTruth.setMarkers([{
+      time: data.nowPoint.time,
+      position: "inBar",
+      color: "#ffffff",
+      shape: "circle",
+      text: "NOW Z"
+    }]);
+  }
+
+  // Z paneel: laat ‘m autoscale, maar niet gek
+  forestChart.priceScale("right").applyOptions({
+    autoScale: true,
+    scaleMargins: { top: 0.2, bottom: 0.2 }
+  });
+
+  setVisibleRangeNice(forestChart, data.candles, data.interval, data.horizonBars);
+
+  // pill tekst
+  const kans = `${data.regimeNow} (${data.confidence})`;
+  setPill(`Grootste kans: ${kans}`);
+
+  // resize
+  const priceEl = $("priceChart");
+  const forestEl = $("forestChart");
+  priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
+  forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
+}
+
+async function init(){
+  const priceEl = $("priceChart");
+  const forestEl = $("forestChart");
+  priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
+  forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
+
+  // buttons
+  $("btnTf1d").addEventListener("click", () => { state.tf = "1d"; render().catch(showErr); });
+  $("btnTf1w").addEventListener("click", () => { state.tf = "1w"; render().catch(showErr); });
+
+  document.querySelectorAll('button.btn[data-h]').forEach(b=>{
+    b.addEventListener("click", ()=>{
+      state.h = Number(b.dataset.h);
+      render().catch(showErr);
+    });
+  });
 
   window.addEventListener("resize", () => {
     priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
     forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
-  }, { once: true });
+  });
+
+  await render();
 }
 
-init().catch(err => {
+function showErr(err){
   console.error(err);
   document.body.innerHTML =
     `<pre style="color:#ff6666;padding:12px">${String(err?.message || err)}</pre>`;
-});
+}
+
+init().catch(showErr);
