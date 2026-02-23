@@ -12,11 +12,25 @@ function makeChart(el, { height }) {
   return LightweightCharts.createChart(el, {
     width: el.clientWidth,
     height,
+
     layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222" },
     timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
-    crosshair: { mode: 1 }
+    crosshair: { mode: 1 },
+
+    // ✅ iPhone / normaal zoomen & slepen
+    handleScroll: {
+      mouseWheel: true,
+      pressedMouseMove: true,
+      horzTouchDrag: true,
+      vertTouchDrag: false
+    },
+    handleScale: {
+      axisPressedMouseMove: true,
+      mouseWheel: true,
+      pinch: true
+    }
   });
 }
 
@@ -35,21 +49,16 @@ function addNowMarker(series, point, label){
   }]);
 }
 
-function syncTime(priceChart, forestChart){
-  let syncing = false;
-
-  priceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (syncing || !range) return;
-    syncing = true;
-    forestChart.timeScale().setVisibleRange(range);
-    syncing = false;
-  });
-
-  forestChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (syncing || !range) return;
-    syncing = true;
-    priceChart.timeScale().setVisibleRange(range);
-    syncing = false;
+// ✅ Sync alleen VAN boven -> onder (geen terugkoppeling = normaal zoomen)
+function syncTimeOneWay(masterChart, followerChart){
+  let raf = 0;
+  masterChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (!range) return;
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      followerChart.timeScale().setVisibleLogicalRange(range);
+      raf = 0;
+    });
   });
 }
 
@@ -67,12 +76,14 @@ async function init(){
 
   // -------- PRICE CHART --------
   const priceEl = $("priceChart");
+  // ✅ BELANGRIJK voor iPhone: anders vecht Safari met je pinch/drag
+  priceEl.style.touchAction = "none";
+
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
-  // VERLEDEN / TRUTH (dik blauw)
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 3,
     priceLineVisible: false,
@@ -80,7 +91,6 @@ async function init(){
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
-  // LIVE (lichtblauw gestreept)
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
@@ -89,7 +99,6 @@ async function init(){
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
-  // TOEKOMST / FORWARD (altijd zichtbaar, wit/grijs gestippeld)
   const forestFwd = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
@@ -98,14 +107,13 @@ async function init(){
   });
   forestFwd.setData(data.forestOverlayForward || []);
 
-  // NOW bolletje op prijs-lijn (op laatste TRUTH punt)
   const nowOverlay = lastPoint(data.forestOverlayTruth || []);
   addNowMarker(forestTruth, nowOverlay, "NOW");
 
-  priceChart.timeScale().fitContent();
-
   // -------- Z CHART --------
   const forestEl = $("forestChart");
+  forestEl.style.touchAction = "none";
+
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
   forestChart.priceScale("right").applyOptions({
@@ -113,7 +121,6 @@ async function init(){
     scaleMargins: { top: 0.2, bottom: 0.2 }
   });
 
-  // Z TRUTH (dik blauw)
   const zTruth = forestChart.addLineSeries({
     lineWidth: 3,
     priceLineVisible: false,
@@ -121,7 +128,6 @@ async function init(){
   });
   zTruth.setData(data.forestZTruth || []);
 
-  // Z LIVE (lichtblauw dashed)
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
@@ -130,15 +136,15 @@ async function init(){
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // OPTIONAL: laat forward ook in Z-paneel zien (zelfde “altijd zichtbaar” idee)
-  // (We hebben geen echte z-forward uit API, dus we tekenen géén nep. Alleen NOW markeren.)
   const nowZ = lastPoint(data.forestZTruth || []);
   addNowMarker(zTruth, nowZ, "NOW Z");
 
+  // ✅ Start netjes
+  priceChart.timeScale().fitContent();
   forestChart.timeScale().fitContent();
 
-  // Sync scroll/zoom: boven en onder bewegen samen
-  syncTime(priceChart, forestChart);
+  // ✅ Normaal zoomen boven, onder volgt
+  syncTimeOneWay(priceChart, forestChart);
 
   setPill(data.regimeLabel);
 
