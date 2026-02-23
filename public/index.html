@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Forest BTC (Weekly)</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="top">
+    <div id="statusPill">Loading…</div>
+    <div id="meta" class="meta"></div>
+  </div>
+
+  <div class="wrap">
+    <div class="panel">
+      <div class="panelTitle">Price + Forest overlay</div>
+      <div id="priceChart" class="chart"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panelTitle">Forest (z-score)</div>
+      <div id="forestChart" class="chart small"></div>
+    </div>
+
+    <pre id="debug"></pre>
+  </div>
+
+  <!-- pinned version -->
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
