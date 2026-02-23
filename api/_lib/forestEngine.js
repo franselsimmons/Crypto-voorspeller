@@ -152,6 +152,7 @@ function findLastExtrema(zArr, lookback = 180) {
   return pts;
 }
 
+// ---- FIX 1: forward in log-price (no negative nonsense) ----
 function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf }) {
   const n = candlesTruth.length;
   if (n < 50) return { mid: [], upper: [], lower: [] };
@@ -170,6 +171,7 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
 
   const stepSec = (tf === "1w") ? (7 * 24 * 3600) : (24 * 3600);
 
+  // base slope (klein beetje trend)
   let slope = 0;
   let cnt = 0;
   for (let k = 1; k <= 10; k++) {
@@ -183,6 +185,7 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
   }
   const baseSlopePerBar = cnt ? (slope / cnt) : 0;
 
+  // cycle period
   const ex = findLastExtrema(zArr, 220);
   let period = Math.min(horizonBars, Math.max(14, Math.round(horizonBars / 2)));
   if (ex.length >= 2) {
@@ -190,15 +193,18 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
     if (p >= 10 && p <= 1200) period = p;
   }
 
-  const ampBase = clamp(Math.abs(zNow), 0.6, 2.4);
-  const horizonDamp = clamp(90 / Math.max(30, horizonBars), 0.35, 1.0);
-  const amp = ampBase * horizonDamp;
+  // amplitude + decay (z wave)
+  const ampBase = clamp(Math.abs(zNow), 0.7, 2.2);
+  const amp = ampBase; // NIET agressief dempen → anders wordt 180 “vlak”
+  const mr = clamp(0.992, 0.975, 0.996); // zachter mean-revert
 
-  const mr = clamp(0.985, 0.96, 0.995);
   let zCenter = zNow;
-
   let phase = 0;
   if (ex.length >= 1) phase = (ex[0].type === "peak") ? Math.PI : 0;
+
+  // we rekenen in log-price met ATR% (ATR / base)
+  const atrPct = clamp(atrNow / baseNow, 0.0005, 0.25);
+  const logBaseNow = Math.log(Math.max(1, baseNow));
 
   const mid = [];
   const upper = [];
@@ -209,12 +215,12 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
     if (!isNum(t)) continue;
 
     const baseF = baseNow + baseSlopePerBar * k;
+    const logBaseF = Math.log(Math.max(1, baseF));
 
     zCenter = zCenter * mr;
 
     const w = (2 * Math.PI * k) / Math.max(10, period);
     const zWave = amp * Math.sin(w + phase);
-
     const zMid = clamp(zCenter + zWave, -2.8, 2.8);
 
     const widen = clamp(0.35 + (k / Math.max(1, horizonBars)) * 0.65, 0.35, 1.0);
@@ -223,9 +229,10 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
     const zUp = clamp(zMid + band, -3.0, 3.0);
     const zLo = clamp(zMid - band, -3.0, 3.0);
 
-    const vMid = baseF + zMid * atrNow;
-    const vUp  = baseF + zUp  * atrNow;
-    const vLo  = baseF + zLo  * atrNow;
+    // log-space forecast
+    const vMid = Math.exp(logBaseF + (zMid * atrPct));
+    const vUp  = Math.exp(logBaseF + (zUp  * atrPct));
+    const vLo  = Math.exp(logBaseF + (zLo  * atrPct));
 
     if (isNum(vMid)) mid.push({ time: t, value: vMid });
     if (isNum(vUp))  upper.push({ time: t, value: vUp });
@@ -233,6 +240,46 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
   }
 
   return { mid, upper, lower };
+}
+
+// ---- FIX 2: interpolate weekly forward → daily forward (TF consistent) ----
+function interpolateWeeklyToDaily(weeklySeries, dayCount, startTimeSec) {
+  // weeklySeries: array {time,value} incl k=0..weeks
+  if (!Array.isArray(weeklySeries) || weeklySeries.length < 2) return [];
+
+  const stepDay = 24 * 3600;
+  const out = [];
+
+  for (let d = 0; d <= dayCount; d++) {
+    const t = startTimeSec + d * stepDay;
+
+    const wkFloat = d / 7;
+    const i0 = Math.floor(wkFloat);
+    const i1 = Math.min(i0 + 1, weeklySeries.length - 1);
+
+    const p0 = weeklySeries[i0];
+    const p1 = weeklySeries[i1];
+    if (!p0 || !p1 || !isNum(p0.value) || !isNum(p1.value)) continue;
+
+    const frac = wkFloat - i0;
+    const v = p0.value + (p1.value - p0.value) * frac;
+
+    out.push({ time: t, value: v });
+  }
+  return out;
+}
+
+// ---- 4-kleur segmenten voor forward mid ----
+function splitInto4Segments(series) {
+  if (!Array.isArray(series) || series.length < 2) return [[], [], [], []];
+  const n = series.length;
+  const segLen = Math.ceil(n / 4);
+  return [
+    series.slice(0, segLen),
+    series.slice(segLen, segLen * 2),
+    series.slice(segLen * 2, segLen * 3),
+    series.slice(segLen * 3)
+  ];
 }
 
 export function buildForestOverlay({
@@ -266,6 +313,7 @@ export function buildForestOverlay({
   let aligned = true;
   let weeklyReg = null;
 
+  // weekly bias check (voor confidence + regime override)
   if (tf === "1d" && Array.isArray(weeklyTruthCandles) && weeklyTruthCandles.length > 100) {
     const w = computeCore(weeklyTruthCandles, { zWin: 208 });
     const wIdx = lastValidIndex(w.z);
@@ -304,14 +352,63 @@ export function buildForestOverlay({
   }
 
   const safeH = freezeNow ? Math.min(20, horizonBars) : horizonBars;
-  const fwd = buildForwardWave({
-    candlesTruth,
-    baseArr: t.base,
-    atrArr: t.a,
-    zArr: t.z,
-    horizonBars: safeH,
-    tf
-  });
+
+  // ---- Forward bouwen ----
+  let fwdMid = [];
+  let fwdUp = [];
+  let fwdLo = [];
+
+  // 1) weekly is altijd “waarheid” als tf=1w
+  if (tf === "1w") {
+    const fwd = buildForwardWave({
+      candlesTruth,
+      baseArr: t.base,
+      atrArr: t.a,
+      zArr: t.z,
+      horizonBars: safeH,
+      tf: "1w"
+    });
+    fwdMid = fwd.mid;
+    fwdUp = fwd.upper;
+    fwdLo = fwd.lower;
+  }
+
+  // 2) daily → neem weekly forward en interpolate naar dagen (TF consistent)
+  if (tf === "1d") {
+    if (Array.isArray(weeklyTruthCandles) && weeklyTruthCandles.length > 100) {
+      const w = computeCore(weeklyTruthCandles, { zWin: 208 });
+
+      const weeks = Math.max(2, Math.ceil(safeH / 7));
+      const wfwd = buildForwardWave({
+        candlesTruth: weeklyTruthCandles,
+        baseArr: w.base,
+        atrArr: w.a,
+        zArr: w.z,
+        horizonBars: weeks,
+        tf: "1w"
+      });
+
+      const startTime = candlesTruth[lastIdxT]?.time ?? null;
+      if (isNum(startTime)) {
+        fwdMid = interpolateWeeklyToDaily(wfwd.mid, safeH, startTime);
+        fwdUp  = interpolateWeeklyToDaily(wfwd.upper, safeH, startTime);
+        fwdLo  = interpolateWeeklyToDaily(wfwd.lower, safeH, startTime);
+      }
+    } else {
+      // fallback: als er geen weekly anker is
+      const fwd = buildForwardWave({
+        candlesTruth,
+        baseArr: t.base,
+        atrArr: t.a,
+        zArr: t.z,
+        horizonBars: safeH,
+        tf: "1d"
+      });
+      fwdMid = fwd.mid;
+      fwdUp = fwd.upper;
+      fwdLo = fwd.lower;
+    }
+  }
 
   const nowTime = candlesTruth[lastIdxT]?.time ?? null;
   const nowPrice = candlesTruth[lastIdxT]?.close ?? null;
@@ -334,9 +431,12 @@ export function buildForestOverlay({
     forestOverlayTruth,
     forestOverlayLive,
 
-    forestOverlayForwardMid: fwd.mid,
-    forestOverlayForwardUpper: fwd.upper,
-    forestOverlayForwardLower: fwd.lower,
+    forestOverlayForwardMid: fwdMid,
+    forestOverlayForwardUpper: fwdUp,
+    forestOverlayForwardLower: fwdLo,
+
+    // 4 kleuren (mid)
+    forestOverlayForwardMidSeg: splitInto4Segments(fwdMid),
 
     forestZTruth,
     forestZLive,
