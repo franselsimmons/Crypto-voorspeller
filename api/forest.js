@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
     const hRaw = Number(req.query?.h || 90);
-    const horizonBars = Number.isFinite(hRaw) ? Math.max(7, Math.min(hRaw, 180)) : 90;
+    const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
 
@@ -48,21 +48,28 @@ export default async function handler(req, res) {
         close: c.close
       })),
 
+      // overlay op prijs-chart
       forestOverlayTruth: out.forestOverlayTruth,
       forestOverlayLive: out.forestOverlayLive,
 
+      // forward mid + fan bands
       forestOverlayForwardMid: out.forestOverlayForwardMid,
       forestOverlayForwardUpper: out.forestOverlayForwardUpper,
       forestOverlayForwardLower: out.forestOverlayForwardLower,
 
+      // 4 kleur segmenten (mid)
+      forestForward4: out.forestForward4,
+
+      // z-score paneel
       forestZTruth: out.forestZTruth,
       forestZLive: out.forestZLive,
       nowPoint: out.nowPoint,
 
-      bandsNow: out.bandsNow,
-      freezeNow: out.freezeNow,
+      // labels
       regimeNow: out.regimeNow,
       confidence: out.confidence,
+      freezeNow: out.freezeNow,
+      bandsNow: out.bandsNow,
       regimeLabel: out.regimeLabel
     }));
   } catch (e) {
