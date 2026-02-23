@@ -6,29 +6,41 @@ export const config = { runtime: "nodejs" };
 
 export default async function handler(req, res) {
   try {
+    // tf = 1d of 1w
+    const tf = String(req.query?.tf || "1d").toLowerCase();
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
-    const { candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken();
-    const candles = includeLive ? candlesWithLive : candlesTruth;
+    // horizon in "bars" (days for 1d, weeks for 1w)
+    const hRaw = Number(req.query?.h || 90);
+    const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
-    // Daily alleen voor “route naar next weekly target”
-    const daily = await getDailyBtcCandlesKraken();
+    let candlesTruth, candlesWithLive, hasLive, intervalLabel;
+
+    if (tf === "1w") {
+      ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
+      intervalLabel = "1w";
+    } else {
+      ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
+      intervalLabel = "1d";
+    }
+
+    const candles = includeLive ? candlesWithLive : candlesTruth;
 
     const out = buildForestOverlay({
       candlesTruth,
       candlesWithLive,
       hasLive,
-      dailyCandlesTruth: daily.candlesTruth,
-      dailyCandlesWithLive: daily.candlesWithLive,
-      dailyHasLive: daily.hasLive
+      tf: intervalLabel,
+      horizonBars
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.status(200).send(JSON.stringify({
       source: "kraken",
-      interval: "1w",
+      interval: intervalLabel,
       truthCount: candlesTruth.length,
       hasLive,
+      horizonBars,
 
       candles: candles.map(c => ({
         time: c.time,
@@ -38,16 +50,21 @@ export default async function handler(req, res) {
         close: c.close
       })),
 
+      // overlay op prijs-chart
       forestOverlayTruth: out.forestOverlayTruth,
       forestOverlayLive: out.forestOverlayLive,
-      forestOverlayForward: out.forestOverlayForward,
 
-      // NIEUW: daily “routeplanner” naar volgende weekly target
-      dailyRouteToNextWeek: out.dailyRouteToNextWeek,
+      // forward (mid) + fan bands
+      forestOverlayForwardMid: out.forestOverlayForwardMid,
+      forestOverlayForwardUpper: out.forestOverlayForwardUpper,
+      forestOverlayForwardLower: out.forestOverlayForwardLower,
 
+      // z-score paneel
       forestZTruth: out.forestZTruth,
       forestZLive: out.forestZLive,
+      nowPoint: out.nowPoint,
 
+      // debug
       bandsNow: out.bandsNow,
       freezeNow: out.freezeNow,
       regimeLabel: out.regimeLabel
