@@ -22,6 +22,13 @@ export default async function handler(req, res) {
       intervalLabel = "1d";
     }
 
+    // extra: weekly truth voor multi-timeframe als we in 1D zitten
+    let weeklyTruthCandles = null;
+    if (intervalLabel === "1d") {
+      const w = await getWeeklyBtcCandlesKraken();
+      weeklyTruthCandles = w.candlesTruth || null;
+    }
+
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
     const out = buildForestOverlay({
@@ -29,7 +36,8 @@ export default async function handler(req, res) {
       candlesWithLive,
       hasLive,
       tf: intervalLabel,
-      horizonBars
+      horizonBars,
+      weeklyTruthCandles
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -48,29 +56,23 @@ export default async function handler(req, res) {
         close: c.close
       })),
 
-      // overlay op prijs-chart
       forestOverlayTruth: out.forestOverlayTruth,
       forestOverlayLive: out.forestOverlayLive,
 
-      // forward mid + fan bands
       forestOverlayForwardMid: out.forestOverlayForwardMid,
       forestOverlayForwardUpper: out.forestOverlayForwardUpper,
       forestOverlayForwardLower: out.forestOverlayForwardLower,
 
-      // 4 kleur segmenten (mid)
-      forestForward4: out.forestForward4,
-
-      // z-score paneel
       forestZTruth: out.forestZTruth,
       forestZLive: out.forestZLive,
+
       nowPoint: out.nowPoint,
 
-      // labels
-      regimeNow: out.regimeNow,
-      confidence: out.confidence,
-      freezeNow: out.freezeNow,
       bandsNow: out.bandsNow,
-      regimeLabel: out.regimeLabel
+      freezeNow: out.freezeNow,
+      regimeLabel: out.regimeLabel,
+      regimeNow: out.regimeNow,
+      confidence: out.confidence
     }));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
