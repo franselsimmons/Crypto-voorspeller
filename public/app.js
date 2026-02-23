@@ -15,9 +15,14 @@ function makeChart(el, { height }) {
     layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
     grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
     rightPriceScale: { borderColor: "#222" },
-    timeScale: { borderColor: "#222", timeVisible: true },
+    timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false },
     crosshair: { mode: 1 }
   });
+}
+
+function lastValue(arr){
+  if (!arr || !arr.length) return null;
+  return arr[arr.length - 1]?.value ?? null;
 }
 
 async function init(){
@@ -40,9 +45,8 @@ async function init(){
   candles.setData(data.candles);
 
   const forestTruth = priceChart.addLineSeries({
-    lineWidth: 3,
-    priceLineVisible: false,
-    lastValueVisible: true
+    lineWidth: 2,
+    priceLineVisible: false
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
@@ -54,11 +58,13 @@ async function init(){
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
   const forestFwd = priceChart.addLineSeries({
-    lineWidth: 2,
+    lineWidth: 1,
     priceLineVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
+
+  priceChart.timeScale().fitContent();
 
   // -------- Z CHART --------
   const forestEl = $("forestChart");
@@ -71,8 +77,7 @@ async function init(){
 
   const zTruth = forestChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false,
-    lastValueVisible: true
+    priceLineVisible: false
   });
   zTruth.setData(data.forestZTruth || []);
 
@@ -83,44 +88,39 @@ async function init(){
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // ✅ BELANGRIJK:
-  // Onderste chart mag GEEN fitContent doen, want z-data begint later.
-  // We gebruiken de tijd-range van de bovenste chart als "waarheid".
+  // ✅ NU-MARKERING in Z-chart (horizontale lijn op huidige waarde)
+  // Als live bestaat gebruiken we live, anders truth.
+  const zNow = lastValue((data.forestZLive && data.forestZLive.length) ? data.forestZLive : data.forestZTruth);
+  if (zNow != null) {
+    // maak een extra serie die alleen een priceLine toont
+    const nowLine = forestChart.addLineSeries({
+      lineWidth: 1,
+      priceLineVisible: true,
+      lastValueVisible: false,
+      lineVisible: false // we willen geen extra lijn door de chart, alleen de priceLine
+    });
 
-  // 1) Eerst boven netjes fitten
-  priceChart.timeScale().fitContent();
+    // priceLine opties (tekst + stijl)
+    nowLine.applyOptions({
+      priceLineVisible: true,
+      priceLineWidth: 1,
+      priceLineStyle: LightweightCharts.LineStyle.Dashed,
+      priceLineSource: 0,
+      title: `NOW Z`
+    });
 
-  // 2) Pak range van boven en zet hem op onder
-  const initialRange = priceChart.timeScale().getVisibleLogicalRange();
-  if (initialRange) forestChart.timeScale().setVisibleLogicalRange(initialRange);
+    // truc: zet 1 datapunt (mag op laatste candle time), zodat de chart weet dat deze serie “bestaat”
+    const lastT = (data.forestZTruth && data.forestZTruth.length) ? data.forestZTruth[data.forestZTruth.length - 1].time : null;
+    if (lastT != null) nowLine.setData([{ time: lastT, value: zNow }]);
+  }
 
-  // 3) Sync: boven stuurt onder (zonder loop)
-  let isSyncing = false;
-
-  priceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    if (!range || isSyncing) return;
-    isSyncing = true;
-    forestChart.timeScale().setVisibleLogicalRange(range);
-    isSyncing = false;
-  });
-
-  // (optioneel) Als je óók onder wilt kunnen scrollen, zet dit aan:
-  forestChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    if (!range || isSyncing) return;
-    isSyncing = true;
-    priceChart.timeScale().setVisibleLogicalRange(range);
-    isSyncing = false;
-  });
+  forestChart.timeScale().fitContent();
 
   setPill(data.regimeLabel);
 
   window.addEventListener("resize", () => {
     priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
     forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
-
-    // na resize opnieuw range kopiëren (anders verschuift hij soms)
-    const r = priceChart.timeScale().getVisibleLogicalRange();
-    if (r) forestChart.timeScale().setVisibleLogicalRange(r);
   });
 }
 
