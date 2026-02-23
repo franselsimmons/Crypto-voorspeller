@@ -4,169 +4,43 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Forest BTC</title>
-
-  <style>
-    body {
-      margin: 0;
-      background: #0e1117;
-      color: #e0e0e0;
-      font-family: -apple-system, system-ui, Segoe UI, Roboto;
-    }
-
-    .topbar {
-      padding: 10px 14px;
-      border-bottom: 1px solid #222;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-    }
-
-    .btn {
-      background: #1c2330;
-      border: 1px solid #2e3747;
-      color: #e0e0e0;
-      padding: 6px 10px;
-      cursor: pointer;
-      border-radius: 6px;
-    }
-
-    .btn.active {
-      background: #3d7cff;
-      border-color: #3d7cff;
-    }
-
-    .badge {
-      padding: 6px 10px;
-      border-radius: 6px;
-      font-weight: 600;
-    }
-
-    .badge.high { background: #1f5f2c; }
-    .badge.medium { background: #6b5200; }
-    .badge.low { background: #5f1f1f; }
-
-    .chart {
-      height: 420px;
-    }
-
-    .chart.small {
-      height: 250px;
-    }
-  </style>
+  <link rel="stylesheet" href="/style.css" />
 </head>
-
 <body>
-
-  <div class="topbar">
-    <div>
-      TF:
+  <div class="top">
+    <div class="btnrow">
+      <div class="label">TF:</div>
       <button class="btn" data-tf="1d">1D</button>
       <button class="btn" data-tf="1w">1W</button>
-    </div>
 
-    <div>
-      Horizon:
+      <div class="label">Horizon:</div>
       <button class="btn" data-h="30">30</button>
       <button class="btn" data-h="60">60</button>
-      <button class="btn active" data-h="90">90</button>
+      <button class="btn" data-h="90">90</button>
       <button class="btn" data-h="180">180</button>
     </div>
 
-    <div id="decisionBadge" class="badge low">
-      Grootste kans: ...
-    </div>
-
-    <div id="meta"></div>
+    <div id="statusPill" class="pill">Loading…</div>
+    <div id="meta" class="meta"></div>
   </div>
 
-  <div id="priceChart" class="chart"></div>
-  <div id="forestChart" class="chart small"></div>
+  <div class="wrap">
+    <div id="bigChance" class="banner"></div>
+
+    <div class="panel">
+      <div class="panelTitle">Price + Forest overlay</div>
+      <div id="priceChart" class="chart"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panelTitle">Forest (z-score)</div>
+      <div id="forestChart" class="chart small"></div>
+    </div>
+
+    <pre id="debug"></pre>
+  </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script>
-    let currentTF = "1d";
-    let currentH = 90;
-
-    function setActiveButtons() {
-      document.querySelectorAll("[data-tf]").forEach(b => {
-        b.classList.toggle("active", b.dataset.tf === currentTF);
-      });
-      document.querySelectorAll("[data-h]").forEach(b => {
-        b.classList.toggle("active", Number(b.dataset.h) === currentH);
-      });
-    }
-
-    document.querySelectorAll("[data-tf]").forEach(btn => {
-      btn.onclick = () => {
-        currentTF = btn.dataset.tf;
-        setActiveButtons();
-        load();
-      };
-    });
-
-    document.querySelectorAll("[data-h]").forEach(btn => {
-      btn.onclick = () => {
-        currentH = Number(btn.dataset.h);
-        setActiveButtons();
-        load();
-      };
-    });
-
-    async function load() {
-      const r = await fetch(`/api/forest?tf=${currentTF}&h=${currentH}&includeLive=1`);
-      const data = await r.json();
-
-      document.getElementById("meta").innerText =
-        `TF: ${data.interval} • Forward: ${data.horizonBars} bars`;
-
-      const badge = document.getElementById("decisionBadge");
-      badge.className = "badge " + data.confidenceNow;
-      badge.innerText =
-        `Grootste kans: ${data.directionNow} (${data.confidenceNow})`;
-
-      renderCharts(data);
-    }
-
-    let priceChart, forestChart;
-
-    function renderCharts(data) {
-      if (priceChart) priceChart.remove();
-      if (forestChart) forestChart.remove();
-
-      priceChart = LightweightCharts.createChart(
-        document.getElementById("priceChart"),
-        { height: 420, layout: { background: { color: "#0e1117" }, textColor: "#e0e0e0" } }
-      );
-
-      forestChart = LightweightCharts.createChart(
-        document.getElementById("forestChart"),
-        { height: 250, layout: { background: { color: "#0e1117" }, textColor: "#e0e0e0" } }
-      );
-
-      const candles = priceChart.addCandlestickSeries();
-      candles.setData(data.candles);
-
-      const truth = priceChart.addLineSeries({ lineWidth: 2 });
-      truth.setData(data.forestOverlayTruth);
-
-      const mid = priceChart.addLineSeries({ lineWidth: 2, lineStyle: 1 });
-      mid.setData(data.forestOverlayForwardMid);
-
-      const upper = priceChart.addLineSeries({ lineWidth: 1, lineStyle: 2 });
-      upper.setData(data.forestOverlayForwardUpper);
-
-      const lower = priceChart.addLineSeries({ lineWidth: 1, lineStyle: 2 });
-      lower.setData(data.forestOverlayForwardLower);
-
-      const zTruth = forestChart.addLineSeries({ lineWidth: 2 });
-      zTruth.setData(data.forestZTruth);
-
-      priceChart.timeScale().fitContent();
-      forestChart.timeScale().fitContent();
-    }
-
-    load();
-  </script>
+  <script src="/app.js"></script>
 </body>
 </html>
