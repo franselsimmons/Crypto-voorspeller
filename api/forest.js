@@ -10,20 +10,22 @@ export default async function handler(req, res) {
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
     const hRaw = Number(req.query?.h || 90);
-    const horizonBars = Number.isFinite(hRaw)
-      ? Math.max(1, Math.min(hRaw, 180))
-      : 90;
+    const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
 
+    // Extra: weekly context voor daily (EMA200 bias)
+    let weeklyTruthForBias = null;
+
     if (tf === "1w") {
-      ({ candlesTruth, candlesWithLive, hasLive } =
-        await getWeeklyBtcCandlesKraken());
+      ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
       intervalLabel = "1w";
     } else {
-      ({ candlesTruth, candlesWithLive, hasLive } =
-        await getDailyBtcCandlesKraken());
+      ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
+
+      const wk = await getWeeklyBtcCandlesKraken();
+      weeklyTruthForBias = wk.candlesTruth;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
@@ -33,46 +35,52 @@ export default async function handler(req, res) {
       candlesWithLive,
       hasLive,
       tf: intervalLabel,
-      horizonBars
+      horizonBars,
+      weeklyTruthForBias
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.status(200).send(
-      JSON.stringify({
-        source: "kraken",
-        interval: intervalLabel,
-        truthCount: candlesTruth.length,
-        hasLive,
-        horizonBars,
+    res.status(200).send(JSON.stringify({
+      source: "kraken",
+      interval: intervalLabel,
+      truthCount: candlesTruth.length,
+      hasLive,
+      horizonBars,
 
-        candles: candles.map(c => ({
-          time: c.time,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close
-        })),
+      candles: candles.map(c => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close
+      })),
 
-        forestOverlayTruth: out.forestOverlayTruth,
-        forestOverlayLive: out.forestOverlayLive,
+      forestOverlayTruth: out.forestOverlayTruth,
+      forestOverlayLive: out.forestOverlayLive,
 
-        forestOverlayForwardMid: out.forestOverlayForwardMid,
-        forestOverlayForwardUpper: out.forestOverlayForwardUpper,
-        forestOverlayForwardLower: out.forestOverlayForwardLower,
+      forestOverlayForwardMid: out.forestOverlayForwardMid,
+      forestOverlayForwardUpper: out.forestOverlayForwardUpper,
+      forestOverlayForwardLower: out.forestOverlayForwardLower,
 
-        forestZTruth: out.forestZTruth,
-        forestZLive: out.forestZLive,
-        nowPoint: out.nowPoint,
+      // 4 kleuren (mid)
+      forestOverlayForwardMidW1: out.forestOverlayForwardMidW1,
+      forestOverlayForwardMidW2: out.forestOverlayForwardMidW2,
+      forestOverlayForwardMidW3: out.forestOverlayForwardMidW3,
+      forestOverlayForwardMidW4: out.forestOverlayForwardMidW4,
 
-        directionNow: out.directionNow,
-        confidenceNow: out.confidenceNow,
-        reasonNow: out.reasonNow,
+      forestZTruth: out.forestZTruth,
+      forestZLive: out.forestZLive,
+      nowPoint: out.nowPoint,
 
-        bandsNow: out.bandsNow,
-        freezeNow: out.freezeNow,
-        regimeLabel: out.regimeLabel
-      })
-    );
+      bandsNow: out.bandsNow,
+      freezeNow: out.freezeNow,
+      regimeLabel: out.regimeLabel,
+
+      biggestChance: out.biggestChance,
+      confidence: out.confidence,
+      adxNow: out.adxNow,
+      weeklyBias: out.weeklyBias
+    }));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
