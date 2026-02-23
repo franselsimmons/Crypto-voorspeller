@@ -20,9 +20,37 @@ function makeChart(el, { height }) {
   });
 }
 
-function lastValue(arr){
-  if (!arr || !arr.length) return null;
-  return arr[arr.length - 1]?.value ?? null;
+function last(arr){
+  return Array.isArray(arr) && arr.length ? arr[arr.length - 1] : null;
+}
+
+function buildZForwardFromTruth(zTruthSeries, weeksForward = 4){
+  // zTruthSeries: [{time, value}, ...]
+  const n = zTruthSeries?.length || 0;
+  if (n < 6) return [];
+
+  const p0 = zTruthSeries[n - 1];
+  const p1 = zTruthSeries[n - 2];
+  const p2 = zTruthSeries[n - 3];
+  if (!p0 || !p1 || !p2) return [];
+
+  const lastZ = p0.value;
+  const slope = (p0.value - p2.value) / 2; // per week gemiddeld (ruw)
+  const slopeCap = 0.6;
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+  const slopeCapped = clamp(slope, -slopeCap, slopeCap);
+
+  const damp = 1 - Math.min(Math.abs(lastZ) / 3, 1);
+  const step = slopeCapped * (0.35 + 0.65 * damp);
+
+  const weekSec = 7 * 24 * 60 * 60;
+  const out = [{ time: p0.time, value: p0.value }];
+
+  for (let k = 1; k <= weeksForward; k++) {
+    const zF = clamp(lastZ + step * k, -2.5, 2.5);
+    out.push({ time: p0.time + weekSec * k, value: zF });
+  }
+  return out;
 }
 
 async function init(){
@@ -44,25 +72,42 @@ async function init(){
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
+  // Truth overlay (VERLEDEN) — blauw solid
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false
+    priceLineVisible: false,
+    color: "#2aa1ff"
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
+  // Live overlay (NU preview) — lichtblauw dashed
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    color: "#7fc8ff"
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
+  // Forward (TOEKOMST hint) — grijs/wit dashed dun
   const forestFwd = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    color: "#cfd3da"
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
+
+  // NU marker op prijs-forest: laatste truth punt
+  const lastTruthOverlay = last(data.forestOverlayTruth);
+  if (lastTruthOverlay){
+    forestTruth.setMarkers([{
+      time: lastTruthOverlay.time,
+      position: "inBar",
+      shape: "circle",
+      text: "NOW"
+    }]);
+  }
 
   priceChart.timeScale().fitContent();
 
@@ -71,47 +116,46 @@ async function init(){
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
   forestChart.priceScale("right").applyOptions({
-    autoScale: false,
+    autoScale: true,
     scaleMargins: { top: 0.2, bottom: 0.2 }
   });
 
+  // z truth — blauw solid
   const zTruth = forestChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false
+    priceLineVisible: false,
+    color: "#2aa1ff"
   });
   zTruth.setData(data.forestZTruth || []);
 
+  // z live — lichtblauw dashed
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    color: "#7fc8ff"
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // ✅ NU-MARKERING in Z-chart (horizontale lijn op huidige waarde)
-  // Als live bestaat gebruiken we live, anders truth.
-  const zNow = lastValue((data.forestZLive && data.forestZLive.length) ? data.forestZLive : data.forestZTruth);
-  if (zNow != null) {
-    // maak een extra serie die alleen een priceLine toont
-    const nowLine = forestChart.addLineSeries({
-      lineWidth: 1,
-      priceLineVisible: true,
-      lastValueVisible: false,
-      lineVisible: false // we willen geen extra lijn door de chart, alleen de priceLine
-    });
+  // z forward (4 weken) — grijs dashed
+  const zFwd = forestChart.addLineSeries({
+    lineWidth: 1,
+    priceLineVisible: false,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    color: "#cfd3da"
+  });
+  const zForwardSeries = buildZForwardFromTruth(data.forestZTruth || [], 4);
+  if (zForwardSeries.length) zFwd.setData(zForwardSeries);
 
-    // priceLine opties (tekst + stijl)
-    nowLine.applyOptions({
-      priceLineVisible: true,
-      priceLineWidth: 1,
-      priceLineStyle: LightweightCharts.LineStyle.Dashed,
-      priceLineSource: 0,
-      title: `NOW Z`
-    });
-
-    // truc: zet 1 datapunt (mag op laatste candle time), zodat de chart weet dat deze serie “bestaat”
-    const lastT = (data.forestZTruth && data.forestZTruth.length) ? data.forestZTruth[data.forestZTruth.length - 1].time : null;
-    if (lastT != null) nowLine.setData([{ time: lastT, value: zNow }]);
+  // NU marker op z-score: laatste truth punt
+  const lastZ = last(data.forestZTruth);
+  if (lastZ){
+    zTruth.setMarkers([{
+      time: lastZ.time,
+      position: "inBar",
+      shape: "circle",
+      text: "NOW Z"
+    }]);
   }
 
   forestChart.timeScale().fitContent();
