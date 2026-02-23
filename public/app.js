@@ -41,22 +41,28 @@ async function init(){
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
+  // Truth overlay (SOLID, duidelijk)
   const forestTruth = priceChart.addLineSeries({
-    lineWidth: 2,
-    priceLineVisible: false
+    lineWidth: 3,
+    priceLineVisible: false,
+    lastValueVisible: true
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
+  // Live overlay (DASHED)
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
+    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
+  // Forward (DASHED, iets dikker zodat je hem echt ziet)
   const forestFwd = priceChart.addLineSeries({
-    lineWidth: 1,
+    lineWidth: 2,
     priceLineVisible: false,
+    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
@@ -74,13 +80,15 @@ async function init(){
 
   const zTruth = forestChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false
+    priceLineVisible: false,
+    lastValueVisible: true
   });
   zTruth.setData(data.forestZTruth || []);
 
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
+    lastValueVisible: false,
     lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
