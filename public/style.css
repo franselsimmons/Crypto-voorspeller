@@ -9,54 +9,68 @@ html, body {
 .top {
   padding: 10px 12px;
   display: flex;
-  gap: 12px;
-  align-items: center;
+  flex-direction: column;
+  gap: 10px;
   border-bottom: 1px solid #222;
 }
 
-#statusPill {
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pill {
   font-weight: 800;
   letter-spacing: 0.2px;
 }
 
 .meta { opacity: .8; }
 
-.controls{
+.controls {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.label {
+  opacity: .8;
+  font-weight: 700;
+}
+
+.btn {
+  border: 1px solid #2a2a2a;
+  background: #111827;
+  color: #d6d6d6;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 800;
+}
+
+.btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.bigChance {
   padding: 10px 12px;
-  border-bottom: 1px solid #222;
-  display:flex;
-  flex-direction:column;
-  gap:10px;
-}
-
-.controls .row{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  flex-wrap:wrap;
-}
-
-.controls .label{
-  opacity:.85;
-  width:60px;
-}
-
-.btn{
-  background:#161b22;
-  color:#d6d6d6;
-  border:1px solid #2a2f3a;
-  padding:8px 12px;
-  border-radius:10px;
-  font-weight:700;
-}
-
-.btn.active{
-  background:#2b6fff;
-  border-color:#2b6fff;
-  color:#fff;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  font-weight: 900;
 }
 
 .wrap {
+  height: calc(100% - 140px);
   display: flex;
   flex-direction: column;
 }
@@ -74,12 +88,14 @@ html, body {
 
 .chart {
   width: 100%;
-  height: 380px;
+  height: 340px;
+
+  /* ✅ iOS pinch/zoom fix */
+  touch-action: none;
+  overscroll-behavior: contain;
 }
 
-.chart.small {
-  height: 240px;
-}
+.chart.small { height: 220px; }
 
 pre#debug {
   margin: 0;
