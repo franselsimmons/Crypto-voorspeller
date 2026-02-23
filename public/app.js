@@ -1,5 +1,4 @@
 function $(id){ return document.getElementById(id); }
-
 function setPill(text){ $("statusPill").textContent = text; }
 
 async function loadData(){
@@ -28,27 +27,26 @@ async function init(){
   $("meta").textContent =
     `Source: ${data.source} • TF: ${data.interval} • Truth weeks: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"}`;
 
-  // DEBUG onderin (handig)
   $("debug").textContent = JSON.stringify({
+    regimeNow: data.regimeNow,
+    freezeNow: data.freezeNow,
     bandsNow: data.bandsNow,
-    freezeNow: data.freezeNow
+    structureNow: data.structureNow
   }, null, 2);
 
-  // ---------------- PRICE CHART ----------------
+  // -------- PRICE CHART --------
   const priceEl = $("priceChart");
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
   const candles = priceChart.addCandlestickSeries();
   candles.setData(data.candles);
 
-  // Truth overlay (solid)
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
-  // Live overlay (dashed)
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
@@ -56,7 +54,6 @@ async function init(){
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
-  // Forward (dashed thin)
   const forestFwd = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
@@ -66,24 +63,21 @@ async function init(){
 
   priceChart.timeScale().fitContent();
 
-  // ---------------- FOREST Z CHART ----------------
+  // -------- Z CHART --------
   const forestEl = $("forestChart");
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
-  // vaste schaal -3..+3
   forestChart.priceScale("right").applyOptions({
     autoScale: false,
     scaleMargins: { top: 0.2, bottom: 0.2 }
   });
 
-  // z truth
   const zTruth = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false
   });
   zTruth.setData(data.forestZTruth || []);
 
-  // z live preview
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
@@ -91,12 +85,10 @@ async function init(){
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // “forward” z tekenen als simpele 4 punten uit overlay forward (we reconstrueren z niet; paneel is truth/live genoeg)
   forestChart.timeScale().fitContent();
 
   setPill(data.regimeLabel);
 
-  // resize
   window.addEventListener("resize", () => {
     priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
     forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
@@ -105,5 +97,6 @@ async function init(){
 
 init().catch(err => {
   console.error(err);
-  document.body.innerHTML = `<pre style="color:#ff6666;padding:12px">${String(err?.message || err)}</pre>`;
+  document.body.innerHTML =
+    `<pre style="color:#ff6666;padding:12px">${String(err?.message || err)}</pre>`;
 });
