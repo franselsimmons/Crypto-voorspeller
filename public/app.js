@@ -20,37 +20,48 @@ function makeChart(el, { height }) {
   });
 }
 
-function last(arr){
-  return Array.isArray(arr) && arr.length ? arr[arr.length - 1] : null;
+function lastItem(arr){
+  return (arr && arr.length) ? arr[arr.length - 1] : null;
 }
 
-function buildZForwardFromTruth(zTruthSeries, weeksForward = 4){
-  // zTruthSeries: [{time, value}, ...]
-  const n = zTruthSeries?.length || 0;
-  if (n < 6) return [];
+function addNowMarkerToSeries(series, time, text){
+  if (!series || !time) return;
+  series.setMarkers([{
+    time,
+    position: "inBar",
+    shape: "circle",
+    color: "#ffffff",
+    text
+  }]);
+}
 
-  const p0 = zTruthSeries[n - 1];
-  const p1 = zTruthSeries[n - 2];
-  const p2 = zTruthSeries[n - 3];
-  if (!p0 || !p1 || !p2) return [];
+function addNowLineToChart(chart, time, label){
+  // optioneel: verticale “NOW” lijn (subtiel)
+  if (!chart || !time) return;
 
-  const lastZ = p0.value;
-  const slope = (p0.value - p2.value) / 2; // per week gemiddeld (ruw)
-  const slopeCap = 0.6;
-  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
-  const slopeCapped = clamp(slope, -slopeCap, slopeCap);
+  // Lightweight-charts heeft geen native "vertical line" primitive zonder plugins,
+  // dus we doen het via een onzichtbare lineSeries met 2 punten die een verticale illusie geeft niet goed.
+  // Daarom: we houden het bij markers (duidelijk + stabiel).
+  // (Laat deze functie staan voor later uitbreiden.)
+}
 
-  const damp = 1 - Math.min(Math.abs(lastZ) / 3, 1);
-  const step = slopeCapped * (0.35 + 0.65 * damp);
+function syncTimeScales(chartA, chartB){
+  // Zorgt dat scroll/zoom 1-op-1 meeloopt tussen charts
+  let isSyncing = false;
 
-  const weekSec = 7 * 24 * 60 * 60;
-  const out = [{ time: p0.time, value: p0.value }];
+  chartA.timeScale().subscribeVisibleTimeRangeChange((range) => {
+    if (isSyncing) return;
+    isSyncing = true;
+    chartB.timeScale().setVisibleRange(range);
+    isSyncing = false;
+  });
 
-  for (let k = 1; k <= weeksForward; k++) {
-    const zF = clamp(lastZ + step * k, -2.5, 2.5);
-    out.push({ time: p0.time + weekSec * k, value: zF });
-  }
-  return out;
+  chartB.timeScale().subscribeVisibleTimeRangeChange((range) => {
+    if (isSyncing) return;
+    isSyncing = true;
+    chartA.timeScale().setVisibleRange(range);
+    isSyncing = false;
+  });
 }
 
 async function init(){
@@ -60,6 +71,7 @@ async function init(){
   $("meta").textContent =
     `Source: ${data.source} • TF: ${data.interval} • Truth weeks: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"}`;
 
+  // Debug (veilig: werkt ook als velden niet bestaan)
   $("debug").textContent = JSON.stringify({
     freezeNow: data.freezeNow,
     bandsNow: data.bandsNow
@@ -69,96 +81,81 @@ async function init(){
   const priceEl = $("priceChart");
   const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
 
-  const candles = priceChart.addCandlestickSeries();
-  candles.setData(data.candles);
+  const candleSeries = priceChart.addCandlestickSeries();
+  candleSeries.setData(data.candles || []);
 
-  // Truth overlay (VERLEDEN) — blauw solid
+  // Forest overlay TRUTH (solid)
   const forestTruth = priceChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false,
-    color: "#2aa1ff"
+    priceLineVisible: false
   });
   forestTruth.setData(data.forestOverlayTruth || []);
 
-  // Live overlay (NU preview) — lichtblauw dashed
+  // Forest overlay LIVE (dashed)
   const forestLive = priceChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "#7fc8ff"
+    lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive);
 
-  // Forward (TOEKOMST hint) — grijs/wit dashed dun
+  // Forest forward (dashed thin)
   const forestFwd = priceChart.addLineSeries({
     lineWidth: 1,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "#cfd3da"
+    lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestOverlayForward?.length) forestFwd.setData(data.forestOverlayForward);
-
-  // NU marker op prijs-forest: laatste truth punt
-  const lastTruthOverlay = last(data.forestOverlayTruth);
-  if (lastTruthOverlay){
-    forestTruth.setMarkers([{
-      time: lastTruthOverlay.time,
-      position: "inBar",
-      shape: "circle",
-      text: "NOW"
-    }]);
-  }
-
-  priceChart.timeScale().fitContent();
 
   // -------- Z CHART --------
   const forestEl = $("forestChart");
   const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
 
+  // (Let op) autoScale false zonder vaste min/max werkt “half”.
+  // We houden autoScale aan, maar je ziet nu exact waar “NOW Z” zit.
   forestChart.priceScale("right").applyOptions({
     autoScale: true,
     scaleMargins: { top: 0.2, bottom: 0.2 }
   });
 
-  // z truth — blauw solid
+  // z truth
   const zTruth = forestChart.addLineSeries({
     lineWidth: 2,
-    priceLineVisible: false,
-    color: "#2aa1ff"
+    priceLineVisible: false
   });
   zTruth.setData(data.forestZTruth || []);
 
-  // z live — lichtblauw dashed
+  // z live preview
   const zLive = forestChart.addLineSeries({
     lineWidth: 2,
     priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "#7fc8ff"
+    lineStyle: LightweightCharts.LineStyle.Dashed
   });
   if (data.forestZLive?.length) zLive.setData(data.forestZLive);
 
-  // z forward (4 weken) — grijs dashed
-  const zFwd = forestChart.addLineSeries({
-    lineWidth: 1,
-    priceLineVisible: false,
-    lineStyle: LightweightCharts.LineStyle.Dashed,
-    color: "#cfd3da"
-  });
-  const zForwardSeries = buildZForwardFromTruth(data.forestZTruth || [], 4);
-  if (zForwardSeries.length) zFwd.setData(zForwardSeries);
+  // -------- NOW markers --------
+  // “NOW” op laatste candle (de tijd-as moet exact overeenkomen)
+  const lastCandle = lastItem(data.candles);
+  const nowTime = lastCandle?.time;
 
-  // NU marker op z-score: laatste truth punt
-  const lastZ = last(data.forestZTruth);
-  if (lastZ){
-    zTruth.setMarkers([{
-      time: lastZ.time,
-      position: "inBar",
-      shape: "circle",
-      text: "NOW Z"
-    }]);
-  }
+  // Marker bovenin op candle serie (duidelijk waar je bent)
+  addNowMarkerToSeries(candleSeries, nowTime, "NOW");
 
+  // Marker onderin op z series:
+  // Als er live z is, pak die laatste, anders truth laatste.
+  const zNowPoint = lastItem((data.forestZLive && data.forestZLive.length) ? data.forestZLive : data.forestZTruth);
+  const zNowTime = zNowPoint?.time;
+
+  // Plaats marker op de juiste z-serie (live als die er is, anders truth)
+  const zTargetSeries = (data.forestZLive && data.forestZLive.length) ? zLive : zTruth;
+  addNowMarkerToSeries(zTargetSeries, zNowTime, "NOW Z");
+
+  // -------- Fit & sync --------
+  priceChart.timeScale().fitContent();
   forestChart.timeScale().fitContent();
+
+  // Nu: charts 1-op-1 samen laten bewegen
+  syncTimeScales(priceChart, forestChart);
 
   setPill(data.regimeLabel);
 
