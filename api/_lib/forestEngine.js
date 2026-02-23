@@ -1,7 +1,33 @@
 // api/_lib/forestEngine.js
+// Daily + Weekly, no repaint on TRUTH.
+// Forward = hint (90 bars) + fan (upper/lower).
+
 import { ema, std, atr, percentileFromWindow, clamp } from "./indicators.js";
 
-function computeForestZ(candles, { emaLen = 50, zWin = 208 } = {}) {
+function pickParams(tf) {
+  // Daily is noisy -> longer baseline.
+  if (tf === "1d") {
+    return {
+      emaLen: 200,   // daily trend baseline
+      zWin: 730,     // ~2 jaar daily
+      lookbackBands: 730,
+      atrLen: 14
+    };
+  }
+  // Weekly
+  return {
+    emaLen: 50,
+    zWin: 208,
+    lookbackBands: 208,
+    atrLen: 14
+  };
+}
+
+function intervalSecFromTf(tf) {
+  return tf === "1w" ? 7 * 24 * 60 * 60 : 24 * 60 * 60;
+}
+
+function computeForestZ(candles, { emaLen, zWin, atrLen }) {
   const closes = candles.map(c => c.close);
   const highs  = candles.map(c => c.high);
   const lows   = candles.map(c => c.low);
@@ -9,7 +35,7 @@ function computeForestZ(candles, { emaLen = 50, zWin = 208 } = {}) {
   const emaArr = ema(closes, emaLen);
   const resid  = closes.map((c, i) => (emaArr[i] == null ? null : (c - emaArr[i])));
   const sdArr  = std(resid, zWin);
-  const atrArr = atr(highs, lows, closes, 14);
+  const atrArr = atr(highs, lows, closes, atrLen);
 
   const z = resid.map((r, i) => {
     const sd = sdArr[i];
@@ -17,10 +43,10 @@ function computeForestZ(candles, { emaLen = 50, zWin = 208 } = {}) {
     return r / sd;
   });
 
-  return { closes, emaArr, atrArr, z };
+  return { emaArr, atrArr, z };
 }
 
-function computeBandsAndFreeze(zArr, atrArr, i, lookback = 208) {
+function computeBandsAndFreeze(zArr, atrArr, i, lookback) {
   const zWin = zArr.slice(Math.max(0, i - lookback + 1), i + 1);
   const atrWin = atrArr.slice(Math.max(0, i - lookback + 1), i + 1);
 
@@ -57,15 +83,14 @@ function strengthLabel(zNow) {
 }
 
 function buildOverlayPoints(candles, emaArr, atrArr, zArr, { zCap = 2.5, mult = 1.0 } = {}) {
+  // overlay = EMA + clamp(z)*ATR*mult
   const out = [];
   for (let i = 0; i < candles.length; i++) {
-    const t = candles[i].time;
     const base = emaArr[i];
     const a = atrArr[i];
     const z = zArr[i];
     if (base == null || a == null || z == null) continue;
-    const v = base + clamp(z, -zCap, zCap) * a * mult;
-    out.push({ time: t, value: v });
+    out.push({ time: candles[i].time, value: base + clamp(z, -zCap, zCap) * a * mult });
   }
   return out;
 }
@@ -80,172 +105,129 @@ function buildZSeries(candles, zArr) {
   return out;
 }
 
-function buildForwardFromTruth(truthCandles, truthEma, truthAtr, truthZ, weeksForward = 4) {
+function lastValid(values, startIdx, need = 5) {
+  const arr = [];
+  for (let i = startIdx; i >= 0 && arr.length < need; i--) {
+    if (values[i] != null) arr.push(values[i]);
+  }
+  return arr;
+}
+
+function buildForwardFanFromTruth({ truthCandles, emaArr, atrArr, zArr, tf, horizonBars }) {
+  // Mid line = projected Z (damped & capped), then converted to overlay price using last EMA/ATR.
+  // Fan = uncertainty grows with sqrt(k). (very important for "quality")
+
   const n = truthCandles.length;
-  if (n < 10) return [];
+  if (n < 20) return { mid: [], upper: [], lower: [] };
 
   const lastIdx = n - 1;
   const lastTime = truthCandles[lastIdx].time;
-  const lastZ = truthZ[lastIdx];
-  const lastEma = truthEma[lastIdx];
-  const lastAtr = truthAtr[lastIdx];
+  const lastZ = zArr[lastIdx];
+  const lastEma = emaArr[lastIdx];
+  const lastAtr = atrArr[lastIdx];
+  if (lastZ == null || lastEma == null || lastAtr == null) return { mid: [], upper: [], lower: [] };
 
-  if (lastZ == null || lastEma == null || lastAtr == null) return [];
+  // slope from last 5 Z points
+  const zs = lastValid(zArr, lastIdx, 5);
+  if (zs.length < 5) return { mid: [], upper: [], lower: [] };
+  // average slope (per bar)
+  const slope = (zs[0] - zs[4]) / 4;
 
-  const lastZs = [];
-  for (let i = lastIdx; i >= 0 && lastZs.length < 3; i--) {
-    if (truthZ[i] != null) lastZs.push(truthZ[i]);
-  }
-  if (lastZs.length < 3) return [];
-
-  const slope = (lastZs[0] - lastZs[2]) / 2;
-  const slopeCap = 0.6;
+  // safety caps
+  const zCap = 2.5;
+  const slopeCap = tf === "1d" ? 0.18 : 0.60; // daily = smaller steps
   const slopeCapped = clamp(slope, -slopeCap, slopeCap);
 
-  const damp = 1 - Math.min(Math.abs(lastZ) / 3, 1);
+  // damping: extreme z -> push less
+  const damp = 1 - Math.min(Math.abs(lastZ) / 3, 1); // |z|=3 => 0
   const step = slopeCapped * (0.35 + 0.65 * damp);
 
-  const weekSec = 7 * 24 * 60 * 60;
-  const out = [];
+  const dt = intervalSecFromTf(tf);
 
-  const startOverlay = lastEma + clamp(lastZ, -2.5, 2.5) * lastAtr;
-  out.push({ time: lastTime, value: startOverlay });
+  const mid = [];
+  const upper = [];
+  const lower = [];
 
-  for (let k = 1; k <= weeksForward; k++) {
-    const zF = clamp(lastZ + step * k, -2.5, 2.5);
-    const overlay = lastEma + zF * lastAtr;
-    out.push({ time: lastTime + weekSec * k, value: overlay });
+  // start point (connect)
+  const z0 = clamp(lastZ, -zCap, zCap);
+  const base0 = lastEma + z0 * lastAtr;
+  mid.push({ time: lastTime, value: base0 });
+
+  // fan width base
+  // daily: fan grows slower but exists
+  const fanMult = tf === "1d" ? 0.9 : 1.2;
+
+  for (let k = 1; k <= horizonBars; k++) {
+    const zF = clamp(lastZ + step * k, -zCap, zCap);
+    const y = lastEma + zF * lastAtr;
+
+    const t = lastTime + dt * k;
+
+    // uncertainty grows with sqrt(k), reduced by confidence (damp)
+    const width = (lastAtr * fanMult) * Math.sqrt(k) * (0.55 + 0.45 * (1 - damp));
+
+    mid.push({ time: t, value: y });
+    upper.push({ time: t, value: y + width });
+    lower.push({ time: t, value: y - width });
   }
 
-  return out;
+  return { mid, upper, lower };
 }
 
-function last(arr){ return (arr && arr.length) ? arr[arr.length - 1] : null; }
+export function buildForestOverlay({ candlesTruth, candlesWithLive, hasLive, tf = "1d", horizonBars = 90 }) {
+  const p = pickParams(tf);
 
-/**
- * Daily routeplanner:
- * - Anchor = laatste TRUTH weekly punt (tijd + waarde)
- * - Target = 1 week vooruit (weekly forward[1])
- * - We tekenen dagpunten tot target met “max stap” op basis van daily ATR14
- */
-function buildDailyRouteToNextWeek({
-  dailyCandlesTruth,
-  anchorTime,
-  anchorValue,
-  targetTime,
-  targetValue
-}) {
-  if (!dailyCandlesTruth?.length) return [];
-  if (!anchorTime || anchorValue == null || !targetTime || targetValue == null) return [];
-  if (targetTime <= anchorTime) return [];
-
-  // Pak de laatste gesloten daily candle (truth)
-  const dLast = last(dailyCandlesTruth);
-  if (!dLast?.time) return [];
-
-  // Als we al voorbij target zitten: niets
-  if (dLast.time >= targetTime) return [];
-
-  // Daily ATR voor “max stap per dag”
-  const highs = dailyCandlesTruth.map(c => c.high);
-  const lows  = dailyCandlesTruth.map(c => c.low);
-  const closes= dailyCandlesTruth.map(c => c.close);
-  const atrArr = atr(highs, lows, closes, 14);
-  const atrNow = atrArr[atrArr.length - 1];
-  const capPerDay = (atrNow != null) ? (atrNow * 0.85) : null; // simpele rem
-
-  const daySec = 24 * 60 * 60;
-
-  // Start op “vandaag” (laatste daily close tijd), met lineaire positie op de lijn
-  const frac = (dLast.time - anchorTime) / (targetTime - anchorTime);
-  const startValue = anchorValue + (targetValue - anchorValue) * clamp(frac, 0, 1);
-
-  // Hoeveel dagen nog tot target?
-  const daysLeft = Math.max(1, Math.round((targetTime - dLast.time) / daySec));
-
-  const out = [];
-  out.push({ time: dLast.time, value: startValue });
-
-  let prev = startValue;
-  for (let k = 1; k <= daysLeft; k++) {
-    const t = dLast.time + daySec * k;
-    const remaining = Math.max(1, daysLeft - (k - 1));
-    const idealStep = (targetValue - prev) / remaining;
-
-    let step = idealStep;
-    if (capPerDay != null) step = clamp(step, -capPerDay, capPerDay);
-
-    prev = prev + step;
-    out.push({ time: t, value: prev });
-  }
-
-  // Forceer exact eindpunt (target)
-  out[out.length - 1] = { time: targetTime, value: targetValue };
-
-  return out;
-}
-
-export function buildForestOverlay({
-  candlesTruth,
-  candlesWithLive,
-  hasLive,
-  dailyCandlesTruth,
-  dailyCandlesWithLive, // (nu niet nodig, maar laten staan)
-  dailyHasLive
-}) {
-  // TRUTH weekly
-  const t = computeForestZ(candlesTruth);
+  // TRUTH
+  const t = computeForestZ(candlesTruth, p);
   const lastIdxT = candlesTruth.length - 1;
 
   const { bandsNow, freezeNow } = (lastIdxT >= 0)
-    ? computeBandsAndFreeze(t.z, t.atrArr, lastIdxT, 208)
+    ? computeBandsAndFreeze(t.z, t.atrArr, lastIdxT, p.lookbackBands)
     : { bandsNow: {}, freezeNow: false };
 
   const reg = regimeFromZ(t.z[lastIdxT], bandsNow);
-  const label = `${strengthLabel(t.z[lastIdxT])}${reg} (${t.z[lastIdxT] != null ? t.z[lastIdxT].toFixed(2) : "n/a"})`;
+  const zNow = t.z[lastIdxT];
+  const label = `${strengthLabel(zNow)}${reg} (${zNow != null ? zNow.toFixed(2) : "n/a"})`;
 
   const forestOverlayTruth = buildOverlayPoints(candlesTruth, t.emaArr, t.atrArr, t.z);
   const forestZTruth = buildZSeries(candlesTruth, t.z);
 
-  // LIVE weekly preview (optioneel)
+  // LIVE (preview)
   let forestOverlayLive = [];
   let forestZLive = [];
-
   if (hasLive && candlesWithLive?.length) {
-    const l = computeForestZ(candlesWithLive);
+    const l = computeForestZ(candlesWithLive, p);
     forestOverlayLive = buildOverlayPoints(candlesWithLive, l.emaArr, l.atrArr, l.z);
     forestZLive = buildZSeries(candlesWithLive, l.z);
   }
 
-  // Forward weekly hint (4w)
-  const forestOverlayForward = buildForwardFromTruth(candlesTruth, t.emaArr, t.atrArr, t.z, 4);
-
-  // ---- NIEUW: Daily route naar “next weekly target” ----
-  // Anchor = laatste TRUTH overlay punt
-  const anchor = last(forestOverlayTruth);
-  // Target = 1 week vooruit = forestOverlayForward[1]
-  const target = (forestOverlayForward && forestOverlayForward.length >= 2) ? forestOverlayForward[1] : null;
-
-  const dailyRouteToNextWeek = buildDailyRouteToNextWeek({
-    dailyCandlesTruth,
-    anchorTime: anchor?.time,
-    anchorValue: anchor?.value,
-    targetTime: target?.time,
-    targetValue: target?.value
+  // Forward always visible as hint, but still safe + fan
+  const fan = buildForwardFanFromTruth({
+    truthCandles: candlesTruth,
+    emaArr: t.emaArr,
+    atrArr: t.atrArr,
+    zArr: t.z,
+    tf,
+    horizonBars
   });
+
+  // for "bolletje waar we nu staan"
+  const nowPoint = (candlesTruth.length && zNow != null)
+    ? { time: candlesTruth[lastIdxT].time, z: zNow }
+    : null;
 
   return {
     regimeLabel: label,
-
     forestOverlayTruth,
     forestOverlayLive,
-    forestOverlayForward,
 
-    // NIEUW
-    dailyRouteToNextWeek,
+    forestOverlayForwardMid: fan.mid,
+    forestOverlayForwardUpper: fan.upper,
+    forestOverlayForwardLower: fan.lower,
 
     forestZTruth,
     forestZLive,
+    nowPoint,
 
     bandsNow,
     freezeNow
