@@ -1,50 +1,67 @@
+// api/_lib/forestEngine.js
+// Doel:
+// - overlay (truth/live) op prijs
+// - forward voorspeller: mid + upper/lower fan (altijd zichtbaar)
+// - z-score (truth/live)
+// - nowPoint + direction/confidence
+
 import { ema, std, atr, percentileFromWindow, clamp } from "./indicators.js";
 
-function pickParams(tf) {
-  if (tf === "1d") {
-    return { emaLen: 200, zWin: 730, lookbackBands: 730, atrLen: 14 };
-  }
-  return { emaLen: 50, zWin: 208, lookbackBands: 208, atrLen: 14 };
-}
-
-function intervalSecFromTf(tf) {
+function stepSec(tf) {
   return tf === "1w" ? 7 * 24 * 60 * 60 : 24 * 60 * 60;
 }
 
-function computeForestZ(candles, { emaLen, zWin, atrLen }) {
+function safeZWindow(n, desired) {
+  // Kraken 1d kan ~720 candles geven. We willen nooit leeg lopen door te grote windows.
+  const maxOk = Math.max(30, Math.floor(n * 0.5));      // nooit groter dan helft van data
+  return Math.min(desired, maxOk);
+}
+
+function computeCore(candles, tf) {
   const closes = candles.map(c => c.close);
   const highs  = candles.map(c => c.high);
   const lows   = candles.map(c => c.low);
 
+  const n = candles.length;
+  const emaLen = tf === "1w" ? 50 : 55;                 // daily iets trager (minder ruis)
+  const zWinWanted = tf === "1w" ? 208 : 180;           // daily iets korter
+  const zWin = safeZWindow(n, zWinWanted);
+
   const emaArr = ema(closes, emaLen);
   const resid  = closes.map((c, i) => (emaArr[i] == null ? null : (c - emaArr[i])));
   const sdArr  = std(resid, zWin);
-  const atrArr = atr(highs, lows, closes, atrLen);
+  const atrArr = atr(highs, lows, closes, tf === "1w" ? 14 : 21);
 
-  const z = resid.map((r, i) => {
+  const zArr = resid.map((r, i) => {
     const sd = sdArr[i];
     if (r == null || sd == null || sd === 0) return null;
     return r / sd;
   });
 
-  return { emaArr, atrArr, z };
+  return { closes, emaArr, atrArr, zArr, zWin };
 }
 
-function computeBandsAndFreeze(zArr, atrArr, i, lookback) {
+function bands(zArr, atrArr, i, lookback) {
   const zWin = zArr.slice(Math.max(0, i - lookback + 1), i + 1);
-  const atrWin = atrArr.slice(Math.max(0, i - lookback + 1), i + 1);
+  const aWin = atrArr.slice(Math.max(0, i - lookback + 1), i + 1);
 
-  const p35 = percentileFromWindow(zWin, 35);
-  const p65 = percentileFromWindow(zWin, 65);
-  const p20Z = percentileFromWindow(zWin, 20);
-  const p80Z = percentileFromWindow(zWin, 80);
+  const p35   = percentileFromWindow(zWin, 35);
+  const p65   = percentileFromWindow(zWin, 65);
+  const p20Z  = percentileFromWindow(zWin, 20);
+  const p80Z  = percentileFromWindow(zWin, 80);
 
-  const p20ATR = percentileFromWindow(atrWin, 20);
+  const p20ATR = percentileFromWindow(aWin, 20);
   const atrNow = atrArr[i];
-
   const freeze = (p20ATR != null && atrNow != null) ? (atrNow < p20ATR) : false;
 
   return { bandsNow: { p35, p65, p20Z, p80Z, p20ATR }, freezeNow: freeze };
+}
+
+function regimeFromZ(zNow, b) {
+  if (zNow == null || b.p35 == null || b.p65 == null) return "NEUTRAL";
+  if (zNow > b.p65) return "BULL";
+  if (zNow < b.p35) return "BEAR";
+  return "NEUTRAL";
 }
 
 function strengthLabel(zNow) {
@@ -55,19 +72,21 @@ function strengthLabel(zNow) {
   return "";
 }
 
-function buildOverlayPoints(candles, emaArr, atrArr, zArr, { zCap = 2.5 } = {}) {
+function overlayPoints(candles, emaArr, atrArr, zArr, tf) {
+  const zCap = tf === "1w" ? 2.5 : 2.2;
+  const mult = tf === "1w" ? 1.0 : 0.85; // daily: iets minder “heftig”
+
   const out = [];
   for (let i = 0; i < candles.length; i++) {
-    const base = emaArr[i];
-    const a = atrArr[i];
-    const z = zArr[i];
+    const base = emaArr[i], a = atrArr[i], z = zArr[i];
     if (base == null || a == null || z == null) continue;
-    out.push({ time: candles[i].time, value: base + clamp(z, -zCap, zCap) * a });
+    const v = base + clamp(z, -zCap, zCap) * a * mult;
+    out.push({ time: candles[i].time, value: v });
   }
   return out;
 }
 
-function buildZSeries(candles, zArr) {
+function zSeries(candles, zArr) {
   const out = [];
   for (let i = 0; i < candles.length; i++) {
     const z = zArr[i];
@@ -77,155 +96,170 @@ function buildZSeries(candles, zArr) {
   return out;
 }
 
-function lastValid(values, startIdx, need = 5) {
-  const arr = [];
-  for (let i = startIdx; i >= 0 && arr.length < need; i--) {
-    if (values[i] != null) arr.push(values[i]);
-  }
-  return arr;
+function lastValidIndex(arr) {
+  for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return i;
+  return -1;
 }
 
-/**
- * Altijd een richting kiezen:
- * - UP / DOWN / NEUTRAL (maar als NEUTRAL, dan kiezen we alsnog UP of DOWN als "grootste kans")
- * Confidence: high / medium / low
- *
- * Idee in Jip-en-Janneke taal:
- * - Kijk waar de z-score nu staat t.o.v. je bandjes (p35/p65) en hoe hard hij beweegt (slope).
- * - Als hij duidelijk boven p65 zit: UP (hoog vertrouwen)
- * - duidelijk onder p35: DOWN (hoog vertrouwen)
- * - anders: kijk naar de slope: stijgt = UP, daalt = DOWN (laag vertrouwen)
- */
-function decideDirection({ zNow, slope, bandsNow, freezeNow }) {
-  const { p35, p65 } = bandsNow || {};
-  if (zNow == null || p35 == null || p65 == null) {
-    return { direction: "NEUTRAL", confidence: "low", reason: "not_enough_data" };
-  }
+function slopeFromLastZ(zArr, idx) {
+  // simpele, stabiele slope op de laatste 5 geldige punten
+  const pts = [];
+  for (let i = idx; i >= 0 && pts.length < 5; i--) if (zArr[i] != null) pts.push(zArr[i]);
+  if (pts.length < 3) return 0;
 
-  if (freezeNow) {
-    // in freeze is markt vaak “stil”: we kiezen wel een kant, maar confidence blijft laag
-    const dir = (slope >= 0) ? "UP" : "DOWN";
-    return { direction: dir, confidence: "low", reason: "freeze_low_vol" };
-  }
-
-  if (zNow > p65) return { direction: "UP", confidence: "high", reason: "z_above_p65" };
-  if (zNow < p35) return { direction: "DOWN", confidence: "high", reason: "z_below_p35" };
-
-  // middengebied: we kiezen de kant van de slope
-  const absSlope = Math.abs(slope || 0);
-  const conf = absSlope > 0.08 ? "medium" : "low";
-  const dir = (slope >= 0) ? "UP" : "DOWN";
-  return { direction: dir, confidence: conf, reason: "neutral_slope_vote" };
+  // gemiddelde “trend” (laatste - oudste) / (n-1)
+  const raw = (pts[0] - pts[pts.length - 1]) / (pts.length - 1);
+  return clamp(raw, -0.25, 0.25); // daily/week: cap zodat het niet gek wordt
 }
 
-function buildForwardFanFromTruth({ truthCandles, emaArr, atrArr, zArr, tf, horizonBars, decision }) {
-  const n = truthCandles.length;
-  if (n < 20) return { mid: [], upper: [], lower: [] };
+function confidenceBucket(tf, zNow, freezeNow) {
+  if (freezeNow) return "low";
+  const a = Math.abs(zNow ?? 0);
 
-  const lastIdx = n - 1;
-  const lastTime = truthCandles[lastIdx].time;
-  const lastZ = zArr[lastIdx];
-  const lastEma = emaArr[lastIdx];
-  const lastAtr = atrArr[lastIdx];
-  if (lastZ == null || lastEma == null || lastAtr == null) return { mid: [], upper: [], lower: [] };
+  // daily strenger (meer ruis) -> sneller low/medium
+  if (tf === "1d") {
+    if (a >= 2.0) return "high";
+    if (a >= 1.2) return "medium";
+    return "low";
+  }
 
-  const zs = lastValid(zArr, lastIdx, 5);
-  if (zs.length < 5) return { mid: [], upper: [], lower: [] };
+  // weekly
+  if (a >= 1.8) return "high";
+  if (a >= 1.1) return "medium";
+  return "low";
+}
 
-  const slopeRaw = (zs[0] - zs[4]) / 4;
+function buildForwardFan({ tf, horizonBars, lastTime, lastOverlay, lastAtr, zNow, slope, conf }) {
+  const sec = stepSec(tf);
 
-  const zCap = 2.5;
-  const dt = intervalSecFromTf(tf);
+  // forward mid: we laten z langzaam “doorrollen” met slope + demping
+  // en zetten dat om naar overlay-ruimte door ATR.
+  const zCap = tf === "1w" ? 2.5 : 2.2;
 
-  // 🔒 Cruciaal: bij lage confidence -> bijna vlak (geen nep-voorspelling)
-  const slopeCap = (tf === "1d") ? 0.18 : 0.60;
-  const baseStep = clamp(slopeRaw, -slopeCap, slopeCap);
+  // demping: bij extreme z minder doorduwen
+  const damp = 1 - Math.min(Math.abs(zNow) / 3, 1); // |z|=3 => 0
+  const step = slope * (0.35 + 0.65 * damp);
 
-  let confidenceFactor = 0.15; // low
-  if (decision.confidence === "medium") confidenceFactor = 0.35;
-  if (decision.confidence === "high") confidenceFactor = 0.70;
-
-  // En als direction DOWN maar step positief (of omgekeerd), duwen we hem zachtjes richting gekozen kant
-  const dirSign = decision.direction === "DOWN" ? -1 : 1;
-  const step = (Math.sign(baseStep) === dirSign ? baseStep : Math.abs(baseStep) * dirSign) * confidenceFactor;
+  // band breedte: bij low confidence breder (eerlijker)
+  const baseBand = conf === "high" ? 1.2 : conf === "medium" ? 1.8 : 2.4; // * ATR
+  const fanTighten = conf === "high" ? 0.65 : conf === "medium" ? 0.85 : 1.0;
 
   const mid = [];
   const upper = [];
   const lower = [];
 
-  // start
-  const z0 = clamp(lastZ, -zCap, zCap);
-  const y0 = lastEma + z0 * lastAtr;
-  mid.push({ time: lastTime, value: y0 });
-
-  // fan width groeit met sqrt(k), maar bij low confidence groeit hij sneller (eerlijk!)
-  const fanBase = (tf === "1d") ? 0.9 : 1.2;
-  const uncertaintyBoost = decision.confidence === "high" ? 1.0 : (decision.confidence === "medium" ? 1.25 : 1.6);
+  // startpunt (nu)
+  mid.push({ time: lastTime, value: lastOverlay });
+  upper.push({ time: lastTime, value: lastOverlay + baseBand * lastAtr });
+  lower.push({ time: lastTime, value: lastOverlay - baseBand * lastAtr });
 
   for (let k = 1; k <= horizonBars; k++) {
-    const zF = clamp(lastZ + step * k, -zCap, zCap);
-    const y = lastEma + zF * lastAtr;
-    const t = lastTime + dt * k;
+    const zF = clamp(zNow + step * k, -zCap, zCap);
+    const v = lastOverlay + (zF - zNow) * lastAtr; // delta in z * ATR
 
-    const width = (lastAtr * fanBase) * Math.sqrt(k) * uncertaintyBoost;
+    const widen = 1 + (k / horizonBars) * 0.9 * fanTighten; // loopt langzaam breder naar de toekomst
+    const band = baseBand * lastAtr * widen;
 
-    mid.push({ time: t, value: y });
-    upper.push({ time: t, value: y + width });
-    lower.push({ time: t, value: y - width });
+    const t = lastTime + sec * k;
+    mid.push({ time: t, value: v });
+    upper.push({ time: t, value: v + band });
+    lower.push({ time: t, value: v - band });
   }
 
   return { mid, upper, lower };
 }
 
-export function buildForestOverlay({ candlesTruth, candlesWithLive, hasLive, tf = "1d", horizonBars = 90 }) {
-  const p = pickParams(tf);
-
-  // TRUTH
-  const t = computeForestZ(candlesTruth, p);
-  const lastIdxT = candlesTruth.length - 1;
-
-  const { bandsNow, freezeNow } = (lastIdxT >= 0)
-    ? computeBandsAndFreeze(t.z, t.atrArr, lastIdxT, p.lookbackBands)
-    : { bandsNow: {}, freezeNow: false };
-
-  const zNow = t.z[lastIdxT];
-
-  const zs = lastValid(t.z, lastIdxT, 3);
-  const slope = (zs.length >= 3) ? (zs[0] - zs[2]) / 2 : 0;
-
-  const decision = decideDirection({ zNow, slope, bandsNow, freezeNow });
-
-  const label = `${strengthLabel(zNow)}${decision.direction} (${zNow != null ? zNow.toFixed(2) : "n/a"}) • ${decision.confidence}`;
-
-  const forestOverlayTruth = buildOverlayPoints(candlesTruth, t.emaArr, t.atrArr, t.z);
-  const forestZTruth = buildZSeries(candlesTruth, t.z);
-
-  // LIVE
-  let forestOverlayLive = [];
-  let forestZLive = [];
-  if (hasLive && candlesWithLive?.length) {
-    const l = computeForestZ(candlesWithLive, p);
-    forestOverlayLive = buildOverlayPoints(candlesWithLive, l.emaArr, l.atrArr, l.z);
-    forestZLive = buildZSeries(candlesWithLive, l.z);
+export function buildForestOverlay({ candlesTruth, candlesWithLive, hasLive, tf = "1w", horizonBars = 90 }) {
+  // -------- TRUTH CORE --------
+  const t = computeCore(candlesTruth, tf);
+  const li = lastValidIndex(t.zArr);
+  if (li < 0) {
+    // ultra-fallback: stuur iets terug zodat UI niet leeg is
+    return {
+      regimeLabel: "NO DATA",
+      forestOverlayTruth: [],
+      forestOverlayLive: [],
+      forestOverlayForwardMid: [],
+      forestOverlayForwardUpper: [],
+      forestOverlayForwardLower: [],
+      forestZTruth: [],
+      forestZLive: [],
+      nowPoint: null,
+      directionNow: "NEUTRAL",
+      confidenceNow: "low",
+      reasonNow: "Insufficient data",
+      bandsNow: {},
+      freezeNow: false
+    };
   }
 
-  // FORWARD always
-  const fan = buildForwardFanFromTruth({
-    truthCandles: candlesTruth,
-    emaArr: t.emaArr,
-    atrArr: t.atrArr,
-    zArr: t.z,
+  const lookback = Math.max(60, Math.min(208, candlesTruth.length - 1));
+  const { bandsNow, freezeNow } = bands(t.zArr, t.atrArr, li, lookback);
+
+  const reg = regimeFromZ(t.zArr[li], bandsNow);
+  const zNow = t.zArr[li];
+  const conf = confidenceBucket(tf, zNow, freezeNow);
+
+  // overlay truth + z truth
+  const forestOverlayTruth = overlayPoints(candlesTruth, t.emaArr, t.atrArr, t.zArr, tf);
+  const forestZTruth = zSeries(candlesTruth, t.zArr);
+
+  // -------- LIVE (optioneel) --------
+  let forestOverlayLive = [];
+  let forestZLive = [];
+
+  if (hasLive && candlesWithLive?.length) {
+    const l = computeCore(candlesWithLive, tf);
+    forestOverlayLive = overlayPoints(candlesWithLive, l.emaArr, l.atrArr, l.zArr, tf);
+    forestZLive = zSeries(candlesWithLive, l.zArr);
+  }
+
+  // -------- NOW POINT --------
+  const lastCandle = candlesTruth[li];
+  const lastTime = lastCandle.time;
+
+  // Pak overlay “nu” uit de truth overlay (laatste punt)
+  const lastOverlayPoint = forestOverlayTruth[forestOverlayTruth.length - 1];
+  const lastOverlay = lastOverlayPoint?.value ?? lastCandle.close;
+
+  const lastAtr = t.atrArr[li] ?? 0;
+  const slope = slopeFromLastZ(t.zArr, li);
+
+  // Richting = sign van slope (maar bij freeze -> neutral)
+  let directionNow = "NEUTRAL";
+  if (!freezeNow) {
+    if (slope > 0.02) directionNow = "UP";
+    else if (slope < -0.02) directionNow = "DOWN";
+    else directionNow = "NEUTRAL";
+  }
+
+  // Forward fan altijd bouwen (ook in neutral), anders zie je “niks”
+  const fan = buildForwardFan({
     tf,
     horizonBars,
-    decision
+    lastTime,
+    lastOverlay,
+    lastAtr: lastAtr || Math.max(1, lastCandle.close * 0.01), // fallback band
+    zNow: zNow ?? 0,
+    slope,
+    conf
   });
 
-  const nowPoint = (candlesTruth.length && zNow != null)
-    ? { time: candlesTruth[lastIdxT].time, z: zNow }
-    : null;
+  const regimeLabel = `${strengthLabel(zNow)}${reg} (${zNow != null ? zNow.toFixed(2) : "n/a"})`;
+
+  const nowPoint = {
+    time: lastTime,
+    price: lastCandle.close,
+    z: zNow
+  };
+
+  const reasonNow =
+    freezeNow
+      ? "Low volatility (freeze)"
+      : `Slope=${slope.toFixed(3)} • z=${(zNow ?? 0).toFixed(2)}`;
 
   return {
-    regimeLabel: label,
+    regimeLabel,
 
     forestOverlayTruth,
     forestOverlayLive,
@@ -236,14 +270,13 @@ export function buildForestOverlay({ candlesTruth, candlesWithLive, hasLive, tf 
 
     forestZTruth,
     forestZLive,
+
     nowPoint,
+    directionNow,
+    confidenceNow: conf,
+    reasonNow,
 
     bandsNow,
-    freezeNow,
-
-    // extra info voor UI
-    directionNow: decision.direction,
-    confidenceNow: decision.confidence,
-    reasonNow: decision.reason
+    freezeNow
   };
 }
