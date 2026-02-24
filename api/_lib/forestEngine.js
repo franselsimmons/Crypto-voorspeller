@@ -379,35 +379,35 @@ export function buildForestOverlay({
     }
   }
 
+  // ✅ ZET zNow HIER (voor funding fallback)
+  const zNow = t.z[lastIdxT];
+
   const priceNow = isNum(closeNow) ? closeNow : null;
   const liq = liqInfluence(priceNow, liqLevels);
 
   let fundingRate = null;
-let fundingBias = 0;
-let fundingFlip = false;
+  let fundingBias = 0;
+  let fundingFlip = false;
 
-// 1️⃣ echte funding indien beschikbaar
-if (isNum(funding?.fundingRate)) {
-  fundingRate = funding.fundingRate;
-  fundingBias = isNum(funding?.fundingBias) ? funding.fundingBias : 0;
-  fundingFlip = !!funding?.fundingFlip;
-}
-
-// 2️⃣ fallback: synthetic funding pressure
-else {
-  // als prijs ver boven KAMA zit + hoge relVol => long crowding
-  if (isNum(zNow) && isNum(relVolNow)) {
-    if (zNow > 1.2 && relVolNow > 1.1) {
-      fundingBias = -0.0015; // contrarian bear
-      fundingFlip = true;
-    }
-    if (zNow < -1.2 && relVolNow > 1.1) {
-      fundingBias = 0.0015; // contrarian bull
-      fundingFlip = true;
+  // 1️⃣ echte funding indien beschikbaar
+  if (isNum(funding?.fundingRate)) {
+    fundingRate = funding.fundingRate;
+    fundingBias = isNum(funding?.fundingBias) ? funding.fundingBias : 0;
+    fundingFlip = !!funding?.fundingFlip;
+  }
+  // 2️⃣ fallback: synthetic funding pressure
+  else {
+    if (isNum(zNow) && isNum(relVolNow)) {
+      if (zNow > 1.2 && relVolNow > 1.1) {
+        fundingBias = -0.0015; // contrarian bear
+        fundingFlip = true;
+      }
+      if (zNow < -1.2 && relVolNow > 1.1) {
+        fundingBias = 0.0015; // contrarian bull
+        fundingFlip = true;
+      }
     }
   }
-}
-  const zNow = t.z[lastIdxT];
 
   const confidence = scoreConfidence({
     zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow
