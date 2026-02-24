@@ -1,6 +1,4 @@
 // api/_lib/indicators.js
-// Kleine indicator helpers, puur JS.
-
 export function sma(values, length) {
   const out = Array(values.length).fill(null);
   if (length <= 1) return values.slice();
@@ -9,21 +7,13 @@ export function sma(values, length) {
 
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
-    if (v == null) {
-      out[i] = null;
-      continue;
-    }
-    sum += v;
-    n++;
+    if (v == null) { out[i] = null; continue; }
+    sum += v; n++;
 
     if (i >= length) {
       const old = values[i - length];
-      if (old != null) {
-        sum -= old;
-        n--;
-      }
+      if (old != null) { sum -= old; n--; }
     }
-
     out[i] = (i >= length - 1) ? (sum / length) : null;
   }
   return out;
@@ -38,10 +28,7 @@ export function ema(values, length) {
 
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
-    if (v == null) {
-      out[i] = null;
-      continue;
-    }
+    if (v == null) { out[i] = null; continue; }
     if (prev == null) prev = v;
     prev = (v * k) + (prev * (1 - k));
     out[i] = prev;
@@ -49,7 +36,6 @@ export function ema(values, length) {
   return out;
 }
 
-// KAMA (Kaufman Adaptive Moving Average)
 export function kama(values, erLen = 10, fast = 2, slow = 30) {
   const out = Array(values.length).fill(null);
   const fastSC = 2 / (fast + 1);
@@ -67,7 +53,6 @@ export function kama(values, erLen = 10, fast = 2, slow = 30) {
       continue;
     }
 
-    // ER = change / volatility
     const change = Math.abs(values[i] - values[i - erLen]);
     let vol = 0;
     for (let k = i - erLen + 1; k <= i; k++) {
@@ -106,17 +91,13 @@ export function atr(highs, lows, closes, length = 14) {
   const tr = Array(closes.length).fill(null);
 
   for (let i = 0; i < closes.length; i++) {
-    if (i === 0) {
-      tr[i] = highs[i] - lows[i];
-      continue;
-    }
+    if (i === 0) { tr[i] = highs[i] - lows[i]; continue; }
     const hl = highs[i] - lows[i];
     const hc = Math.abs(highs[i] - closes[i - 1]);
     const lc = Math.abs(lows[i] - closes[i - 1]);
     tr[i] = Math.max(hl, hc, lc);
   }
 
-  // Wilder smoothing
   const out = Array(closes.length).fill(null);
   let prev = null;
   for (let i = 0; i < tr.length; i++) {
@@ -129,7 +110,6 @@ export function atr(highs, lows, closes, length = 14) {
   return out;
 }
 
-// OBV (On Balance Volume)
 export function obv(closes, volumes) {
   const out = Array(closes.length).fill(null);
   let cur = 0;
@@ -144,7 +124,6 @@ export function obv(closes, volumes) {
   return out;
 }
 
-// ADX (Wilder)
 export function adx(highs, lows, closes, length = 14) {
   const n = closes.length;
   const out = Array(n).fill(null);
@@ -193,7 +172,6 @@ export function adx(highs, lows, closes, length = 14) {
     dx[i] = 100 * (Math.abs(pDI - mDI) / denom);
   }
 
-  // ADX = Wilder EMA of DX
   let prev = null;
   for (let i = 0; i < n; i++) {
     const v = dx[i];
@@ -202,7 +180,6 @@ export function adx(highs, lows, closes, length = 14) {
     else prev = (prev * (length - 1) + v) / length;
     out[i] = prev;
   }
-
   return out;
 }
 
@@ -217,9 +194,7 @@ export function clamp(x, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
 }
 
-// ------------------------------
-// ✅ ROBUST helpers (fat tails)
-// ------------------------------
+// robust helpers
 export function median(arr) {
   const a = arr.filter(x => x != null && Number.isFinite(x)).slice().sort((x, y) => x - y);
   if (!a.length) return null;
@@ -242,15 +217,12 @@ export function mad(values, length) {
     const m2 = median(dev);
     if (m2 == null || m2 === 0) continue;
 
-    // 1.4826 maakt MAD vergelijkbaar met std bij normaalverdeling
     out[i] = 1.4826 * m2;
   }
   return out;
 }
 
-// ------------------------------
-// ✅ Pivots / swing structuur
-// ------------------------------
+// pivots
 export function pivotHigh(highs, left = 3, right = 3) {
   const n = highs.length;
   const out = Array(n).fill(false);
