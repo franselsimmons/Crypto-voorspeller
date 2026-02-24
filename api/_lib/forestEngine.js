@@ -1,11 +1,54 @@
 // api/_lib/forestEngine.js
 import {
-  kama, std, atr, sma, obv, adx,
+  kama, std, mad, atr, sma, obv, adx,
   percentileFromWindow, clamp
 } from "./indicators.js";
 
 function isNum(x) {
   return typeof x === "number" && Number.isFinite(x);
+}
+
+/**
+ * Pivot (fractal) detectie.
+ * Pivot-high pas "bevestigd" als we right bars verder zijn.
+ * => geen repaint.
+ */
+function findConfirmedPivots(candles, left = 3, right = 3) {
+  const pivotsHigh = Array(candles.length).fill(null);
+  const pivotsLow = Array(candles.length).fill(null);
+
+  for (let i = left; i < candles.length - right; i++) {
+    const h = candles[i].high;
+    const l = candles[i].low;
+    if (!isNum(h) || !isNum(l)) continue;
+
+    let isHigh = true;
+    let isLow = true;
+
+    for (let j = i - left; j <= i + right; j++) {
+      if (j === i) continue;
+      const hj = candles[j]?.high;
+      const lj = candles[j]?.low;
+      if (!isNum(hj) || !isNum(lj)) { isHigh = false; isLow = false; break; }
+      if (hj >= h) isHigh = false;
+      if (lj <= l) isLow = false;
+      if (!isHigh && !isLow) break;
+    }
+
+    // bevestigde pivot wordt pas "zichtbaar" bij i+right (na bevestiging)
+    const confirmedAt = i + right;
+    if (isHigh) pivotsHigh[confirmedAt] = h;
+    if (isLow) pivotsLow[confirmedAt] = l;
+  }
+
+  return { pivotsHigh, pivotsLow };
+}
+
+function lastPivotBefore(idx, pivArr) {
+  for (let i = idx; i >= 0; i--) {
+    if (isNum(pivArr[i])) return { i, price: pivArr[i] };
+  }
+  return null;
 }
 
 function computeCore(candles, {
@@ -20,13 +63,54 @@ function computeCore(candles, {
 
   const base = kama(closes, kamaEr, kamaFast, kamaSlow);
   const resid = closes.map((c, i) => (base[i] == null ? null : (c - base[i])));
-  const sd = std(resid, zWin);
+
+  // STD + MAD naast elkaar
+  const sdStd = std(resid, zWin);
+  const sdMad = mad(resid, zWin);
+
   const a = atr(highs, lows, closes, 14);
 
-  const z = resid.map((r, i) => {
-    const s = sd[i];
+  // Robuste Z keuze:
+  // - als std ontbreekt/0 -> MAD
+  // - als std "te klein" -> MAD
+  // - bij extreme spikes -> MAD
+  const zStd = resid.map((r, i) => {
+    const s = sdStd[i];
     if (!isNum(r) || !isNum(s) || s === 0) return null;
     return r / s;
+  });
+
+  const zRobust = resid.map((r, i) => {
+    const s = sdMad[i];
+    if (!isNum(r) || !isNum(s) || s === 0) return null;
+    return r / s;
+  });
+
+  const z = resid.map((r, i) => {
+    const sStd = sdStd[i];
+    const sMad = sdMad[i];
+
+    if (!isNum(r)) return null;
+
+    // voorkeur: std, maar fallback op mad
+    if (!isNum(sStd) || sStd === 0) {
+      if (isNum(sMad) && sMad !== 0) return r / sMad;
+      return null;
+    }
+
+    const zS = r / sStd;
+
+    // als zStd absurd/extreem -> robust gebruiken
+    if (isNum(zS) && Math.abs(zS) > 4.0 && isNum(sMad) && sMad > 0) {
+      return r / sMad;
+    }
+
+    // als std veel kleiner is dan mad (indicatie van rare verdeling) -> robust
+    if (isNum(sMad) && sMad > 0 && sStd < 0.55 * sMad) {
+      return r / sMad;
+    }
+
+    return zS;
   });
 
   const volSma = sma(vols, 20);
@@ -34,7 +118,12 @@ function computeCore(candles, {
   const obvArr = obv(closes, vols);
   const adxArr = adx(highs, lows, closes, adxLen);
 
-  return { closes, highs, lows, vols, base, a, z, relVol, obvArr, adxArr };
+  return {
+    closes, highs, lows, vols,
+    base, a,
+    z, zStd, zRobust,
+    relVol, obvArr, adxArr
+  };
 }
 
 function computeBands(zArr, atrArr, i, lookback = 208) {
@@ -54,7 +143,7 @@ function computeBands(zArr, atrArr, i, lookback = 208) {
   return { bandsNow: { p35, p65, p20Z, p80Z, p20ATR }, freezeNow: freeze };
 }
 
-function rawRegimeFromZ(zNow, bandsNow) {
+function regimeFromZ(zNow, bandsNow) {
   const { p35, p65 } = bandsNow;
   if (!isNum(zNow) || !isNum(p35) || !isNum(p65)) return "NEUTRAL";
   if (zNow > p65) return "BULL";
@@ -70,8 +159,7 @@ function strengthLabel(zNow) {
   return "";
 }
 
-// Confidence score voor “mag ik überhaupt flippen?”
-function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned }) {
+function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned, structureOK }) {
   let s = 0;
 
   if (isNum(zNow)) {
@@ -91,12 +179,13 @@ function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned }) {
     else if (relVolNow >= 1.0) s += 1;
   }
 
-  if (isNum(obvSlope)) {
-    // OBV slope richting/flow
-    s += 1;
-  }
+  if (isNum(obvSlope)) s += 1;
 
   if (aligned) s += 2;
+  else s -= 2;
+
+  // Structuurfilter is mega belangrijk
+  if (structureOK) s += 2;
   else s -= 2;
 
   if (s >= 7) return "high";
@@ -137,176 +226,15 @@ function lastValidIndex(arr) {
   return -1;
 }
 
-function findLastExtrema(zArr, lookback = 180) {
-  const pts = [];
-  const start = Math.max(2, zArr.length - lookback);
-  for (let i = zArr.length - 2; i >= start; i--) {
-    const a = zArr[i - 1], b = zArr[i], c = zArr[i + 1];
-    if (!isNum(a) || !isNum(b) || !isNum(c)) continue;
-
-    const isPeak = (b > a && b > c);
-    const isTrough = (b < a && b < c);
-    if (isPeak || isTrough) {
-      pts.push({ i, z: b, type: isPeak ? "peak" : "trough" });
-      if (pts.length >= 3) break;
-    }
-  }
-  return pts;
-}
-
 /**
- * INERTIA / LATE-TURN LOCK:
- * - We maken eerst een "desire regime" per bar (raw regime + trend/range filter)
- * - Daarna locken we hem: flip pas na confirmBars, behalve extreme => fastConfirmBars
- * - Extra streng in range (ADX laag): confirmBars omhoog
- * - Geen flips als confidence nog HIGH is (confidence-collapse gate)
- * - Freeze blokkeert flips
+ * Forward fan:
+ * - mid: base drift + z mean-revert richting 0 (sneller in range, trager in trend)
+ * - bands: wijder met horizon (sqrt), scaled met ATR en regime/volatiliteit
+ * Geen sinus, geen "mooie wave".
  */
-function computeLockedRegimeSeries({
-  zArr,
-  atrArr,
-  adxArr,
-  relVolArr,
-  obvArr,
-  bandsPerIdx,
-  tf,
-  weeklyTruthCandles
-}) {
-  const n = zArr.length;
-  const locked = Array(n).fill("NEUTRAL");
-
-  // weekly bias (alleen als tf=1d en weeklyTruthCandles aanwezig)
-  let weeklyReg = null;
-  let weeklyZ = null;
-  if (tf === "1d" && Array.isArray(weeklyTruthCandles) && weeklyTruthCandles.length > 120) {
-    const w = computeCore(weeklyTruthCandles, { zWin: 208 });
-    const wIdx = lastValidIndex(w.z);
-    if (wIdx >= 0) {
-      const wBands = computeBands(w.z, w.a, wIdx, 208).bandsNow;
-      weeklyReg = rawRegimeFromZ(w.z[wIdx], wBands);
-      weeklyZ = w.z[wIdx];
-    }
-  }
-
-  let cur = "NEUTRAL";
-  let pending = null;
-  let pendingCount = 0;
-
-  for (let i = 0; i < n; i++) {
-    const zNow = zArr[i];
-    const bandsNow = bandsPerIdx[i]?.bandsNow || {};
-    const freezeNow = !!bandsPerIdx[i]?.freezeNow;
-
-    // basis regime uit z
-    let desire = rawRegimeFromZ(zNow, bandsNow);
-
-    // Trend vs Range hard (ADX)
-    const adxNow = adxArr[i];
-    const trending = (isNum(adxNow) && adxNow >= 25);
-
-    // In range: maak hem strenger (minder snel bull/bear)
-    if (!trending && desire !== "NEUTRAL" && isNum(zNow)) {
-      if (Math.abs(zNow) < 1.2) desire = "NEUTRAL";
-    }
-
-    // weekly alignment (1d)
-    let aligned = true;
-    if (tf === "1d" && weeklyReg) {
-      if (weeklyReg === "BULL" && desire === "BEAR") aligned = false;
-      if (weeklyReg === "BEAR" && desire === "BULL") aligned = false;
-
-      // als weekly extreem is, weekly wint (maar nog steeds locken)
-      if (isNum(weeklyZ) && Math.abs(weeklyZ) >= 2.0 && weeklyReg !== "NEUTRAL") {
-        desire = weeklyReg;
-      }
-    }
-
-    // OBV slope + relVol voor confidence gate
-    const obvNow = obvArr[i];
-    const obvPrev = obvArr[Math.max(0, i - 5)];
-    const obvSlope = (isNum(obvNow) && isNum(obvPrev)) ? (obvNow - obvPrev) : null;
-
-    const relVolNow = relVolArr[i];
-
-    const confidence = scoreConfidence({
-      zNow,
-      adxNow,
-      relVolNow,
-      obvSlope,
-      aligned
-    });
-
-    // Confidence-collapse gate: als HIGH => niet flippen
-    const flipBlockedByConfidence = (confidence === "high");
-
-    // Extreme detectie via percentiel-banden
-    const p20Z = bandsNow?.p20Z;
-    const p80Z = bandsNow?.p80Z;
-    const extreme = (
-      isNum(zNow) && (
-        (isNum(p80Z) && zNow >= p80Z && zNow >= 1.8) ||
-        (isNum(p20Z) && zNow <= p20Z && zNow <= -1.8)
-      )
-    );
-
-    // confirm bars: traag (B) + extra traag in range
-    let confirmBars = 4;        // standaard daily/weekly
-    let fastConfirmBars = 2;    // bij extreme
-
-    if (tf === "1w") {
-      confirmBars = 2;
-      fastConfirmBars = 1;
-    }
-
-    // Range = nóg strenger
-    if (!trending) {
-      confirmBars += (tf === "1w") ? 1 : 2;
-      fastConfirmBars += 1;
-    }
-
-    // Freeze blokkeert flips volledig
-    const flipBlocked = freezeNow || flipBlockedByConfidence || (aligned === false);
-
-    // Lock logic
-    if (desire === cur || desire == null) {
-      pending = null;
-      pendingCount = 0;
-      locked[i] = cur;
-      continue;
-    }
-
-    // als flip geblokkeerd: negeer pending en blijf
-    if (flipBlocked) {
-      pending = null;
-      pendingCount = 0;
-      locked[i] = cur;
-      continue;
-    }
-
-    // nieuwe pending of voortzetten
-    if (pending !== desire) {
-      pending = desire;
-      pendingCount = 1;
-    } else {
-      pendingCount++;
-    }
-
-    const need = extreme ? fastConfirmBars : confirmBars;
-    if (pendingCount >= need) {
-      cur = pending;
-      pending = null;
-      pendingCount = 0;
-    }
-
-    locked[i] = cur;
-  }
-
-  return { locked, weeklyReg };
-}
-
-function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf, regimeNow }) {
+function buildForwardFan({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf, reg, trending }) {
   const n = candlesTruth.length;
-  if (n < 50) return { mid: [], upper: [], lower: [] };
+  if (n < 80) return { mid: [], upper: [], lower: [] };
 
   const lastIdx = lastValidIndex(zArr);
   if (lastIdx < 0) return { mid: [], upper: [], lower: [] };
@@ -322,7 +250,7 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
 
   const stepSec = (tf === "1w") ? (7 * 24 * 3600) : (24 * 3600);
 
-  // base slope (KAMA) gemiddeld laatste 10 bars
+  // baseSlope: gemiddelde slope van laatste 10 bars
   let slope = 0;
   let cnt = 0;
   for (let k = 1; k <= 10; k++) {
@@ -336,30 +264,22 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
   }
   const baseSlopePerBar = cnt ? (slope / cnt) : 0;
 
-  // period schatting uit z-extrema (alleen voor "mooier pad", niet als waarheid)
-  const ex = findLastExtrema(zArr, 220);
-  let period = Math.min(horizonBars, Math.max(14, Math.round(horizonBars / 2)));
-  if (ex.length >= 2) {
-    const p = Math.abs(ex[0].i - ex[1].i);
-    if (p >= 10 && p <= 1200) period = p;
-  }
+  // mean reversion snelheid:
+  // - in trend: langzaam (we laten trend doorlopen)
+  // - in range: sneller terug naar 0
+  const mr = trending ? 0.992 : 0.975; // per bar
 
-  // amplitude: in trend (BULL/BEAR) minder “wavy”, meer richting
-  const trendBias = (regimeNow === "BULL") ? 0.35 : (regimeNow === "BEAR") ? -0.35 : 0;
-  const ampBase = clamp(Math.abs(zNow), 0.4, 2.0);
-  const horizonDamp = clamp(120 / Math.max(30, horizonBars), 0.25, 1.0);
-  const amp = ampBase * horizonDamp;
+  // regime drift: kleine push in regime-richting (maar capped)
+  const driftZ = (reg === "BULL") ? 0.08 : (reg === "BEAR") ? -0.08 : 0.0;
 
-  // mean-revert snelheid: in trend langzamer, in neutral sneller
-  const mr = (regimeNow === "NEUTRAL") ? 0.97 : 0.985;
-  let zCenter = zNow;
-
-  let phase = 0;
-  if (ex.length >= 1) phase = (ex[0].type === "peak") ? Math.PI : 0;
+  // fan breedte basis: gebaseerd op actuele |z| + horizon
+  const baseBand = clamp(0.55 + 0.15 * Math.min(3, Math.abs(zNow)), 0.55, 1.05);
 
   const mid = [];
   const upper = [];
   const lower = [];
+
+  let zC = zNow;
 
   for (let k = 0; k <= horizonBars; k++) {
     const t = lastTime + stepSec * k;
@@ -367,25 +287,20 @@ function buildForwardWave({ candlesTruth, baseArr, atrArr, zArr, horizonBars, tf
 
     const baseF = baseNow + baseSlopePerBar * k;
 
-    // z center dempt terug + bias duwt licht richting regime
-    zCenter = (zCenter * mr) + (trendBias * (1 - mr));
+    // z evolutie: mean revert + regime drift, maar nooit gek
+    zC = zC * mr + driftZ;
+    zC = clamp(zC, -2.8, 2.8);
 
-    // wave (klein), vooral voor “pad”, niet als garantie
-    const w = (2 * Math.PI * k) / Math.max(10, period);
-    const zWave = (regimeNow === "NEUTRAL") ? (amp * Math.sin(w + phase)) : (0.45 * amp * Math.sin(w + phase));
+    // band wordt wijder met sqrt(horizon) (eerlijk)
+    const widen = Math.sqrt(Math.max(1, k)) / Math.sqrt(Math.max(1, horizonBars));
+    const band = clamp(baseBand * (0.35 + 0.95 * widen), 0.35, 1.35);
 
-    const zMid = clamp(zCenter + zWave, -2.8, 2.8);
+    const zUp = clamp(zC + band, -3.0, 3.0);
+    const zLo = clamp(zC - band, -3.0, 3.0);
 
-    // fan band groeit naar voren
-    const widen = clamp(0.35 + (k / Math.max(1, horizonBars)) * 0.65, 0.35, 1.0);
-    const band = 0.55 * widen;
-
-    const zUp = clamp(zMid + band, -3.0, 3.0);
-    const zLo = clamp(zMid - band, -3.0, 3.0);
-
-    const vMid = baseF + zMid * atrNow;
-    const vUp  = baseF + zUp  * atrNow;
-    const vLo  = baseF + zLo  * atrNow;
+    const vMid = baseF + zC * atrNow;
+    const vUp  = baseF + zUp * atrNow;
+    const vLo  = baseF + zLo * atrNow;
 
     if (isNum(vMid)) mid.push({ time: t, value: vMid });
     if (isNum(vUp))  upper.push({ time: t, value: vUp });
@@ -402,66 +317,89 @@ export function buildForestOverlay({
   tf = "1d",
   horizonBars = 90,
   weeklyTruthCandles = null
-} = {}) {
-  // -------- TRUTH core --------
+}) {
   const t = computeCore(candlesTruth, { zWin: 208 });
   const lastIdxT = lastValidIndex(t.z);
 
-  // bands/freeze per index (voor lock)
-  const bandsPerIdx = Array(candlesTruth.length).fill(null).map((_, i) => {
-    if (i < 30) return { bandsNow: {}, freezeNow: false };
-    return computeBands(t.z, t.a, i, 208);
-  });
-
-  // -------- LOCKED regime series (B) --------
-  const { locked: lockedRegimes, weeklyReg } = computeLockedRegimeSeries({
-    zArr: t.z,
-    atrArr: t.a,
-    adxArr: t.adxArr,
-    relVolArr: t.relVol,
-    obvArr: t.obvArr,
-    bandsPerIdx,
-    tf,
-    weeklyTruthCandles
-  });
-
-  const regNow = (lastIdxT >= 0) ? lockedRegimes[lastIdxT] : "NEUTRAL";
-
   const { bandsNow, freezeNow } = (lastIdxT >= 0)
-    ? bandsPerIdx[lastIdxT]
+    ? computeBands(t.z, t.a, lastIdxT, 208)
     : { bandsNow: {}, freezeNow: false };
 
-  const zNow = (lastIdxT >= 0) ? t.z[lastIdxT] : null;
+  let reg = regimeFromZ(t.z[lastIdxT], bandsNow);
 
-  // confidence nu (voor info / gating)
-  const adxNow = (lastIdxT >= 0) ? t.adxArr[lastIdxT] : null;
-  const relVolNow = (lastIdxT >= 0) ? t.relVol[lastIdxT] : null;
-  const obvNow = (lastIdxT >= 0) ? t.obvArr[lastIdxT] : null;
-  const obvPrev = (lastIdxT >= 0) ? t.obvArr[Math.max(0, lastIdxT - 5)] : null;
-  const obvSlope = (isNum(obvNow) && isNum(obvPrev)) ? (obvNow - obvPrev) : null;
+  // Trend vs range hard (ADX)
+  const adxNow = t.adxArr[lastIdxT];
+  const trending = (isNum(adxNow) && adxNow >= 25);
 
-  let aligned = true;
-  if (tf === "1d" && weeklyReg) {
-    const raw = rawRegimeFromZ(zNow, bandsNow);
-    if (weeklyReg === "BULL" && raw === "BEAR") aligned = false;
-    if (weeklyReg === "BEAR" && raw === "BULL") aligned = false;
+  // In range: minder snel BULL/BEAR tenzij z echt stevig is
+  if (!trending && reg !== "NEUTRAL" && isNum(t.z[lastIdxT])) {
+    if (Math.abs(t.z[lastIdxT]) < 1.2) reg = "NEUTRAL";
   }
 
+  // Weekly bias alignment (alleen als daily)
+  let aligned = true;
+  let weeklyReg = null;
+
+  if (tf === "1d" && Array.isArray(weeklyTruthCandles) && weeklyTruthCandles.length > 100) {
+    const w = computeCore(weeklyTruthCandles, { zWin: 208 });
+    const wIdx = lastValidIndex(w.z);
+    const wBands = computeBands(w.z, w.a, wIdx, 208).bandsNow;
+    weeklyReg = regimeFromZ(w.z[wIdx], wBands);
+
+    if (weeklyReg === "BULL" && reg === "BEAR") aligned = false;
+    if (weeklyReg === "BEAR" && reg === "BULL") aligned = false;
+
+    // als weekly extreem is: weekly wint
+    const wZ = w.z[wIdx];
+    if (isNum(wZ) && Math.abs(wZ) >= 2.0) {
+      if (weeklyReg !== "NEUTRAL") reg = weeklyReg;
+    }
+  }
+
+  // Volume confirm (OBV slope + relVol)
+  const relVolNow = t.relVol[lastIdxT];
+  const obvNow = t.obvArr[lastIdxT];
+  const obvPrev = t.obvArr[Math.max(0, lastIdxT - 5)];
+  const obvSlope = (isNum(obvNow) && isNum(obvPrev)) ? (obvNow - obvPrev) : null;
+
+  // --------- UPGRADE 1: STRUCTUURFILTER ----------
+  const { pivotsHigh, pivotsLow } = findConfirmedPivots(candlesTruth, 3, 3);
+  const lastHigh = lastPivotBefore(lastIdxT, pivotsHigh);
+  const lastLow  = lastPivotBefore(lastIdxT, pivotsLow);
+  const closeNow = t.closes[lastIdxT];
+
+  let structureOK = true;
+  let structureNow = {
+    lastPivotHigh: lastHigh?.price ?? null,
+    lastPivotLow: lastLow?.price ?? null
+  };
+
+  if (reg === "BULL") {
+    // Bull alleen als close boven laatste pivot-high breekt
+    if (lastHigh && isNum(closeNow)) structureOK = (closeNow > lastHigh.price);
+  } else if (reg === "BEAR") {
+    // Bear alleen als close onder laatste pivot-low breekt
+    if (lastLow && isNum(closeNow)) structureOK = (closeNow < lastLow.price);
+  }
+
+  // Als structuur niet klopt -> NEUTRAL (i.p.v. “toch flippen”)
+  if (!structureOK) reg = "NEUTRAL";
+
   const confidence = scoreConfidence({
-    zNow,
+    zNow: t.z[lastIdxT],
     adxNow,
     relVolNow,
     obvSlope,
-    aligned
+    aligned,
+    structureOK
   });
 
-  const regimeLabel = `${strengthLabel(zNow)}${regNow} (${isNum(zNow) ? zNow.toFixed(2) : "n/a"})`;
+  const zNow = t.z[lastIdxT];
+  const regimeLabel = `${strengthLabel(zNow)}${reg} (${isNum(zNow) ? zNow.toFixed(2) : "n/a"})`;
 
-  // series
   const forestOverlayTruth = overlaySeries(candlesTruth, t.base, t.a, t.z);
   const forestZTruth = zSeries(candlesTruth, t.z);
 
-  // LIVE (optioneel)
   let forestOverlayLive = [];
   let forestZLive = [];
   if (hasLive && candlesWithLive?.length) {
@@ -470,18 +408,24 @@ export function buildForestOverlay({
     forestZLive = zSeries(candlesWithLive, l.z);
   }
 
-  // Forward: in freeze -> korter
+  // Forward horizon veilig: in freeze korter, maar altijd “fan”
   const safeH = freezeNow ? Math.min(20, horizonBars) : horizonBars;
 
-  const fwd = buildForwardWave({
-    candlesTruth,
-    baseArr: t.base,
-    atrArr: t.a,
-    zArr: t.z,
-    horizonBars: safeH,
-    tf,
-    regimeNow: regNow
-  });
+  // --------- UPGRADE 3: EERLIJKE FORWARD FAN ----------
+  // Alleen tekenen als we niet in freeze zijn (en niet NEUTRAL)
+  const allowForward = (!freezeNow && reg !== "NEUTRAL");
+  const fwd = allowForward
+    ? buildForwardFan({
+        candlesTruth,
+        baseArr: t.base,
+        atrArr: t.a,
+        zArr: t.z,
+        horizonBars: safeH,
+        tf,
+        reg,
+        trending
+      })
+    : { mid: [], upper: [], lower: [] };
 
   const nowTime = candlesTruth[lastIdxT]?.time ?? null;
   const nowPrice = candlesTruth[lastIdxT]?.close ?? null;
@@ -491,14 +435,18 @@ export function buildForestOverlay({
     price: isNum(nowPrice) ? nowPrice : null,
     overlay: forestOverlayTruth.length ? forestOverlayTruth[forestOverlayTruth.length - 1].value : null,
     z: isNum(zNow) ? zNow : null,
-    regimeNow: regNow,
+    regimeNow: reg,
     confidence,
-    weeklyReg
+    weeklyReg,
+    trending,
+    adxNow: isNum(adxNow) ? adxNow : null,
+    relVolNow: isNum(relVolNow) ? relVolNow : null,
+    structureNow
   };
 
   return {
     regimeLabel,
-    regimeNow: regNow,
+    regimeNow: reg,
     confidence,
 
     forestOverlayTruth,
@@ -513,6 +461,9 @@ export function buildForestOverlay({
 
     bandsNow,
     freezeNow,
-    nowPoint
+    nowPoint,
+
+    // extra debug voor frontend
+    structureNow
   };
 }
