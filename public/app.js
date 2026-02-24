@@ -81,7 +81,7 @@ async function init(){
 
     const np = data.nowPoint || {};
     $("bigChance").textContent =
-      `Confidence: ${np.confidence || "n/a"} • Stability: ${np.stabilityScore ?? "n/a"} • FlipProb: ${fmtPct(np.flipProbability)} • Funding: ${data.funding?.fundingRate ?? "n/a"}`;
+      `Confidence: ${np.confidence || "n/a"} • Stability: ${np.stabilityScore ?? "n/a"} • FlipProb: ${fmtPct(np.flipProbability)} • Funding: ${data.funding?.fundingRate ?? "n/a"} (${data.funding?.fundingSource ?? "none"})`
 
     $("debug").textContent = JSON.stringify({
       regimeLabel: data.regimeLabel,
