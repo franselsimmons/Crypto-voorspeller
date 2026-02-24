@@ -254,7 +254,7 @@ function buildForwardFan({
   }
   const baseSlopePerBar = cnt ? (slope / cnt) : 0;
 
-  // regime drift bias (klein, want we willen “beweging” niet fake garantie)
+  // regime drift bias (klein)
   const bias =
     regimeNow === "BULL" ? +0.0006 :
     regimeNow === "BEAR" ? -0.0006 :
@@ -267,7 +267,7 @@ function buildForwardFan({
   const tight = clamp(stabilityScore / 100, 0.2, 1.0);
   const fanScale = clamp(1.25 - 0.55 * tight, 0.6, 1.25);
 
-  const paths = (horizonBars <= 60) ? 220 : 140; // perf + kwaliteit
+  const paths = (horizonBars <= 60) ? 220 : 140;
 
   // seed: time + tf (deterministisch)
   const seed = (lastTime ^ (tf === "1w" ? 1337 : 7331)) >>> 0;
@@ -276,7 +276,6 @@ function buildForwardFan({
   const upper = [];
   const lower = [];
 
-  // pre-alloc: per step returns
   for (let k = 0; k <= horizonBars; k++) {
     const t = lastTime + stepSec * k;
     if (!isNum(t)) continue;
@@ -287,17 +286,12 @@ function buildForwardFan({
     for (let p = 0; p < paths; p++) {
       const rng = mulberry32(seed + p * 9973 + k * 7919);
 
-      // random walk return
-      let r = 0;
-
-      // elke stap: drift + fat tail shock
-      // (k groter => onzekerheid groter)
       const stepVol = volPct * Math.sqrt(Math.max(1, k)) * fanScale;
 
       const shock = sampleFat(rng) * stepVol;
       const drift = (baseSlopePerBar / Math.max(1, baseNow)) * k + bias * k;
 
-      r = drift + shock;
+      let r = drift + shock;
 
       // clamp zodat het niet absurd wordt
       r = clamp(r, -0.75, 0.75);
