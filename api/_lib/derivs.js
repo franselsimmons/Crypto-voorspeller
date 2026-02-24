@@ -1,25 +1,63 @@
 // api/_lib/derivs.js
 function isNum(x){ return typeof x === "number" && Number.isFinite(x); }
 
-// ✅ Funding (public) - Binance Futures premiumIndex -> lastFundingRate
+async function fetchJson(url) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 6500);
+
+  try {
+    const r = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        accept: "application/json",
+        "user-agent": "Mozilla/5.0 (compatible; ForestBot/1.0; +https://vercel.app)"
+      }
+    });
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${txt.slice(0,120)}`);
+    return JSON.parse(txt);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ✅ Funding (primary) Binance Futures premiumIndex -> lastFundingRate
+async function fundingBinance() {
+  const url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
+  const j = await fetchJson(url);
+  const fr = Number(j?.lastFundingRate);
+  if (!isNum(fr)) throw new Error("No lastFundingRate");
+  return fr;
+}
+
+// ✅ Funding (fallback) Bybit public funding rate
+async function fundingBybit() {
+  // Bybit v5 public: funding rate BTCUSDT (linear)
+  const url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT";
+  const j = await fetchJson(url);
+  const fr = Number(j?.result?.list?.[0]?.fundingRate);
+  if (!isNum(fr)) throw new Error("No fundingRate");
+  return fr;
+}
+
 export async function fetchBtcFundingBias() {
   try {
-    const url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
-    const r = await fetch(url, { headers: { accept: "application/json" } });
-    if (!r.ok) return { fundingRate: null, fundingBias: 0, fundingFlip: false };
+    let fr = null;
 
-    const j = await r.json();
-    const fr = Number(j?.lastFundingRate);
-    if (!isNum(fr)) return { fundingRate: null, fundingBias: 0, fundingFlip: false };
+    try {
+      fr = await fundingBinance();
+    } catch {
+      fr = await fundingBybit();
+    }
 
     // fr > 0 => longs betalen => contrarian kleine BEAR bias
     // fr < 0 => shorts betalen => contrarian kleine BULL bias
     const fundingBias = Math.max(-0.003, Math.min(0.003, -fr * 8));
     const fundingFlip = Math.abs(fr) >= 0.0005;
 
-    return { fundingRate: fr, fundingBias, fundingFlip };
+    return { fundingRate: fr, fundingBias, fundingFlip, fundingSource: "binance/bybit" };
   } catch {
-    return { fundingRate: null, fundingBias: 0, fundingFlip: false };
+    return { fundingRate: null, fundingBias: 0, fundingFlip: false, fundingSource: null };
   }
 }
 
@@ -66,7 +104,6 @@ export function buildSyntheticLiqLevels(candles, {
   }));
 }
 
-// ✅ liq=price:weight,price:weight...
 export function parseLiqLevelsFromQuery(str) {
   if (!str || typeof str !== "string") return [];
   const parts = str.split(",").map(s => s.trim()).filter(Boolean);
@@ -84,7 +121,6 @@ export function parseLiqLevelsFromQuery(str) {
   return out.sort((x, y) => x.price - y.price);
 }
 
-// ✅ liqB64= base64(JSON array)
 export function parseLiqLevelsB64(b64) {
   try {
     if (!b64 || typeof b64 !== "string") return [];
