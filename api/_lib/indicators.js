@@ -9,13 +9,21 @@ export function sma(values, length) {
 
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
-    if (v == null) { out[i] = null; continue; }
-    sum += v; n++;
+    if (v == null) {
+      out[i] = null;
+      continue;
+    }
+    sum += v;
+    n++;
 
     if (i >= length) {
       const old = values[i - length];
-      if (old != null) { sum -= old; n--; }
+      if (old != null) {
+        sum -= old;
+        n--;
+      }
     }
+
     out[i] = (i >= length - 1) ? (sum / length) : null;
   }
   return out;
@@ -30,7 +38,10 @@ export function ema(values, length) {
 
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
-    if (v == null) { out[i] = null; continue; }
+    if (v == null) {
+      out[i] = null;
+      continue;
+    }
     if (prev == null) prev = v;
     prev = (v * k) + (prev * (1 - k));
     out[i] = prev;
@@ -56,6 +67,7 @@ export function kama(values, erLen = 10, fast = 2, slow = 30) {
       continue;
     }
 
+    // ER = change / volatility
     const change = Math.abs(values[i] - values[i - erLen]);
     let vol = 0;
     for (let k = i - erLen + 1; k <= i; k++) {
@@ -90,41 +102,14 @@ export function std(values, length) {
 }
 export const stdev = std;
 
-// --- Robust helpers (median / MAD) ---
-export function median(values) {
-  const arr = values.filter(v => v != null).slice().sort((a, b) => a - b);
-  if (!arr.length) return null;
-  const mid = Math.floor(arr.length / 2);
-  if (arr.length % 2 === 1) return arr[mid];
-  return (arr[mid - 1] + arr[mid]) / 2;
-}
-
-// MAD scaled to be comparable to std (~1.4826 * MAD)
-export function mad(values, length) {
-  const out = Array(values.length).fill(null);
-  if (length <= 1) return out;
-
-  for (let i = 0; i < values.length; i++) {
-    if (i < length - 1) continue;
-    const window = values.slice(i - length + 1, i + 1).filter(v => v != null);
-    if (window.length < length) continue;
-
-    const m = median(window);
-    if (m == null) continue;
-    const absDev = window.map(v => Math.abs(v - m));
-    const madRaw = median(absDev);
-    if (madRaw == null) continue;
-
-    out[i] = 1.4826 * madRaw;
-  }
-  return out;
-}
-
 export function atr(highs, lows, closes, length = 14) {
   const tr = Array(closes.length).fill(null);
 
   for (let i = 0; i < closes.length; i++) {
-    if (i === 0) { tr[i] = highs[i] - lows[i]; continue; }
+    if (i === 0) {
+      tr[i] = highs[i] - lows[i];
+      continue;
+    }
     const hl = highs[i] - lows[i];
     const hc = Math.abs(highs[i] - closes[i - 1]);
     const lc = Math.abs(lows[i] - closes[i - 1]);
@@ -208,6 +193,7 @@ export function adx(highs, lows, closes, length = 14) {
     dx[i] = 100 * (Math.abs(pDI - mDI) / denom);
   }
 
+  // ADX = Wilder EMA of DX
   let prev = null;
   for (let i = 0; i < n; i++) {
     const v = dx[i];
@@ -229,4 +215,89 @@ export function percentileFromWindow(window, p) {
 
 export function clamp(x, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
+}
+
+// ------------------------------
+// ✅ ROBUST helpers (fat tails)
+// ------------------------------
+export function median(arr) {
+  const a = arr.filter(x => x != null && Number.isFinite(x)).slice().sort((x, y) => x - y);
+  if (!a.length) return null;
+  const mid = Math.floor(a.length / 2);
+  if (a.length % 2 === 1) return a[mid];
+  return (a[mid - 1] + a[mid]) / 2;
+}
+
+export function mad(values, length) {
+  const out = Array(values.length).fill(null);
+  if (length <= 1) return out;
+
+  for (let i = 0; i < values.length; i++) {
+    if (i < length - 1) continue;
+    const win = values.slice(i - length + 1, i + 1);
+    const m = median(win);
+    if (m == null) continue;
+
+    const dev = win.map(v => (v == null ? null : Math.abs(v - m)));
+    const m2 = median(dev);
+    if (m2 == null || m2 === 0) continue;
+
+    // 1.4826 maakt MAD vergelijkbaar met std bij normaalverdeling
+    out[i] = 1.4826 * m2;
+  }
+  return out;
+}
+
+// ------------------------------
+// ✅ Pivots / swing structuur
+// ------------------------------
+export function pivotHigh(highs, left = 3, right = 3) {
+  const n = highs.length;
+  const out = Array(n).fill(false);
+  for (let i = left; i < n - right; i++) {
+    const h = highs[i];
+    if (h == null) continue;
+    let ok = true;
+    for (let k = i - left; k <= i + right; k++) {
+      if (k === i) continue;
+      if (highs[k] == null) { ok = false; break; }
+      if (highs[k] >= h) { ok = false; break; }
+    }
+    out[i] = ok;
+  }
+  return out;
+}
+
+export function pivotLow(lows, left = 3, right = 3) {
+  const n = lows.length;
+  const out = Array(n).fill(false);
+  for (let i = left; i < n - right; i++) {
+    const l = lows[i];
+    if (l == null) continue;
+    let ok = true;
+    for (let k = i - left; k <= i + right; k++) {
+      if (k === i) continue;
+      if (lows[k] == null) { ok = false; break; }
+      if (lows[k] <= l) { ok = false; break; }
+    }
+    out[i] = ok;
+  }
+  return out;
+}
+
+export function lastSwingLevels(highs, lows, left = 3, right = 3, lookback = 200) {
+  const ph = pivotHigh(highs, left, right);
+  const pl = pivotLow(lows, left, right);
+
+  let lastHigh = null;
+  let lastLow = null;
+
+  const start = Math.max(0, highs.length - lookback);
+  for (let i = highs.length - 1; i >= start; i--) {
+    if (lastHigh == null && ph[i]) lastHigh = highs[i];
+    if (lastLow == null && pl[i]) lastLow = lows[i];
+    if (lastHigh != null && lastLow != null) break;
+  }
+
+  return { lastSwingHigh: lastHigh, lastSwingLow: lastLow };
 }
