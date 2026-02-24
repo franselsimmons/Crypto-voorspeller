@@ -12,10 +12,8 @@ export default async function handler(req, res) {
     const hRaw = Number(req.query?.h || 90);
     const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
-    // We halen altijd weekly op als tf=1d, zodat daily en weekly kunnen “alignen”
-    let weeklyTruthCandles = null;
-
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
+    let weeklyTruthCandles = null;
 
     if (tf === "1w") {
       ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
@@ -24,6 +22,7 @@ export default async function handler(req, res) {
       ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
 
+      // ✅ weekly truth meegeven voor bias/alignment
       const w = await getWeeklyBtcCandlesKraken();
       weeklyTruthCandles = w.candlesTruth;
     }
@@ -52,37 +51,26 @@ export default async function handler(req, res) {
         open: c.open,
         high: c.high,
         low: c.low,
-        close: c.close,
-        volume: c.volume ?? 0
+        close: c.close
       })),
 
-      // overlay op prijs-chart
       forestOverlayTruth: out.forestOverlayTruth,
       forestOverlayLive: out.forestOverlayLive,
 
-      // forward (mid) + fan bands
       forestOverlayForwardMid: out.forestOverlayForwardMid,
       forestOverlayForwardUpper: out.forestOverlayForwardUpper,
       forestOverlayForwardLower: out.forestOverlayForwardLower,
 
-      // z-score paneel
       forestZTruth: out.forestZTruth,
       forestZLive: out.forestZLive,
       nowPoint: out.nowPoint,
 
-      // nieuw: regime/confirm/magnets/kalibratie
-      regimeHard: out.regimeHard,
-      trendState: out.trendState,
-      ema200Weekly: out.ema200Weekly,
-      confirmations: out.confirmations,
-      srLevels: out.srLevels,
-      magnets: out.magnets,
-      calibration: out.calibration,
-
-      // debug
       bandsNow: out.bandsNow,
       freezeNow: out.freezeNow,
-      regimeLabel: out.regimeLabel
+      regimeLabel: out.regimeLabel,
+      regimeNow: out.regimeNow,
+      confidence: out.confidence,
+      structureNow: out.structureNow
     }));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
