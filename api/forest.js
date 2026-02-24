@@ -3,6 +3,7 @@ import { getWeeklyBtcCandlesKraken, getDailyBtcCandlesKraken } from "./_lib/krak
 import { buildForestOverlay } from "./_lib/forestEngine.js";
 import {
   fetchBtcFundingBias,
+  fetchBtcLiqHeatmapLevels,
   buildSyntheticLiqLevels,
   parseLiqLevelsFromQuery,
   parseLiqLevelsB64
@@ -44,10 +45,15 @@ export default async function handler(req, res) {
     liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
 
     if (!liqLevels.length) {
+      const real = await fetchBtcLiqHeatmapLevels();
+      if (Array.isArray(real) && real.length) liqLevels = real;
+    }
+
+    if (!liqLevels.length) {
       liqLevels = buildSyntheticLiqLevels(candlesTruth, {
         lookback: intervalLabel === "1d" ? 220 : 180,
         bins: intervalLabel === "1d" ? 64 : 48,
-        topN: 10
+        topN: 12
       });
     }
 
