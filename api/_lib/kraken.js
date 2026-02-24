@@ -9,7 +9,7 @@ function toCandle(row) {
     high: Number(row[2]),
     low: Number(row[3]),
     close: Number(row[4]),
-    volume: Number(row[6])
+    volume: Number(row[6] ?? 0)
   };
 }
 
@@ -21,7 +21,7 @@ async function fetchOhlc({ intervalMinutes }) {
   if (j?.error?.length) throw new Error(`Kraken error: ${j.error.join(", ")}`);
 
   const result = j.result || {};
-  const pairKey = Object.keys(result).find((k) => k !== "last");
+  const pairKey = Object.keys(result).find(k => k !== "last");
   if (!pairKey) throw new Error("Kraken: no result pair key");
 
   const rows = result[pairKey] || [];
@@ -30,25 +30,25 @@ async function fetchOhlc({ intervalMinutes }) {
 
 function splitTruthAndLive(candles, intervalSec) {
   if (!candles.length) return { candlesTruth: [], candlesWithLive: [], hasLive: false };
+
   const last = candles[candles.length - 1];
   const nowSec = Math.floor(Date.now() / 1000);
   const isLive = nowSec < (last.time + intervalSec);
-  return {
-    candlesTruth: isLive ? candles.slice(0, -1) : candles.slice(),
-    candlesWithLive: candles.slice(),
-    hasLive: isLive
-  };
+
+  const candlesTruth = isLive ? candles.slice(0, -1) : candles.slice();
+  const candlesWithLive = candles.slice();
+  return { candlesTruth, candlesWithLive, hasLive: isLive };
 }
 
 export async function getWeeklyBtcCandlesKraken() {
-  const intervalMinutes = 10080;
+  const intervalMinutes = 10080; // 1w
   const intervalSec = intervalMinutes * 60;
   const candles = await fetchOhlc({ intervalMinutes });
   return splitTruthAndLive(candles, intervalSec);
 }
 
 export async function getDailyBtcCandlesKraken() {
-  const intervalMinutes = 1440;
+  const intervalMinutes = 1440; // 1d
   const intervalSec = intervalMinutes * 60;
   const candles = await fetchOhlc({ intervalMinutes });
   return splitTruthAndLive(candles, intervalSec);
