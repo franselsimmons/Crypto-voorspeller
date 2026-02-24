@@ -30,11 +30,9 @@ async function fetchOhlc({ intervalMinutes }) {
 
 function splitTruthAndLive(candles, intervalSec) {
   if (!candles.length) return { candlesTruth: [], candlesWithLive: [], hasLive: false };
-
   const last = candles[candles.length - 1];
   const nowSec = Math.floor(Date.now() / 1000);
   const isLive = nowSec < (last.time + intervalSec);
-
   return {
     candlesTruth: isLive ? candles.slice(0, -1) : candles.slice(),
     candlesWithLive: candles.slice(),
