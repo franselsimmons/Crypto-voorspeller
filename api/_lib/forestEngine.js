@@ -382,10 +382,31 @@ export function buildForestOverlay({
   const priceNow = isNum(closeNow) ? closeNow : null;
   const liq = liqInfluence(priceNow, liqLevels);
 
-  const fundingRate = isNum(funding?.fundingRate) ? funding.fundingRate : null;
-  const fundingBias = isNum(funding?.fundingBias) ? funding.fundingBias : 0;
-  const fundingFlip = !!funding?.fundingFlip;
+  let fundingRate = null;
+let fundingBias = 0;
+let fundingFlip = false;
 
+// 1️⃣ echte funding indien beschikbaar
+if (isNum(funding?.fundingRate)) {
+  fundingRate = funding.fundingRate;
+  fundingBias = isNum(funding?.fundingBias) ? funding.fundingBias : 0;
+  fundingFlip = !!funding?.fundingFlip;
+}
+
+// 2️⃣ fallback: synthetic funding pressure
+else {
+  // als prijs ver boven KAMA zit + hoge relVol => long crowding
+  if (isNum(zNow) && isNum(relVolNow)) {
+    if (zNow > 1.2 && relVolNow > 1.1) {
+      fundingBias = -0.0015; // contrarian bear
+      fundingFlip = true;
+    }
+    if (zNow < -1.2 && relVolNow > 1.1) {
+      fundingBias = 0.0015; // contrarian bull
+      fundingFlip = true;
+    }
+  }
+}
   const zNow = t.z[lastIdxT];
 
   const confidence = scoreConfidence({
