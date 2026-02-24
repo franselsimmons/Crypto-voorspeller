@@ -1,31 +1,14 @@
 // api/forest.js
 import { getWeeklyBtcCandlesKraken, getDailyBtcCandlesKraken } from "./_lib/kraken.js";
 import { buildForestOverlay } from "./_lib/forestEngine.js";
+import {
+  fetchBtcFundingBias,
+  buildSyntheticLiqLevels,
+  parseLiqLevelsFromQuery,
+  parseLiqLevelsB64
+} from "./_lib/derivs.js";
 
 export const config = { runtime: "nodejs" };
-
-function parseLiqFromQuery(q) {
-  // 1) liq = JSON string
-  if (typeof q?.liq === "string" && q.liq.trim().startsWith("[")) {
-    try {
-      const j = JSON.parse(q.liq);
-      if (Array.isArray(j)) return j;
-    } catch {}
-  }
-
-  // 2) liqB64 = base64url JSON string
-  if (typeof q?.liqB64 === "string" && q.liqB64.length > 10) {
-    try {
-      const b64 = q.liqB64.replace(/-/g, "+").replace(/_/g, "/");
-      const pad = "=".repeat((4 - (b64.length % 4)) % 4);
-      const txt = Buffer.from(b64 + pad, "base64").toString("utf8");
-      const j = JSON.parse(txt);
-      if (Array.isArray(j)) return j;
-    } catch {}
-  }
-
-  return null;
-}
 
 export default async function handler(req, res) {
   try {
@@ -36,8 +19,6 @@ export default async function handler(req, res) {
     const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
-
-    // ✅ altijd weekly ophalen voor alignment bij 1d
     let weeklyTruthCandles = null;
 
     if (tf === "1w") {
@@ -53,11 +34,22 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ✅ funding + liq inputs (optioneel)
-    const fundingNow = Number(req.query?.funding);
-    const fundingVal = Number.isFinite(fundingNow) ? fundingNow : null;
+    const funding = await fetchBtcFundingBias();
 
-    const liqLevels = parseLiqFromQuery(req.query);
+    const liqQ = String(req.query?.liq || "");
+    const liqB64 = String(req.query?.liqB64 || "");
+
+    let liqLevels = [];
+    liqLevels = liqLevels.concat(parseLiqLevelsFromQuery(liqQ));
+    liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
+
+    if (!liqLevels.length) {
+      liqLevels = buildSyntheticLiqLevels(candlesTruth, {
+        lookback: intervalLabel === "1d" ? 220 : 180,
+        bins: intervalLabel === "1d" ? 64 : 48,
+        topN: 10
+      });
+    }
 
     const out = buildForestOverlay({
       candlesTruth,
@@ -66,9 +58,8 @@ export default async function handler(req, res) {
       tf: intervalLabel,
       horizonBars,
       weeklyTruthCandles,
-
-      fundingNow: fundingVal,
-      liqLevels: liqLevels
+      funding,
+      liqLevels
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -79,9 +70,8 @@ export default async function handler(req, res) {
       hasLive,
       horizonBars,
 
-      // inputs echo (handig debug)
-      fundingNow: fundingVal,
-      liqLevelsCount: Array.isArray(liqLevels) ? liqLevels.length : 0,
+      funding,
+      liqLevels,
 
       candles: candles.map(c => ({
         time: c.time,
@@ -109,7 +99,7 @@ export default async function handler(req, res) {
 
       confidence: out.confidence,
       stabilityScore: out.stabilityScore,
-      regimeFlipProbability: out.regimeFlipProbability
+      flipProbability: out.flipProbability
     }));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
