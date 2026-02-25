@@ -1,7 +1,6 @@
 // api/_lib/derivs.js
-// Haalt derivaten-data (funding, OI, ETF flows, liquidation heatmap) op.
-// CoinGlass API v4
-// Zet env var: COINGLASS_KEY
+// CoinGlass Open API v4 helpers: funding / OI / ETF flows / liquidation heatmap
+// Env: COINGLASS_KEY
 
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
@@ -9,61 +8,27 @@ function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 const BASE = "https://open-api-v4.coinglass.com";
 const KEY = process.env.COINGLASS_KEY || "";
 
-// Sommige CoinGlass accounts gebruiken net andere headernaam.
-// We sturen er 2 mee. (De server pakt de juiste.)
-function authHeaders() {
-  if (!KEY) return {};
-  return {
-    coinglassSecret: KEY,
-    "CG-API-KEY": KEY
-  };
-}
-
+// v4 verwacht header: CG-API-KEY (NIET coinglassSecret)
 async function fetchJson(url) {
   if (!KEY) return null;
 
-  const r = await fetch(url, { headers: authHeaders() });
+  const r = await fetch(url, {
+    headers: {
+      "accept": "application/json",
+      "CG-API-KEY": KEY
+    }
+  });
 
-  if (!r.ok) {
-    // 401/403/429/etc -> netjes terugvallen
-    return null;
-  }
+  // 401/403/429 => netjes terugvallen
+  if (!r.ok) return null;
 
-  const j = await r.json().catch(() => null);
-  return j;
+  return await r.json().catch(() => null);
 }
 
-// CoinGlass responses zijn vaak: { code, msg, data: ... }
+// CoinGlass is vaak: { code, msg, data: ... }
 function unwrap(j) {
   if (!j) return null;
   return j.data ?? j.result ?? j;
-}
-
-// probeer uit allerlei vormen een "array history" te halen
-function pickArray(raw) {
-  if (!raw) return null;
-  if (Array.isArray(raw)) return raw;
-
-  // vaak: { list: [...] } of { data: [...] } of { history: [...] }
-  const candidates = [
-    raw.list,
-    raw.data,
-    raw.history,
-    raw.records,
-    raw.items,
-    raw.result
-  ];
-
-  for (const c of candidates) {
-    if (Array.isArray(c)) return c;
-  }
-
-  // soms: { ... , [symbol]: [...] }
-  for (const k of Object.keys(raw)) {
-    if (Array.isArray(raw[k])) return raw[k];
-  }
-
-  return null;
 }
 
 // --------------------
@@ -71,22 +36,23 @@ function pickArray(raw) {
 // --------------------
 export async function fetchBtcFundingStats({
   lookbackDays = 120,
-  symbol = "BTC",
+  exchange = "Binance",
+  symbol = "BTCUSDT", // CoinGlass v4 gebruikt vaak exchange-symbol (bv BTCUSDT)
   interval = "8h"
 } = {}) {
-  // ✅ JUISTE endpoint naam: funding-rate (niet fundingRate)
-  // Docs: /api/futures/funding-rate/history  [oai_citation:3‡CoinGlass-API](https://docs.coinglass.com/reference/fr-ohlc-histroy)
-  const limit = Math.max(30, Math.min(2000, lookbackDays * (interval === "8h" ? 3 : 1)));
+  // Docs: /api/futures/funding-rate/history-ohlc
+  //  [oai_citation:2‡CoinGlass-API](https://docs.coinglass.com/reference/fr-ohlc-histroy)
+  const limit = Math.max(30, Math.min(2000, lookbackDays * 3));
   const url =
-    `${BASE}/api/futures/funding-rate/history` +
-    `?symbol=${encodeURIComponent(symbol)}` +
+    `${BASE}/api/futures/funding-rate/history-ohlc` +
+    `?exchange=${encodeURIComponent(exchange)}` +
+    `&symbol=${encodeURIComponent(symbol)}` +
     `&interval=${encodeURIComponent(interval)}` +
-    `&limit=${encodeURIComponent(limit)}`;
+    `&limit=${encodeURIComponent(String(limit))}`;
 
   const raw = unwrap(await fetchJson(url));
-  const arr = pickArray(raw);
-
-  if (!arr || arr.length < 30) {
+  const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.list) ? raw.list : null);
+  if (!Array.isArray(arr) || arr.length < 20) {
     return {
       fundingRate: null,
       fundingPercentile: null,
@@ -96,12 +62,12 @@ export async function fetchBtcFundingStats({
     };
   }
 
-  // Verwacht items zoals: { time, fundingRate } (soms 'rate')
+  // items zijn meestal { fundingRate } of { close } of { value }
   const rates = arr
-    .map(x => Number(x?.fundingRate ?? x?.rate ?? x?.value))
+    .map(x => Number(x?.fundingRate ?? x?.close ?? x?.value ?? x?.rate))
     .filter(isNum);
 
-  if (rates.length < 30) {
+  if (rates.length < 20) {
     return {
       fundingRate: null,
       fundingPercentile: null,
@@ -128,7 +94,7 @@ export async function fetchBtcFundingStats({
 
   const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
 
-  // bias: contrarian bij crowded funding
+  // bias (klein): pos funding = crowded longs => bearish drift
   let bias = 0;
   if (extreme === "EXTREME_POS") bias = -0.0018;
   else if (extreme === "HIGH_POS") bias = -0.0010;
@@ -148,28 +114,27 @@ export async function fetchBtcFundingStats({
 // Open Interest change (pct)
 // --------------------
 export async function fetchBtcOpenInterestChange({
-  symbol = "BTC",
+  exchange = "Binance",
+  symbol = "BTCUSDT",
   interval = "1d",
   lookback = 90
 } = {}) {
-  // In v4 bestaat o.a. aggregated-stablecoin-history
-  // (werkt voor BTC en geeft OI time series)
+  // Docs: /api/futures/open-interest/history-ohlc
+  //  [oai_citation:3‡CoinGlass-API](https://docs.coinglass.com/reference/oi-ohlc-histroy)
+  const limit = Math.max(20, Math.min(2000, lookback));
   const url =
-    `${BASE}/api/futures/open-interest/aggregated-stablecoin-history` +
-    `?symbol=${encodeURIComponent(symbol)}` +
+    `${BASE}/api/futures/open-interest/history-ohlc` +
+    `?exchange=${encodeURIComponent(exchange)}` +
+    `&symbol=${encodeURIComponent(symbol)}` +
     `&interval=${encodeURIComponent(interval)}` +
-    `&limit=${encodeURIComponent(Math.max(20, Math.min(2000, lookback)))}`;
+    `&limit=${encodeURIComponent(String(limit))}`;
 
   const raw = unwrap(await fetchJson(url));
-  const arr = pickArray(raw);
+  const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.list) ? raw.list : null);
+  if (!Array.isArray(arr) || arr.length < 8) return { oiNow: null, oiChange1: null, oiChange7: null };
 
-  if (!arr || arr.length < 8) {
-    return { oiNow: null, oiChange1: null, oiChange7: null };
-  }
-
-  // Sommige endpoints geven {openInterest} / {oi} / {value}
   const vals = arr
-    .map(x => Number(x?.openInterest ?? x?.oi ?? x?.value ?? x?.close))
+    .map(x => Number(x?.openInterest ?? x?.close ?? x?.value ?? x?.oi))
     .filter(isNum);
 
   if (vals.length < 8) return { oiNow: null, oiChange1: null, oiChange7: null };
@@ -191,36 +156,31 @@ export async function fetchBtcOpenInterestChange({
 // --------------------
 // ETF flows (net flow + percentile)
 // --------------------
-export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
-  // ✅ Endpoint volgens docs  [oai_citation:4‡CoinGlass-API](https://docs.coinglass.com/reference/etf-flows-history)
-  const url = `${BASE}/api/etf/bitcoin/flow-history?limit=${encodeURIComponent(lookbackDays)}`;
+export async function fetchBtcEtfFlows({
+  interval = "1w",
+  lookback = 120
+} = {}) {
+  // Veel accounts: /api/bitcoin/etf/flow-history
+  // (CoinGlass geeft dit ook zo in voorbeelden met CG-API-KEY)
+  //  [oai_citation:4‡coinglass](https://www.coinglass.com/learn/CoinGlass-API-Full-Guide-zh?utm_source=chatgpt.com)
+  const limit = Math.max(20, Math.min(2000, lookback));
+  const url =
+    `${BASE}/api/bitcoin/etf/flow-history` +
+    `?interval=${encodeURIComponent(interval)}` +
+    `&limit=${encodeURIComponent(String(limit))}`;
 
   const raw = unwrap(await fetchJson(url));
-  const arr = pickArray(raw);
-
-  if (!arr || arr.length < 20) {
-    return {
-      etfNetFlow: null,
-      etfFlow7: null,
-      etfPercentile: null,
-      etfFlip: false,
-      etfBias: 0
-    };
+  const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.list) ? raw.list : null);
+  if (!Array.isArray(arr) || arr.length < 20) {
+    return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0 };
   }
 
-  // Verwacht: { netFlow } of { flow }
   const flows = arr
-    .map(x => Number(x?.netFlow ?? x?.flow ?? x?.value))
+    .map(x => Number(x?.netFlow ?? x?.flow ?? x?.value ?? x?.close))
     .filter(isNum);
 
   if (flows.length < 20) {
-    return {
-      etfNetFlow: null,
-      etfFlow7: null,
-      etfPercentile: null,
-      etfFlip: false,
-      etfBias: 0
-    };
+    return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0 };
   }
 
   const last = flows[flows.length - 1];
@@ -233,8 +193,6 @@ export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
   const rank = cnt / sorted.length;
 
   const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
-
-  // schaal naar klein effect
   const bias = clamp(last / 1_000_000_000, -0.0015, 0.0015);
 
   return {
@@ -249,40 +207,43 @@ export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
 // --------------------
 // Liquidation heatmap => levels [{price, weight}]
 // --------------------
-export async function fetchBtcLiqHeatmapLevels({ symbol = "BTC", topN = 10 } = {}) {
-  // ✅ Endpoint volgens docs  [oai_citation:5‡CoinGlass-API](https://docs.coinglass.com/reference/liquidation-aggregate-heatmap)
+export async function fetchBtcLiqHeatmapLevels({
+  exchange = "Binance",
+  symbol = "BTCUSDT",
+  topN = 10
+} = {}) {
+  // Docs: /api/futures/liquidation/model1/aggregated-heatmap
+  //  [oai_citation:5‡CoinGlass-API](https://docs.coinglass.com/reference/liquidation-aggregate-heatmap)
   const url =
-    `${BASE}/api/futures/liquidation/aggregated-heatmap/model1` +
-    `?symbol=${encodeURIComponent(symbol)}`;
+    `${BASE}/api/futures/liquidation/model1/aggregated-heatmap` +
+    `?exchange=${encodeURIComponent(exchange)}` +
+    `&symbol=${encodeURIComponent(symbol)}`;
 
   const raw = unwrap(await fetchJson(url));
+  if (!raw) return [];
 
-  // Model1 responses verschillen: soms {levels:[...]} soms {data:[...]} etc.
-  const levels =
-    (Array.isArray(raw?.levels) ? raw.levels :
-     Array.isArray(raw?.data) ? raw.data :
-     Array.isArray(raw) ? raw :
-     null);
-
+  const levels = Array.isArray(raw?.levels) ? raw.levels : (Array.isArray(raw) ? raw : null);
   if (!Array.isArray(levels)) return [];
 
-  const out = levels
+  return levels
     .map(x => ({
-      price: Number(x?.price ?? x?.p),
-      weight: Number(x?.weight ?? x?.w ?? x?.score ?? x?.intensity)
+      price: Number(x?.price),
+      weight: Number(x?.weight ?? x?.score ?? x?.intensity ?? x?.value)
     }))
     .filter(x => isNum(x.price) && isNum(x.weight))
     .map(x => ({ price: x.price, weight: clamp(x.weight, 0, 1) }))
     .sort((a, b) => b.weight - a.weight)
     .slice(0, topN);
-
-  return out;
 }
 
 // --------------------
 // Fallback: “synthetic liq” (als je geen API key hebt)
 // --------------------
-export function buildSyntheticLiqLevels(candlesTruth, { lookback = 220, bins = 64, topN = 10 } = {}) {
+export function buildSyntheticLiqLevels(candlesTruth, {
+  lookback = 220,
+  bins = 64,
+  topN = 10
+} = {}) {
   if (!Array.isArray(candlesTruth) || candlesTruth.length < 50) return [];
   const closes = candlesTruth.map(c => Number(c?.close)).filter(isNum);
   if (closes.length < 50) return [];
