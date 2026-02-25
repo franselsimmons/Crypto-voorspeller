@@ -1,179 +1,274 @@
 // api/_lib/derivs.js
-import { clamp } from "./indicators.js";
+// Haalt derivaten-data (funding, OI, ETF flows, liquidation heatmap) op.
+// Default: CoinGlass API v4.
+// Zet env var: COINGLASS_KEY
 
-const COINGLASS_KEY = process.env.COINGLASS_KEY || "";
+function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 
-async function safeJson(r) {
-  const txt = await r.text();
-  try { return JSON.parse(txt); } catch { return { _raw: txt }; }
-}
+const BASE = "https://open-api-v4.coinglass.com";
+const KEY = process.env.COINGLASS_KEY || "";
 
-async function coinglassFetch(url) {
-  if (!COINGLASS_KEY) return null;
+async function fetchJson(url) {
+  if (!KEY) return null;
 
   const r = await fetch(url, {
     headers: {
-      accept: "application/json",
-      "coinglassSecret": COINGLASS_KEY
+      // CoinGlass gebruikt een secret header; bij sommige accounts heet dit exact zo.
+      // Als jouw key niet werkt: check CoinGlass dashboard "API" pagina voor headernaam.
+      "coinglassSecret": KEY
     }
   });
 
   if (!r.ok) {
-    // 401/403/429/etc -> netjes terugvallen
+    // 401/403/429 etc => graceful fallback
     return null;
   }
 
-  const j = await safeJson(r);
+  const j = await r.json().catch(() => null);
   return j;
 }
 
-// -------- FUNDING --------
-// We proberen “iets bruikbaars” te halen.
-// Als CoinGlass structuur anders is: we falen zacht en pakken fallback.
-export async function fetchBtcFundingBias() {
-  // CoinGlass heeft verschillende endpoints per versie.
-  // Deze URL is bewust “best-effort”.
-  const url = "https://open-api.coinglass.com/public/v2/funding_rate?symbol=BTC";
-  const j = await coinglassFetch(url);
-
-  if (!j) return { fundingRate: null, fundingBias: 0, fundingFlip: false, source: "fallback" };
-
-  // probeer funding rate uit mogelijke velden te halen
-  const data = j?.data || j?.result || j;
-  let rate = null;
-
-  if (Array.isArray(data)) {
-    // pak gemiddelde als array met exchanges
-    const vals = data.map(x => Number(x?.fundingRate ?? x?.funding_rate)).filter(Number.isFinite);
-    if (vals.length) rate = vals.reduce((a, b) => a + b, 0) / vals.length;
-  } else if (data && typeof data === "object") {
-    const v = Number(data?.fundingRate ?? data?.funding_rate ?? data?.rate);
-    if (Number.isFinite(v)) rate = v;
-  }
-
-  // simpele bias: extreem positief = contrarian bearish, extreem negatief = contrarian bullish
-  // (bias is klein, het is een “duwtje”, geen stuur)
-  let fundingBias = 0;
-  let fundingFlip = false;
-
-  if (Number.isFinite(rate)) {
-    const abs = Math.abs(rate);
-
-    if (rate > 0.0012) { fundingBias = -0.0012; fundingFlip = true; }
-    else if (rate < -0.0012) { fundingBias = +0.0012; fundingFlip = true; }
-    else if (abs > 0.0007) { fundingBias = -Math.sign(rate) * 0.0006; fundingFlip = true; }
-  }
-
-  return { fundingRate: Number.isFinite(rate) ? rate : null, fundingBias, fundingFlip, source: "coinglass" };
-}
-
-// -------- LIQ HEATMAP (levels) --------
-export async function fetchBtcLiqHeatmapLevels() {
-  // Best-effort endpoint; als dit faalt -> fallback.
-  const url = "https://open-api.coinglass.com/public/v2/liquidation_heatmap?symbol=BTC&interval=1d";
-  const j = await coinglassFetch(url);
+// CoinGlass responses zijn vaak: { code, msg, data: ... }
+function unwrap(j) {
   if (!j) return null;
-
-  const data = j?.data || j?.result || j;
-  // we verwachten iets als levels: [{price, size/weight}, ...]
-  // we normaliseren naar {price, weight}
-  const levels = [];
-
-  if (Array.isArray(data)) {
-    for (const x of data) {
-      const price = Number(x?.price);
-      const w = Number(x?.weight ?? x?.size ?? x?.liq ?? x?.value);
-      if (!Number.isFinite(price) || !Number.isFinite(w)) continue;
-      levels.push({ price, weight: w });
-    }
-  } else if (data && typeof data === "object") {
-    const arr = data?.levels || data?.data || data?.list;
-    if (Array.isArray(arr)) {
-      for (const x of arr) {
-        const price = Number(x?.price);
-        const w = Number(x?.weight ?? x?.size ?? x?.liq ?? x?.value);
-        if (!Number.isFinite(price) || !Number.isFinite(w)) continue;
-        levels.push({ price, weight: w });
-      }
-    }
-  }
-
-  if (!levels.length) return null;
-
-  // normaliseer weights naar 0..1
-  const maxW = Math.max(...levels.map(x => x.weight));
-  const norm = levels.map(x => ({ price: x.price, weight: clamp(x.weight / Math.max(1e-9, maxW), 0, 1) }));
-
-  // pak top 12
-  norm.sort((a, b) => b.weight - a.weight);
-  return norm.slice(0, 12);
+  return j.data ?? j.result ?? j;
 }
 
-// -------- FALLBACK: synthetic liq levels --------
-export function buildSyntheticLiqLevels(candlesTruth, { lookback = 220, bins = 64, topN = 10 } = {}) {
-  if (!Array.isArray(candlesTruth) || candlesTruth.length < 50) return [];
+// --------------------
+// Funding (percentile + extremes + flip)
+// --------------------
+export async function fetchBtcFundingStats({
+  lookbackDays = 120,
+  symbol = "BTC"
+} = {}) {
+  // Endpoint naam kan per CoinGlass variant verschillen.
+  // We proberen een “avg funding history”/funding history-achtig endpoint.
+  // Als CoinGlass jouw account een andere route geeft, pas hier alleen de url aan.
 
-  const slice = candlesTruth.slice(Math.max(0, candlesTruth.length - lookback));
-  const closes = slice.map(c => c.close).filter(Number.isFinite);
-  if (closes.length < 10) return [];
+  // Veel accounts ondersteunen: /api/futures/fundingRate/history?symbol=BTC
+  const url = `${BASE}/api/futures/fundingRate/history?symbol=${encodeURIComponent(symbol)}&interval=8h&limit=${lookbackDays * 3}`;
+  const raw = unwrap(await fetchJson(url));
+  if (!raw || !Array.isArray(raw)) return {
+    fundingRate: null,
+    fundingPercentile: null,
+    fundingExtreme: null,
+    fundingFlip: false,
+    fundingBias: 0
+  };
 
-  const lo = Math.min(...closes);
-  const hi = Math.max(...closes);
-  const range = Math.max(1e-9, hi - lo);
+  // Verwacht items zoals: { time, fundingRate } (soms 'rate')
+  const rates = raw
+    .map(x => Number(x?.fundingRate ?? x?.rate))
+    .filter(isNum);
 
-  const hist = Array(bins).fill(0);
-  for (const c of slice) {
-    const v = Number(c?.volume ?? 0);
-    const p = Number(c?.close);
-    if (!Number.isFinite(p)) continue;
-    const idx = clamp(Math.floor(((p - lo) / range) * (bins - 1)), 0, bins - 1);
-    hist[idx] += Number.isFinite(v) ? v : 1;
+  if (rates.length < 30) return {
+    fundingRate: null,
+    fundingPercentile: null,
+    fundingExtreme: null,
+    fundingFlip: false,
+    fundingBias: 0
+  };
+
+  const last = rates[rates.length - 1];
+
+  const sorted = rates.slice().sort((a, b) => a - b);
+  const rank = (() => {
+    let cnt = 0;
+    for (const v of sorted) if (v <= last) cnt++;
+    return cnt / sorted.length; // 0..1
+  })();
+
+  const extreme =
+    rank >= 0.97 ? "EXTREME_POS" :
+    rank <= 0.03 ? "EXTREME_NEG" :
+    rank >= 0.90 ? "HIGH_POS" :
+    rank <= 0.10 ? "HIGH_NEG" :
+    null;
+
+  // flip: teken veranderd t.o.v. vorige
+  const prev = rates[rates.length - 2];
+  const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
+
+  // bias: kleine drift (contrarian bij extreme)
+  // positief funding = crowded longs => bearish bias
+  let bias = 0;
+  if (extreme === "EXTREME_POS") bias = -0.0018;
+  else if (extreme === "HIGH_POS") bias = -0.0010;
+  else if (extreme === "EXTREME_NEG") bias = +0.0018;
+  else if (extreme === "HIGH_NEG") bias = +0.0010;
+
+  return {
+    fundingRate: last,
+    fundingPercentile: rank,        // 0..1
+    fundingExtreme: extreme,        // label
+    fundingFlip: !!flip,
+    fundingBias: bias
+  };
+}
+
+// --------------------
+// Open Interest change (pct)
+// --------------------
+export async function fetchBtcOpenInterestChange({
+  symbol = "BTC",
+  interval = "1d",
+  lookback = 60
+} = {}) {
+  const url = `${BASE}/api/futures/openInterest/history?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${lookback}`;
+  const raw = unwrap(await fetchJson(url));
+  if (!raw || !Array.isArray(raw) || raw.length < 5) {
+    return {
+      oiNow: null,
+      oiChange1: null,
+      oiChange7: null
+    };
   }
 
-  const maxH = Math.max(...hist, 1e-9);
+  const vals = raw
+    .map(x => Number(x?.openInterest ?? x?.oi))
+    .filter(isNum);
+
+  if (vals.length < 8) return { oiNow: null, oiChange1: null, oiChange7: null };
+
+  const oiNow = vals[vals.length - 1];
+  const oiPrev1 = vals[vals.length - 2];
+  const oiPrev7 = vals[vals.length - 8];
+
+  const ch1 = (isNum(oiPrev1) && oiPrev1 !== 0) ? ((oiNow - oiPrev1) / oiPrev1) : null;
+  const ch7 = (isNum(oiPrev7) && oiPrev7 !== 0) ? ((oiNow - oiPrev7) / oiPrev7) : null;
+
+  return {
+    oiNow,
+    oiChange1: isNum(ch1) ? ch1 : null, // fraction (0.05 = +5%)
+    oiChange7: isNum(ch7) ? ch7 : null
+  };
+}
+
+// --------------------
+// ETF flows (net flow + percentile)
+// --------------------
+export async function fetchBtcEtfFlows({
+  lookbackDays = 120
+} = {}) {
+  // CoinGlass heeft ETF endpoints (per account verschillend).
+  // We proberen: /api/etf/bitcoin/flow-history
+  const url = `${BASE}/api/etf/bitcoin/flow-history?limit=${lookbackDays}`;
+  const raw = unwrap(await fetchJson(url));
+  if (!raw || !Array.isArray(raw) || raw.length < 20) {
+    return {
+      etfNetFlow: null,
+      etfFlow7: null,
+      etfPercentile: null,
+      etfFlip: false,
+      etfBias: 0
+    };
+  }
+
+  // Verwacht: { time, netFlow } (of 'flow')
+  const flows = raw
+    .map(x => Number(x?.netFlow ?? x?.flow))
+    .filter(isNum);
+
+  if (flows.length < 20) {
+    return {
+      etfNetFlow: null,
+      etfFlow7: null,
+      etfPercentile: null,
+      etfFlip: false,
+      etfBias: 0
+    };
+  }
+
+  const last = flows[flows.length - 1];
+  const flow7 = flows.slice(-7).reduce((a, b) => a + b, 0);
+
+  const sorted = flows.slice().sort((a, b) => a - b);
+  const rank = (() => {
+    let cnt = 0;
+    for (const v of sorted) if (v <= last) cnt++;
+    return cnt / sorted.length;
+  })();
+
+  const prev = flows[flows.length - 2];
+  const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
+
+  // bias: flow positief = bullish drift, negatief = bearish drift (klein!)
+  const bias = clamp(last / 1_000_000_000, -0.0015, 0.0015); // schaal naar “klein effect”
+
+  return {
+    etfNetFlow: last,
+    etfFlow7: flow7,
+    etfPercentile: rank,
+    etfFlip: !!flip,
+    etfBias: bias
+  };
+}
+
+// --------------------
+// Liquidation heatmap => levels [{price, weight}]
+// --------------------
+export async function fetchBtcLiqHeatmapLevels({
+  symbol = "BTC",
+  topN = 10
+} = {}) {
+  // Proberen aggregate heatmap endpoint
+  const url = `${BASE}/api/futures/liquidation/heatmap?symbol=${encodeURIComponent(symbol)}`;
+  const raw = unwrap(await fetchJson(url));
+  if (!raw) return [];
+
+  // Sommige responses: { levels: [{price, weight}] } of arrays
+  const levels = Array.isArray(raw?.levels) ? raw.levels : (Array.isArray(raw) ? raw : null);
+  if (!Array.isArray(levels)) return [];
+
+  const out = levels
+    .map(x => ({
+      price: Number(x?.price),
+      weight: Number(x?.weight ?? x?.score ?? x?.intensity)
+    }))
+    .filter(x => isNum(x.price) && isNum(x.weight))
+    .map(x => ({ price: x.price, weight: clamp(x.weight, 0, 1) }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, topN);
+
+  return out;
+}
+
+// --------------------
+// Fallback: “synthetic liq” (als je geen API key hebt)
+// --------------------
+export function buildSyntheticLiqLevels(candlesTruth, {
+  lookback = 220,
+  bins = 64,
+  topN = 10
+} = {}) {
+  if (!Array.isArray(candlesTruth) || candlesTruth.length < 50) return [];
+  const closes = candlesTruth.map(c => Number(c?.close)).filter(isNum);
+  if (closes.length < 50) return [];
+
+  const start = Math.max(0, closes.length - lookback);
+  const win = closes.slice(start);
+
+  let lo = Infinity, hi = -Infinity;
+  for (const v of win) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (!isNum(lo) || !isNum(hi) || hi <= lo) return [];
+
+  const step = (hi - lo) / bins;
+  const hist = Array(bins).fill(0);
+
+  // simpele cluster: hoe vaak prijs in bin zit
+  for (const v of win) {
+    const idx = clamp(Math.floor((v - lo) / step), 0, bins - 1);
+    hist[idx] += 1;
+  }
+
+  const max = Math.max(...hist);
   const levels = hist.map((h, i) => ({
-    price: lo + (i / (bins - 1)) * range,
-    weight: clamp(h / maxH, 0, 1)
+    price: lo + (i + 0.5) * step,
+    weight: max ? h / max : 0
   }));
 
-  levels.sort((a, b) => b.weight - a.weight);
-  return levels.slice(0, topN);
-}
-
-// -------- query parsing --------
-// liq="price:weight,price:weight"
-export function parseLiqLevelsFromQuery(liqQ) {
-  const out = [];
-  if (!liqQ || typeof liqQ !== "string") return out;
-
-  const parts = liqQ.split(",");
-  for (const part of parts) {
-    const [pRaw, wRaw] = part.split(":");
-    const price = Number(pRaw);
-    const weight = Number(wRaw);
-    if (!Number.isFinite(price) || !Number.isFinite(weight)) continue;
-    out.push({ price, weight: clamp(weight, 0, 1) });
-  }
-  return out;
-}
-
-// liqB64 = base64(json array)
-export function parseLiqLevelsB64(b64) {
-  const out = [];
-  if (!b64 || typeof b64 !== "string") return out;
-
-  try {
-    const json = Buffer.from(b64, "base64").toString("utf8");
-    const arr = JSON.parse(json);
-    if (!Array.isArray(arr)) return out;
-    for (const x of arr) {
-      const price = Number(x?.price);
-      const weight = Number(x?.weight);
-      if (!Number.isFinite(price) || !Number.isFinite(weight)) continue;
-      out.push({ price, weight: clamp(weight, 0, 1) });
-    }
-  } catch {
-    return out;
-  }
-  return out;
+  return levels
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, topN);
 }
