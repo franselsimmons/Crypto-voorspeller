@@ -10,17 +10,19 @@ function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 
 // ------------------------------
 // Adaptive zWin: ATR-percentile => zWinUsed
-// low vol => langer window (stabieler)
-// high vol => korter window (sneller reageren)
+// Rustig  -> langer (stabiel)
+// Normaal -> medium
+// Wild    -> korter (sneller)
+// Extreme -> nog korter (super snel)
 // ------------------------------
 function adaptiveZWinFromAtr(atrArr, idx) {
   const r = percentileRank(atrArr, idx, 520); // 0..1
   if (!isNum(r)) return 208;
 
-  // 3 regimes (simpel maar werkt)
-  if (r >= 0.80) return 120;  // heel volatiel
-  if (r >= 0.55) return 160;  // normaal
-  return 220;                 // rustig => langer
+  if (r >= 0.92) return 110; // extreme vol
+  if (r >= 0.80) return 140; // wild
+  if (r >= 0.55) return 190; // normaal
+  return 240;                // rustig
 }
 
 function computeCore(candles, {
@@ -161,7 +163,8 @@ function liqInfluence(priceNow, liqLevels) {
 function scoreConfidence({
   zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow,
   diPlusNow, diMinusNow,
-  oiChange1, etfNetFlow
+  oiChange1, oiChange7,
+  etfNetFlow
 }) {
   let s = 0;
 
@@ -194,8 +197,9 @@ function scoreConfidence({
   if (structureOK) s += 2; else s -= 2;
   if (freezeNow) s -= 2;
 
-  // extra: OI change (explosie in leverage) verhoogt kans op “move”, maar ook flip risk
+  // extra: OI change (leverage build) => meer kans op move/volatility
   if (isNum(oiChange1) && Math.abs(oiChange1) > 0.03) s += 1;
+  if (isNum(oiChange7) && Math.abs(oiChange7) > 0.08) s += 1;
 
   // extra: ETF flows aanwezig en sterk => meer “bias confidence”
   if (isNum(etfNetFlow) && Math.abs(etfNetFlow) > 200_000_000) s += 1;
@@ -212,7 +216,7 @@ function computeFlipProbability({
   regNow, zNow, bandsNow, adxNow, structureOK, aligned, freezeNow,
   fundingFlip, fundingPercentile, fundingExtreme,
   liqPressure,
-  oiChange1,
+  oiChange1, oiChange7,
   etfFlip
 }) {
   const { p35, p65 } = bandsNow || {};
@@ -231,13 +235,22 @@ function computeFlipProbability({
   const liq = clamp(liqPressure, 0, 1);
 
   // funding extremes => hogere flip-kans (crowded)
+  const isExtreme97 =
+    (fundingExtreme === "EXTREME_POS" || fundingExtreme === "EXTREME_NEG") ||
+    (isNum(fundingPercentile) && (fundingPercentile >= 0.97 || fundingPercentile <= 0.03));
+
+  const isHigh90 =
+    (fundingExtreme === "HIGH_POS" || fundingExtreme === "HIGH_NEG") ||
+    (isNum(fundingPercentile) && (fundingPercentile >= 0.90 || fundingPercentile <= 0.10));
+
   const fundExtremeBoost =
-    (fundingExtreme === "EXTREME_POS" || fundingExtreme === "EXTREME_NEG") ? 1 :
-    (fundingExtreme === "HIGH_POS" || fundingExtreme === "HIGH_NEG") ? 0.6 :
+    isExtreme97 ? 1.35 :
+    isHigh90 ? 0.75 :
     0;
 
   // OI spike => leverage => meer “snap”
   const oi = isNum(oiChange1) ? clamp(Math.abs(oiChange1) / 0.06, 0, 1) : 0;
+  const oi7 = isNum(oiChange7) ? clamp(Math.abs(oiChange7) / 0.12, 0, 1) : 0;
 
   // ETF flip => macro-flow draait => flip-kans iets omhoog
   const etf = etfFlip ? 1 : 0;
@@ -252,9 +265,10 @@ function computeFlipProbability({
     0.7 * alignBad +
     0.6 * freeze +
     0.6 * liq +
-    0.7 * fundExtremeBoost +
+    0.95 * fundExtremeBoost +
     0.5 * fundFlip * (0.5 + 0.5 * fundRank) +
     0.6 * oi +
+    0.35 * oi7 +
     0.4 * etf;
 
   if (regNow === "NEUTRAL") x += 0.6;
@@ -363,9 +377,9 @@ function buildForwardFan({
   const tight = clamp(stabilityScore / 100, 0.2, 1.0);
   const fanScale = clamp(1.25 - 0.55 * tight, 0.6, 1.25);
 
-  // ✅ Asymmetry: bear sneller
-  const downMult = (regimeNow === "BEAR") ? 1.25 : 1.10;
-  const upMult   = (regimeNow === "BULL") ? 0.95 : 1.05;
+  // ✅ Asymmetry: BEAR sneller naar beneden
+  const downMult = (regimeNow === "BEAR") ? 1.38 : 1.12;
+  const upMult   = (regimeNow === "BULL") ? 0.92 : 1.05;
 
   const regimeBias =
     regimeNow === "BULL" ? +0.0007 :
@@ -451,7 +465,7 @@ export function buildForestOverlay({
     ? computeBands(t.z, t.a, lastIdxT, zWinUsed)
     : { bandsNow: {}, freezeNow: false };
 
-  // ✅ FIX: zNow direct hier, zodat je hem overal veilig kan gebruiken
+  // zNow direct hier, zodat je hem overal veilig kan gebruiken
   const zNow = lastIdxT >= 0 ? t.z[lastIdxT] : null;
 
   let reg = regimeFromZ(zNow, bandsNow);
@@ -549,7 +563,7 @@ export function buildForestOverlay({
   const confidence = scoreConfidence({
     zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow,
     diPlusNow, diMinusNow,
-    oiChange1,
+    oiChange1, oiChange7,
     etfNetFlow
   });
 
@@ -575,6 +589,7 @@ export function buildForestOverlay({
     fundingExtreme,
     liqPressure: liq.pressure,
     oiChange1,
+    oiChange7,
     etfFlip
   });
 
