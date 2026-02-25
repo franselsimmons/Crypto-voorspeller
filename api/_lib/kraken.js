@@ -1,55 +1,72 @@
 // api/_lib/kraken.js
-const KRAKEN_OHLC = "https://api.kraken.com/0/public/OHLC";
+// Kraken OHLC -> candles { time, open, high, low, close, volume }
+//
+// Kraken OHLC interval is MINUTES:
+// 1d = 1440
+// 1w = 10080
+//
+// Pair voor BTC/USD: XBTUSD (meestal) - als jouw account iets anders wil: pas PAIR aan.
+
 const PAIR = "XBTUSD";
 
-function toCandle(row) {
-  return {
-    time: Number(row[0]),
-    open: Number(row[1]),
-    high: Number(row[2]),
-    low: Number(row[3]),
-    close: Number(row[4]),
-    volume: Number(row[6] ?? 0)
-  };
+function toNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
 }
 
-async function fetchOhlc({ intervalMinutes }) {
-  const url = `${KRAKEN_OHLC}?pair=${PAIR}&interval=${intervalMinutes}`;
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) throw new Error(`Kraken OHLC failed: ${r.status}`);
+async function fetchKrakenOHLC(intervalMinutes, since = 0) {
+  const url = `https://api.kraken.com/0/public/OHLC?pair=${PAIR}&interval=${intervalMinutes}${since ? `&since=${since}` : ""}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Kraken OHLC fetch failed: ${r.status}`);
   const j = await r.json();
+
   if (j?.error?.length) throw new Error(`Kraken error: ${j.error.join(", ")}`);
+  const result = j?.result;
+  if (!result) throw new Error("Kraken OHLC missing result");
 
-  const result = j.result || {};
-  const pairKey = Object.keys(result).find(k => k !== "last");
-  if (!pairKey) throw new Error("Kraken: no result pair key");
+  const key = Object.keys(result).find(k => k !== "last");
+  const rows = result[key];
+  const last = result.last;
 
-  const rows = result[pairKey] || [];
-  return rows.map(toCandle).sort((a, b) => a.time - b.time);
+  if (!Array.isArray(rows)) throw new Error("Kraken OHLC rows not array");
+
+  const candles = rows.map(row => {
+    // [time, open, high, low, close, vwap, volume, count]
+    const t = toNum(row?.[0]);
+    return {
+      time: t != null ? t : null, // seconds epoch
+      open: toNum(row?.[1]),
+      high: toNum(row?.[2]),
+      low: toNum(row?.[3]),
+      close: toNum(row?.[4]),
+      volume: toNum(row?.[6])
+    };
+  }).filter(c =>
+    c.time != null &&
+    c.open != null && c.high != null && c.low != null && c.close != null
+  );
+
+  return { candles, last };
 }
 
-function splitTruthAndLive(candles, intervalSec) {
+// “Truth” = gesloten candles.
+// “Live” = laatste candle kan nog aan het vormen zijn (Kraken geeft hem soms mee).
+function splitTruthLive(candles) {
   if (!candles.length) return { candlesTruth: [], candlesWithLive: [], hasLive: false };
 
-  const last = candles[candles.length - 1];
-  const nowSec = Math.floor(Date.now() / 1000);
-  const isLive = nowSec < (last.time + intervalSec);
-
-  const candlesTruth = isLive ? candles.slice(0, -1) : candles.slice();
+  // laatste candle nemen als live (veilig)
+  const candlesTruth = candles.slice(0, -1);
   const candlesWithLive = candles.slice();
-  return { candlesTruth, candlesWithLive, hasLive: isLive };
-}
-
-export async function getWeeklyBtcCandlesKraken() {
-  const intervalMinutes = 10080; // 1w
-  const intervalSec = intervalMinutes * 60;
-  const candles = await fetchOhlc({ intervalMinutes });
-  return splitTruthAndLive(candles, intervalSec);
+  return { candlesTruth, candlesWithLive, hasLive: true };
 }
 
 export async function getDailyBtcCandlesKraken() {
-  const intervalMinutes = 1440; // 1d
-  const intervalSec = intervalMinutes * 60;
-  const candles = await fetchOhlc({ intervalMinutes });
-  return splitTruthAndLive(candles, intervalSec);
+  // Kraken geeft max ~720 candles vaak prima zonder since; als je meer wil: pagineren.
+  const { candles } = await fetchKrakenOHLC(1440, 0);
+  return splitTruthLive(candles);
+}
+
+export async function getWeeklyBtcCandlesKraken() {
+  const { candles } = await fetchKrakenOHLC(10080, 0);
+  return splitTruthLive(candles);
 }
