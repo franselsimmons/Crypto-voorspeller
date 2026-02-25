@@ -6,9 +6,7 @@ import {
   fetchBtcOpenInterestChange,
   fetchBtcEtfFlows,
   fetchBtcLiqHeatmapLevels,
-  buildSyntheticLiqLevels,
-  parseLiqLevelsFromQuery,
-  parseLiqLevelsB64
+  buildSyntheticLiqLevels
 } from "./_lib/derivs.js";
 
 export const config = { runtime: "nodejs" };
@@ -30,40 +28,27 @@ export default async function handler(req, res) {
     } else {
       ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
-
       const w = await getWeeklyBtcCandlesKraken();
       weeklyTruthCandles = w?.candlesTruth ?? null;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- derivs ----
-    const [funding, oi, etf] = await Promise.all([
-      fetchBtcFundingStats({ lookbackDays: 120, exchange: "Binance", symbol: "BTCUSDT", interval: "8h" }),
-      fetchBtcOpenInterestChange({ exchange: "Binance", symbol: "BTCUSDT", interval: intervalLabel === "1w" ? "1w" : "1d", lookback: 90 }),
-      fetchBtcEtfFlows({ lookbackDays: 180, interval: intervalLabel === "1w" ? "1w" : "1d" })
+    // ✅ Funding/OI van Binance fallback (gratis)
+    const [funding, oi, etf, liqApi] = await Promise.all([
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
+      fetchBtcOpenInterestChange({ symbol: "BTCUSDT", interval: intervalLabel === "1w" ? "1w" : "1d", lookback: 90 }),
+      fetchBtcEtfFlows({ lookbackDays: 120 }),
+      fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 10 })
     ]);
 
-    // liq: query overrides -> api -> synthetic
-    const liqQ = String(req.query?.liq || "");
-    const liqB64 = String(req.query?.liqB64 || "");
-
-    let liqLevels = [];
-    liqLevels = liqLevels.concat(parseLiqLevelsFromQuery(liqQ));
-    liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
-
-    if (!liqLevels.length) {
-      const real = await fetchBtcLiqHeatmapLevels({ exchange: "Binance", symbol: "BTCUSDT", topN: 12 });
-      if (Array.isArray(real) && real.length) liqLevels = real;
-    }
-
-    if (!liqLevels.length) {
-      liqLevels = buildSyntheticLiqLevels(candlesTruth, {
-        lookback: intervalLabel === "1d" ? 220 : 180,
-        bins: intervalLabel === "1d" ? 64 : 48,
-        topN: 12
-      });
-    }
+    const liqLevels = (Array.isArray(liqApi) && liqApi.length)
+      ? liqApi
+      : buildSyntheticLiqLevels(candlesTruth, {
+          lookback: intervalLabel === "1d" ? 220 : 180,
+          bins: intervalLabel === "1d" ? 64 : 48,
+          topN: 12
+        });
 
     const out = buildForestOverlay({
       candlesTruth,
@@ -72,7 +57,6 @@ export default async function handler(req, res) {
       tf: intervalLabel,
       horizonBars,
       weeklyTruthCandles,
-
       funding,
       liqLevels,
       oi,
