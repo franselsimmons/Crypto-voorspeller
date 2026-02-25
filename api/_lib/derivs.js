@@ -1,103 +1,135 @@
 // api/_lib/derivs.js
+import { kv } from "@vercel/kv";
+
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
 
-const UA = "Mozilla/5.0 (compatible; CryptoVoorspeller/1.0; +https://crypto-voorspeller.vercel.app)";
-
-async function fetchText(url, opts = {}) {
-  const r = await fetch(url, {
-    ...opts,
-    headers: { "accept": "*/*", "user-agent": UA, ...(opts.headers || {}) }
-  });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 180)}`);
-  return t;
-}
-
 async function fetchJson(url, opts = {}) {
-  const r = await fetch(url, {
-    ...opts,
-    headers: { "accept": "application/json", "user-agent": UA, ...(opts.headers || {}) }
+  const timeoutMs = Number(opts?.timeoutMs ?? 9000);
+  const headers = opts?.headers ?? {};
+
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    const r = await fetch(url, {
+      ...opts,
+      headers: { accept: "application/json", ...headers },
+      signal: ctrl.signal
+    });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+
+    if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 180)}`);
+    return j;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function tryMany(urls, opts = {}) {
+  let lastErr = null;
+  for (const u of urls) {
+    try {
+      const j = await fetchJson(u, opts);
+      return { ok: true, url: u, data: j };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  return { ok: false, error: String(lastErr?.message || lastErr || "unknown") };
+}
+
+// ------------------------------
+// CoinGlass helper (OPTIONEEL)
+// ------------------------------
+function getCoinglassKey() {
+  const k = process.env.COINGLASS_KEY;
+  return (typeof k === "string" && k.trim()) ? k.trim() : null;
+}
+
+async function fetchCoinglass(url) {
+  const key = getCoinglassKey();
+  if (!key) return { ok: false, denied: true, code: "NO_KEY", msg: "No key" };
+
+  const j = await fetchJson(url, {
+    headers: {
+      accept: "application/json",
+      coinglassSecret: key
+    },
+    timeoutMs: 12000
   });
-  const t = await r.text();
-  let j = null;
-  try { j = JSON.parse(t); } catch {}
-  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 180)}`);
-  return j;
+
+  const code = String(j?.code ?? "");
+  const msg = String(j?.msg ?? "");
+  if (code !== "0") return { ok: false, denied: true, code, msg };
+  return { ok: true, data: j?.data ?? null };
 }
 
 // ------------------------------
-// BINANCE (gratis) Funding + OI
+// BINANCE (gratis) funding + OI
 // ------------------------------
-async function fetchBinancePremiumIndex({ symbol = "BTCUSDT" } = {}) {
-  const url = `https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${encodeURIComponent(symbol)}`;
-  const j = await fetchJson(url);
-  if (j && typeof j === "object" && !Array.isArray(j) && "code" in j && "msg" in j) {
-    throw new Error(`Binance premiumIndex error: ${j.code} ${j.msg}`);
-  }
-  const rate = Number(j?.lastFundingRate);
-  return isNum(rate) ? rate : null;
-}
-
 async function fetchBinanceFundingHistory({ symbol = "BTCUSDT", limit = 200 } = {}) {
-  const url = `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}`;
-  const arr = await fetchJson(url);
+  const urls = [
+    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}` // duplicate, maar houdt plek voor extra host
+  ];
+  const r = await tryMany(urls, { timeoutMs: 9000 });
+  if (!r.ok) return { ok: false, hist: [], err: r.error };
 
-  if (arr && typeof arr === "object" && !Array.isArray(arr) && "code" in arr && "msg" in arr) {
-    throw new Error(`Binance fundingRate error: ${arr.code} ${arr.msg}`);
-  }
+  const arr = r.data;
+  if (!Array.isArray(arr) || !arr.length) return { ok: true, hist: [], err: null };
 
-  if (!Array.isArray(arr) || !arr.length) return [];
-  return arr
-    .map(x => ({ time: Math.floor(Number(x?.fundingTime) / 1000), rate: Number(x?.fundingRate) }))
+  const hist = arr
+    .map(x => ({
+      time: Math.floor(Number(x?.fundingTime) / 1000),
+      rate: Number(x?.fundingRate)
+    }))
     .filter(x => isNum(x.time) && isNum(x.rate));
+
+  return { ok: true, hist, err: null };
 }
 
-function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
-  const lastRate =
-    (hist.length && isNum(hist[hist.length - 1]?.rate)) ? hist[hist.length - 1].rate :
-    (isNum(fallbackRate) ? fallbackRate : null);
-
-  if (!isNum(lastRate)) {
-    return { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "binance-empty" };
+function fundingStatsFromHistory(hist) {
+  if (!hist.length) {
+    return {
+      fundingRate: null,
+      fundingPercentile: null,
+      fundingExtreme: null,
+      fundingFlip: false,
+      fundingBias: 0,
+      source: "binance-empty"
+    };
   }
 
-  let pct = null;
-  if (hist.length >= 20) {
-    const sorted = hist.map(x => x.rate).slice().sort((a,b)=>a-b);
-    let idx = 0;
-    while (idx < sorted.length && sorted[idx] <= lastRate) idx++;
-    pct = sorted.length > 1 ? (idx - 1) / (sorted.length - 1) : 0.5;
-  }
+  const lastRate = hist[hist.length - 1].rate;
+
+  const sorted = hist.map(x => x.rate).slice().sort((a,b)=>a-b);
+  let idx = 0;
+  while (idx < sorted.length && sorted[idx] <= lastRate) idx++;
+  const pct = sorted.length > 1 ? (idx - 1) / (sorted.length - 1) : 0.5;
 
   let extreme = null;
+  const p = pct;
 
-  // percentile-based (jouw wens: >97% zwaarder)
-  if (isNum(pct)) {
-    if (pct >= 0.995) extreme = "EXTREME_POS";
-    else if (pct >= 0.97) extreme = "HIGH_POS";
+  if (p >= 0.995) extreme = "EXTREME_POS";
+  else if (p >= 0.97) extreme = "HIGH_POS";
 
-    if (pct <= 0.005) extreme = "EXTREME_NEG";
-    else if (pct <= 0.03) extreme = "HIGH_NEG";
-  } else {
-    // fallback absolute
-    if (lastRate >= 0.0020) extreme = "EXTREME_POS";
-    else if (lastRate >= 0.0012) extreme = "HIGH_POS";
-    if (lastRate <= -0.0020) extreme = "EXTREME_NEG";
-    else if (lastRate <= -0.0012) extreme = "HIGH_NEG";
-  }
+  if (p <= 0.005) extreme = "EXTREME_NEG";
+  else if (p <= 0.03) extreme = "HIGH_NEG";
 
   const flip = !!extreme;
 
   let bias = 0;
   if (extreme === "HIGH_POS") bias = -0.0007;
-  if (extreme === "EXTREME_POS") bias = -0.0012;
+  if (extreme === "EXTREME_POS") bias = -0.0012; // zwaarder
   if (extreme === "HIGH_NEG") bias = +0.0007;
-  if (extreme === "EXTREME_NEG") bias = +0.0012;
+  if (extreme === "EXTREME_NEG") bias = +0.0012; // zwaarder
 
   return {
     fundingRate: lastRate,
-    fundingPercentile: isNum(pct) ? pct : null,
+    fundingPercentile: pct,
     fundingExtreme: extreme,
     fundingFlip: flip,
     fundingBias: bias,
@@ -105,124 +137,141 @@ function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
   };
 }
 
-// ✅ forest.js gebruikt deze naam
-export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
-  try {
-    const fallbackRate = await fetchBinancePremiumIndex({ symbol });
-    const hist = await fetchBinanceFundingHistory({ symbol, limit: 200 });
-    return fundingStatsFromHistoryOrRate(hist, fallbackRate);
-  } catch (e) {
-    return {
-      fundingRate: null,
-      fundingPercentile: null,
-      fundingExtreme: null,
-      fundingFlip: false,
-      fundingBias: 0,
-      source: `binance-error:${String(e?.message || e).slice(0, 90)}`
-    };
-  }
-}
-
-async function fetchBinanceOpenInterestNow({ symbol = "BTCUSDT" } = {}) {
-  const url = `https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(symbol)}`;
-  const j = await fetchJson(url);
-  if (j && typeof j === "object" && !Array.isArray(j) && "code" in j && "msg" in j) {
-    throw new Error(`Binance openInterest error: ${j.code} ${j.msg}`);
-  }
-  const oi = Number(j?.openInterest);
-  return isNum(oi) ? oi : null;
-}
-
 async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
-  const url = `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=1d&limit=${limit}`;
-  const arr = await fetchJson(url);
+  const urls = [
+    `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=1d&limit=${limit}`
+  ];
+  const r = await tryMany(urls, { timeoutMs: 9000 });
+  if (!r.ok) return { ok: false, hist: [], err: r.error };
 
-  if (arr && typeof arr === "object" && !Array.isArray(arr) && "code" in arr && "msg" in arr) {
-    throw new Error(`Binance openInterestHist error: ${arr.code} ${arr.msg}`);
-  }
+  const arr = r.data;
+  if (!Array.isArray(arr) || !arr.length) return { ok: true, hist: [], err: null };
 
-  if (!Array.isArray(arr) || !arr.length) return [];
-  return arr
-    .map(x => ({ time: Math.floor(Number(x?.timestamp) / 1000), oi: Number(x?.sumOpenInterestValue) }))
+  const hist = arr
+    .map(x => ({
+      time: Math.floor(Number(x?.timestamp) / 1000),
+      oi: Number(x?.sumOpenInterestValue)
+    }))
     .filter(x => isNum(x.time) && isNum(x.oi));
+
+  return { ok: true, hist, err: null };
 }
 
-// ✅ forest.js gebruikt deze naam
-export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
-  try {
-    const [oiNowFallback, hist] = await Promise.all([
-      fetchBinanceOpenInterestNow({ symbol }).catch(() => null),
-      fetchBinanceOiHistory({ symbol, limit: 15 })
-    ]);
+// ------------------------------
+// PUBLIC API (wat forest.js wil gebruiken)
+// ------------------------------
+export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
+  // 1) CoinGlass (bij jou meestal denied)
+  const cg = await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/futures/funding-rate/history?exchange=Binance&symbol=${encodeURIComponent(symbol)}&interval=8h&limit=200`
+  );
+  if (cg.ok && Array.isArray(cg.data) && cg.data.length) {
+    // Als je ooit upgrade: hier kun je cg.data mappen
+  }
 
-    if (hist.length < 2) {
-      return { oiNow: isNum(oiNowFallback) ? oiNowFallback : null, oiChange1: null, oiChange7: null, source: "binance-empty" };
-    }
+  // 2) Binance (gratis)
+  const b = await fetchBinanceFundingHistory({ symbol, limit: 200 });
+  if (b.ok && b.hist.length) {
+    const out = fundingStatsFromHistory(b.hist);
+    // cache
+    try { await kv.set("derivs:funding:last", out, { ex: 60 * 20 }); } catch {}
+    return out;
+  }
+
+  // 3) Cache fallback (zodat UI niet n/a wordt door 1 timeout)
+  try {
+    const cached = await kv.get("derivs:funding:last");
+    if (cached && typeof cached === "object") return { ...cached, source: "cache" };
+  } catch {}
+
+  return {
+    fundingRate: null,
+    fundingPercentile: null,
+    fundingExtreme: null,
+    fundingFlip: false,
+    fundingBias: 0,
+    source: b.ok ? "binance-empty" : `binance-error:${String(b.err || "")}`
+  };
+}
+
+export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
+  // 1) CoinGlass (bij jou denied)
+  const cg = await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/futures/open-interest/history?exchange=Binance&symbol=${encodeURIComponent(symbol)}&interval=1d&limit=120`
+  );
+  if (cg.ok && Array.isArray(cg.data) && cg.data.length) {
+    // als je upgrade: hier cg.data parsen
+  }
+
+  // 2) Binance (gratis)
+  const b = await fetchBinanceOiHistory({ symbol, limit: 15 });
+  if (b.ok && b.hist.length >= 2) {
+    const hist = b.hist;
 
     const last = hist[hist.length - 1];
     const prev1 = hist[hist.length - 2] || null;
     const prev7 = hist.length >= 8 ? hist[hist.length - 8] : null;
 
-    const oiNow = isNum(last?.oi) ? last.oi : (isNum(oiNowFallback) ? oiNowFallback : null);
-    const c1 = (prev1 && prev1.oi > 0 && isNum(oiNow)) ? ((oiNow - prev1.oi) / prev1.oi) : null;
-    const c7 = (prev7 && prev7.oi > 0 && isNum(oiNow)) ? ((oiNow - prev7.oi) / prev7.oi) : null;
+    const oiNow = last.oi;
+    const oiChange1 = (prev1 && prev1.oi > 0) ? ((oiNow - prev1.oi) / prev1.oi) : null;
+    const oiChange7 = (prev7 && prev7.oi > 0) ? ((oiNow - prev7.oi) / prev7.oi) : null;
 
-    return {
-      oiNow: isNum(oiNow) ? oiNow : null,
-      oiChange1: isNum(c1) ? c1 : null,
-      oiChange7: isNum(c7) ? c7 : null,
+    const out = {
+      oiNow,
+      oiChange1: isNum(oiChange1) ? oiChange1 : null,
+      oiChange7: isNum(oiChange7) ? oiChange7 : null,
       source: "binance"
     };
-  } catch (e) {
-    return { oiNow: null, oiChange1: null, oiChange7: null, source: `binance-error:${String(e?.message || e).slice(0, 90)}` };
-  }
-}
 
-// ------------------------------
-// ETF flows via Bitbo (best effort)
-// ------------------------------
-function parseBitboTotals(html) {
-  const text = String(html || "");
-  // pak alle getallen die eruit zien als "Totals" in US$m (Bitbo gebruikt vaak US$m)
-  // We pakken een paar laatste matches, newest-first.
-  const matches = [];
-  const re = /Totals<\/[^>]*>\s*<\/[^>]*>\s*<[^>]*>\s*(-?\d+(?:\.\d+)?)/gi;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const v = Number(m[1]);
-    if (isNum(v)) matches.push(v);
-    if (matches.length >= 10) break;
+    try { await kv.set("derivs:oi:last", out, { ex: 60 * 30 }); } catch {}
+    return out;
   }
-  return matches; // in US$m
-}
 
-export async function fetchBtcEtfFlows() {
+  // 3) Cache fallback
   try {
-    const html = await fetchText("https://bitbo.io/treasuries/etf-flows/");
-    const totalsM = parseBitboTotals(html);
+    const cached = await kv.get("derivs:oi:last");
+    if (cached && typeof cached === "object") return { ...cached, source: "cache" };
+  } catch {}
 
-    if (!totalsM.length) {
-      return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "bitbo-empty" };
-    }
-
-    const latest = totalsM[0] * 1_000_000;
-    const sum7 = totalsM.slice(0, 7).reduce((a, x) => a + x * 1_000_000, 0);
-
-    const prev = totalsM[1];
-    const etfFlip = isNum(prev) ? (Math.sign(prev) !== Math.sign(totalsM[0]) && totalsM[0] !== 0) : false;
-    const etfBias = totalsM[0] > 0 ? +0.0004 : totalsM[0] < 0 ? -0.0004 : 0;
-
-    return { etfNetFlow: latest, etfFlow7: sum7, etfPercentile: null, etfFlip, etfBias, source: "bitbo" };
-  } catch (e) {
-    return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: `bitbo-error:${String(e?.message || e).slice(0, 90)}` };
-  }
+  return {
+    oiNow: null,
+    oiChange1: null,
+    oiChange7: null,
+    source: b.ok ? "binance-empty" : `binance-error:${String(b.err || "")}`
+  };
 }
 
-// ------------------------------
-// Liq heatmap: we doen GEEN CoinGlass meer (scheelt errors + tijd)
-// -> forest.js valt dan automatisch terug op synthetic
-// ------------------------------
-export async function fetchBtcLiqHeatmapLevels() {
+export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
+  // CoinGlass denied -> ETF blijft n/a tenzij je andere bron toevoegt / upgrade
+  const cg = await fetchCoinglass("https://open-api-v4.coinglass.com/api/etf/bitcoin/flow-history?limit=180");
+  if (!cg.ok) {
+    return {
+      etfNetFlow: null,
+      etfFlow7: null,
+      etfPercentile: null,
+      etfFlip: false,
+      etfBias: 0,
+      source: "coinglass-denied"
+    };
+  }
+
+  // Als het ooit werkt: hier data parsen
+  return {
+    etfNetFlow: null,
+    etfFlow7: null,
+    etfPercentile: null,
+    etfFlip: false,
+    etfBias: 0,
+    source: "coinglass"
+  };
+}
+
+export async function fetchBtcLiqHeatmapLevels({ symbol = "BTCUSDT", topN = 12 } = {}) {
+  const cg = await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap?exchange=Binance&symbol=${encodeURIComponent(symbol)}`
+  );
+  if (!cg.ok) return [];
+  // als het ooit werkt: return [{price, weight}, ...]
   return [];
 }
 
