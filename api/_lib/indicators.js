@@ -1,7 +1,8 @@
 // api/_lib/indicators.js
+// Kleine indicator helpers, puur JS.
 
-export function clamp(x, lo, hi) {
-  return Math.max(lo, Math.min(hi, x));
+function isNum(x) {
+  return typeof x === "number" && Number.isFinite(x);
 }
 
 export function sma(values, length) {
@@ -13,14 +14,12 @@ export function sma(values, length) {
   for (let i = 0; i < values.length; i++) {
     const v = values[i];
     if (v == null) { out[i] = null; continue; }
-
     sum += v; n++;
 
     if (i >= length) {
       const old = values[i - length];
       if (old != null) { sum -= old; n--; }
     }
-
     out[i] = (i >= length - 1) ? (sum / length) : null;
   }
   return out;
@@ -61,12 +60,11 @@ export function kama(values, erLen = 10, fast = 2, slow = 30) {
       continue;
     }
 
+    // ER = change / volatility
     const change = Math.abs(values[i] - values[i - erLen]);
     let vol = 0;
     for (let k = i - erLen + 1; k <= i; k++) {
-      const a = values[k], b = values[k - 1];
-      if (a == null || b == null) continue;
-      vol += Math.abs(a - b);
+      vol += Math.abs(values[k] - values[k - 1]);
     }
     const er = (vol === 0) ? 0 : (change / vol);
 
@@ -86,8 +84,7 @@ export function std(values, length) {
 
   for (let i = 0; i < values.length; i++) {
     if (i < length - 1) continue;
-
-    const window = values.slice(i - length + 1, i + 1).filter(x => x != null && Number.isFinite(x));
+    const window = values.slice(i - length + 1, i + 1).filter((x) => x != null);
     if (window.length < length) continue;
 
     const mean = window.reduce((a, b) => a + b, 0) / window.length;
@@ -97,35 +94,6 @@ export function std(values, length) {
   return out;
 }
 export const stdev = std;
-
-// robust helpers
-export function median(arr) {
-  const a = arr.filter(x => x != null && Number.isFinite(x)).slice().sort((x, y) => x - y);
-  if (!a.length) return null;
-  const mid = Math.floor(a.length / 2);
-  if (a.length % 2 === 1) return a[mid];
-  return (a[mid - 1] + a[mid]) / 2;
-}
-
-export function mad(values, length) {
-  const out = Array(values.length).fill(null);
-  if (length <= 1) return out;
-
-  for (let i = 0; i < values.length; i++) {
-    if (i < length - 1) continue;
-
-    const win = values.slice(i - length + 1, i + 1);
-    const m = median(win);
-    if (m == null) continue;
-
-    const dev = win.map(v => (v == null ? null : Math.abs(v - m)));
-    const m2 = median(dev);
-    if (m2 == null || m2 === 0) continue;
-
-    out[i] = 1.4826 * m2; // vergelijkbaar met std bij normaal
-  }
-  return out;
-}
 
 export function atr(highs, lows, closes, length = 14) {
   const tr = Array(closes.length).fill(null);
@@ -167,11 +135,9 @@ export function obv(closes, volumes) {
 }
 
 // ADX + DI+/DI- (Wilder)
-export function adx(highs, lows, closes, length = 14) {
+// Return object met 3 lijnen: { adx, diPlus, diMinus }
+export function adxDi(highs, lows, closes, length = 14) {
   const n = closes.length;
-  const outAdx = Array(n).fill(null);
-  const outDiPlus = Array(n).fill(null);
-  const outDiMinus = Array(n).fill(null);
 
   const tr = Array(n).fill(null);
   const plusDM = Array(n).fill(null);
@@ -207,44 +173,86 @@ export function adx(highs, lows, closes, length = 14) {
   const pS = wilderSmooth(plusDM);
   const mS = wilderSmooth(minusDM);
 
+  const diPlus = Array(n).fill(null);
+  const diMinus = Array(n).fill(null);
   const dx = Array(n).fill(null);
 
   for (let i = 0; i < n; i++) {
     if (trS[i] == null || trS[i] === 0) continue;
+    const pDI = 100 * (pS[i] / trS[i]);
+    const mDI = 100 * (mS[i] / trS[i]);
+    diPlus[i] = pDI;
+    diMinus[i] = mDI;
 
-    const diPlus = 100 * (pS[i] / trS[i]);
-    const diMinus = 100 * (mS[i] / trS[i]);
-
-    outDiPlus[i] = diPlus;
-    outDiMinus[i] = diMinus;
-
-    const denom = diPlus + diMinus;
+    const denom = (pDI + mDI);
     if (denom === 0) continue;
-
-    dx[i] = 100 * (Math.abs(diPlus - diMinus) / denom);
+    dx[i] = 100 * (Math.abs(pDI - mDI) / denom);
   }
 
   // ADX = Wilder EMA van DX
+  const adx = Array(n).fill(null);
   let prev = null;
   for (let i = 0; i < n; i++) {
     const v = dx[i];
     if (v == null) continue;
     if (prev == null) prev = v;
     else prev = (prev * (length - 1) + v) / length;
-    outAdx[i] = prev;
+    adx[i] = prev;
   }
 
-  return { adx: outAdx, diPlus: outDiPlus, diMinus: outDiMinus };
+  return { adx, diPlus, diMinus };
+}
+
+// Backwards compatible: oude adx() geeft alleen ADX lijn terug
+export function adx(highs, lows, closes, length = 14) {
+  return adxDi(highs, lows, closes, length).adx;
 }
 
 export function percentileFromWindow(window, p) {
-  const arr = window.filter(x => x != null && Number.isFinite(x)).slice().sort((a, b) => a - b);
+  const arr = window.filter((x) => x != null).slice().sort((a, b) => a - b);
   if (!arr.length) return null;
   const idx = Math.min(arr.length - 1, Math.max(0, Math.floor((p / 100) * (arr.length - 1))));
   return arr[idx];
 }
 
-// pivots
+export function clamp(x, lo, hi) {
+  return Math.max(lo, Math.min(hi, x));
+}
+
+// ------------------------------
+// ROBUST helpers (fat tails)
+// ------------------------------
+export function median(arr) {
+  const a = arr.filter(x => x != null && Number.isFinite(x)).slice().sort((x, y) => x - y);
+  if (!a.length) return null;
+  const mid = Math.floor(a.length / 2);
+  if (a.length % 2 === 1) return a[mid];
+  return (a[mid - 1] + a[mid]) / 2;
+}
+
+export function mad(values, length) {
+  const out = Array(values.length).fill(null);
+  if (length <= 1) return out;
+
+  for (let i = 0; i < values.length; i++) {
+    if (i < length - 1) continue;
+    const win = values.slice(i - length + 1, i + 1);
+    const m = median(win);
+    if (m == null) continue;
+
+    const dev = win.map(v => (v == null ? null : Math.abs(v - m)));
+    const m2 = median(dev);
+    if (m2 == null || m2 === 0) continue;
+
+    // 1.4826 => vergelijkbaar met std bij “normaal”
+    out[i] = 1.4826 * m2;
+  }
+  return out;
+}
+
+// ------------------------------
+// Pivots / swing structuur
+// ------------------------------
 export function pivotHigh(highs, left = 3, right = 3) {
   const n = highs.length;
   const out = Array(n).fill(false);
@@ -294,4 +302,19 @@ export function lastSwingLevels(highs, lows, left = 3, right = 3, lookback = 200
   }
 
   return { lastSwingHigh: lastHigh, lastSwingLow: lastLow };
+}
+
+// ------------------------------
+// ATR percentile rank (0..1)
+// ------------------------------
+export function percentileRank(values, i, lookback = 520) {
+  const start = Math.max(0, i - lookback + 1);
+  const win = values.slice(start, i + 1).filter(isNum);
+  if (win.length < 20) return null;
+  const x = values[i];
+  if (!isNum(x)) return null;
+
+  let cnt = 0;
+  for (const v of win) if (v <= x) cnt++;
+  return cnt / win.length;
 }
