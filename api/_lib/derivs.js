@@ -1,7 +1,7 @@
 // api/_lib/derivs.js
 
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
-function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
+function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 
 async function fetchJson(url, opts = {}) {
   const r = await fetch(url, opts);
@@ -14,6 +14,7 @@ async function fetchJson(url, opts = {}) {
 
 // ------------------------------
 // CoinGlass helper (OPTIONEEL)
+// BELANGRIJK: deze mag NOOIT throwen (anders gaat je hele /api/forest stuk)
 // ------------------------------
 function getCoinglassKey() {
   const k = process.env.COINGLASS_KEY;
@@ -24,20 +25,25 @@ async function fetchCoinglass(url) {
   const key = getCoinglassKey();
   if (!key) return { ok: false, denied: true, code: "NO_KEY", msg: "No key" };
 
-  // CoinGlass v4 header (zoals jij al gebruikt)
-  const j = await fetchJson(url, {
-    headers: {
-      accept: "application/json",
-      coinglassSecret: key
-    }
-  });
+  try {
+    const j = await fetchJson(url, {
+      headers: {
+        accept: "application/json",
+        coinglassSecret: key
+      }
+    });
 
-  const code = String(j?.code ?? "");
-  const msg = String(j?.msg ?? "");
-  // bij jou: code "400" + "Upgrade plan"
-  if (code !== "0") return { ok: false, denied: true, code, msg };
+    const code = String(j?.code ?? "");
+    const msg = String(j?.msg ?? "");
 
-  return { ok: true, data: j?.data ?? null };
+    // bij jou: code "400" + "Upgrade plan"
+    if (code !== "0") return { ok: false, denied: true, code, msg, data: j?.data ?? null };
+
+    return { ok: true, data: j?.data ?? null };
+  } catch (e) {
+    // 404 / timeout / netwerk: NIET crashen, gewoon netjes teruggeven
+    return { ok: false, denied: true, code: "FETCH_FAIL", msg: String(e?.message || e) };
+  }
 }
 
 // ------------------------------
@@ -71,33 +77,29 @@ function fundingStatsFromHistory(hist) {
   const last = hist[hist.length - 1];
   const lastRate = last.rate;
 
-  // percentile op basis van verdeling van rates (laatste vs historie)
-  const sorted = hist.map(x => x.rate).slice().sort((a,b)=>a-b);
+  const sorted = hist.map(x => x.rate).slice().sort((a, b) => a - b);
   let idx = 0;
   while (idx < sorted.length && sorted[idx] <= lastRate) idx++;
   const pct = sorted.length > 1 ? (idx - 1) / (sorted.length - 1) : 0.5;
 
-  // “Extreme” labels + bias (jij wilde >97% zwaarder)
+  // Extreme labels + bias
   let extreme = null;
   const p = pct;
 
-  // pos extreem: heel positief funding (crowded longs)
   if (p >= 0.995) extreme = "EXTREME_POS";
   else if (p >= 0.97) extreme = "HIGH_POS";
 
-  // neg extreem: heel negatief funding (crowded shorts)
   if (p <= 0.005) extreme = "EXTREME_NEG";
   else if (p <= 0.03) extreme = "HIGH_NEG";
 
-  // fundingFlip: als extreem is, zien we “crowding” => flip risico omhoog
   const flip = !!extreme;
 
-  // bias is klein (drift per bar) – pos funding => bias iets omlaag (longs crowded)
+  // ✅ jij wilde >97% zwaarder (EXTREME nog zwaarder)
   let bias = 0;
   if (extreme === "HIGH_POS") bias = -0.0007;
-  if (extreme === "EXTREME_POS") bias = -0.0012; // ✅ zwaarder
+  if (extreme === "EXTREME_POS") bias = -0.0012;
   if (extreme === "HIGH_NEG") bias = +0.0007;
-  if (extreme === "EXTREME_NEG") bias = +0.0012; // ✅ zwaarder
+  if (extreme === "EXTREME_NEG") bias = +0.0012;
 
   return {
     fundingRate: lastRate,
@@ -109,24 +111,8 @@ function fundingStatsFromHistory(hist) {
   };
 }
 
-export async function fetchBtcFundingBias() {
-  // 1) probeer CoinGlass (als plan het toestaat)
-  // (laat staan, maar bij jou is het denied)
-  const cg = await fetchCoinglass(
-    "https://open-api-v4.coinglass.com/api/futures/funding-rate/history?exchange=Binance&symbol=BTCUSDT&interval=8h&limit=200"
-  );
-  if (cg.ok && Array.isArray(cg.data)) {
-    // als CoinGlass ooit wél werkt, kun je hier mappen
-    // Voor nu: we pakken Binance omdat dat bij jou wél kan.
-  }
-
-  // 2) fallback: Binance (werkt gratis)
-  const hist = await fetchBinanceFundingHistory({ symbol: "BTCUSDT", limit: 200 });
-  return fundingStatsFromHistory(hist);
-}
-
-async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 8 } = {}) {
-  // 1d OI history (futures)
+async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
+  // 1d OI history (USD value)
   const url = `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=1d&limit=${limit}`;
   const arr = await fetchJson(url, { headers: { accept: "application/json" } });
   if (!Array.isArray(arr) || !arr.length) return [];
@@ -134,14 +120,34 @@ async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 8 } = {}) {
   return arr
     .map(x => ({
       time: Math.floor(Number(x?.timestamp) / 1000),
-      oi: Number(x?.sumOpenInterestValue) // USD value
+      oi: Number(x?.sumOpenInterestValue)
     }))
     .filter(x => isNum(x.time) && isNum(x.oi));
 }
 
-export async function fetchBtcOiChanges() {
-  // CoinGlass is bij jou denied, dus direct Binance:
-  const hist = await fetchBinanceOiHistory({ symbol: "BTCUSDT", limit: 15 });
+// ------------------------------
+// ✅ EXPORTS die forest.js verwacht
+// ------------------------------
+export async function fetchBtcFundingStats({ symbol = "BTCUSDT", lookbackDays = 120 } = {}) {
+  // Eerst CoinGlass proberen (kan denied zijn)
+  await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/futures/funding-rate/history?exchange=Binance&symbol=${encodeURIComponent(symbol)}&interval=8h&limit=200`
+  );
+  // Maar jij gebruikt toch Binance fallback (gratis en stabiel)
+  const hist = await fetchBinanceFundingHistory({ symbol, limit: 200 });
+  const out = fundingStatsFromHistory(hist);
+
+  // optioneel: lookbackDays kan je later gebruiken, nu niet nodig
+  return out;
+}
+
+// alias (oude naam die je eerder had)
+export async function fetchBtcFundingBias() {
+  return fetchBtcFundingStats({ symbol: "BTCUSDT", lookbackDays: 120 });
+}
+
+export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
+  const hist = await fetchBinanceOiHistory({ symbol, limit: 15 });
   if (hist.length < 2) {
     return { oiNow: null, oiChange1: null, oiChange7: null, source: "binance-empty" };
   }
@@ -162,9 +168,17 @@ export async function fetchBtcOiChanges() {
   };
 }
 
-export async function fetchBtcEtfFlows() {
-  // Dit blijft bij jou denied tenzij je CoinGlass plan upgraded.
-  const cg = await fetchCoinglass("https://open-api-v4.coinglass.com/api/etf/bitcoin/flow-history?limit=180");
+// alias (oude naam die je eerder had)
+export async function fetchBtcOiChanges() {
+  return fetchBtcOpenInterestChange({ symbol: "BTCUSDT" });
+}
+
+export async function fetchBtcEtfFlows({ lookbackDays = 180 } = {}) {
+  // CoinGlass denied bij jou => we geven nette nulls terug (geen crash)
+  const cg = await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/etf/bitcoin/flow-history?limit=${Math.max(1, Math.min(365, Number(lookbackDays) || 180))}`
+  );
+
   if (!cg.ok) {
     return {
       etfNetFlow: null,
@@ -176,7 +190,7 @@ export async function fetchBtcEtfFlows() {
     };
   }
 
-  // Als het ooit werkt: hier kun je data parsen.
+  // Als het ooit wél werkt: hier later parsen.
   return {
     etfNetFlow: null,
     etfFlow7: null,
@@ -190,10 +204,15 @@ export async function fetchBtcEtfFlows() {
 // ------------------------------
 // Liq heatmap (CoinGlass denied => leeg, dan pakt forest.js synthetic)
 // ------------------------------
-export async function fetchBtcLiqHeatmapLevels() {
-  const cg = await fetchCoinglass("https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap?exchange=Binance&symbol=BTCUSDT");
+export async function fetchBtcLiqHeatmapLevels({ symbol = "BTCUSDT", topN = 12 } = {}) {
+  const cg = await fetchCoinglass(
+    `https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap?exchange=Binance&symbol=${encodeURIComponent(symbol)}`
+  );
   if (!cg.ok) return [];
-  // als het ooit werkt: return [{price, weight}, ...]
+
+  // Als het ooit werkt: map naar [{price, weight}]
+  // Voor nu: empty -> forest.js maakt synthetic fallback
+  void topN;
   return [];
 }
 
@@ -238,7 +257,6 @@ export function buildSyntheticLiqLevels(candlesTruth, { lookback = 220, bins = 6
 export function parseLiqLevelsFromQuery(q) {
   const s = String(q || "").trim();
   if (!s) return [];
-  // format: "90000:1,95000:0.6"
   const parts = s.split(",").map(x => x.trim()).filter(Boolean);
   const out = [];
   for (const p of parts) {
