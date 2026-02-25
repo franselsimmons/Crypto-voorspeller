@@ -13,10 +13,6 @@ import {
 
 export const config = { runtime: "nodejs" };
 
-function safe(promise, fallback) {
-  return promise.then(x => x).catch(() => fallback);
-}
-
 export default async function handler(req, res) {
   try {
     const tf = String(req.query?.tf || "1d").toLowerCase();
@@ -40,21 +36,24 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- Derivs (nooit 500'en) ----
-    const [funding, oi, etf] = await Promise.all([
-      safe(
-        fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
-        { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "funding-fail" }
-      ),
-      safe(
-        fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
-        { oiNow: null, oiChange1: null, oiChange7: null, source: "oi-fail" }
-      ),
-      safe(
-        fetchBtcEtfFlows({ lookbackDays: 180 }),
-        { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "etf-fail" }
-      )
+    // ---- Derivs (altijd “safe”) ----
+    const settled = await Promise.allSettled([
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
+      fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
+      fetchBtcEtfFlows({ lookbackDays: 120 })
     ]);
+
+    const funding = (settled[0].status === "fulfilled")
+      ? settled[0].value
+      : { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "funding-error" };
+
+    const oi = (settled[1].status === "fulfilled")
+      ? settled[1].value
+      : { oiNow: null, oiChange1: null, oiChange7: null, source: "oi-error" };
+
+    const etf = (settled[2].status === "fulfilled")
+      ? settled[2].value
+      : { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "etf-error" };
 
     // Liq from query overrides
     const liqQ = String(req.query?.liq || "");
@@ -65,7 +64,7 @@ export default async function handler(req, res) {
     liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
 
     if (!liqLevels.length) {
-      const real = await safe(fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 }), []);
+      const real = await fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 });
       if (Array.isArray(real) && real.length) liqLevels = real;
     }
 
