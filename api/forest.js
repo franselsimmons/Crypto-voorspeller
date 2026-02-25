@@ -13,8 +13,8 @@ import {
 
 export const config = { runtime: "nodejs" };
 
-function safeObj(x, fallback) {
-  return (x && typeof x === "object") ? x : fallback;
+function settledValue(r, fallback) {
+  return (r && r.status === "fulfilled") ? r.value : fallback;
 }
 
 export default async function handler(req, res) {
@@ -40,24 +40,24 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- Derivs: NOOIT meer crashen ----
-    const settled = await Promise.allSettled([
-      fetchBtcFundingStats({ symbol: "BTCUSDT" }),
-      fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
+    // ---- Derivs (funding + oi + etf) ----
+    const results = await Promise.allSettled([
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT", productType: "usdt-futures" }),
+      fetchBtcOpenInterestChange({ symbol: "BTCUSDT", productType: "usdt-futures" }),
       fetchBtcEtfFlows({ lookbackDays: 120 })
     ]);
 
-    const funding = settled[0].status === "fulfilled"
-      ? safeObj(settled[0].value, { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "bad" })
-      : { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: `error:${String(settled[0].reason || "")}` };
+    const funding = settledValue(results[0], {
+      fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "funding-failed"
+    });
 
-    const oi = settled[1].status === "fulfilled"
-      ? safeObj(settled[1].value, { oiNow: null, oiChange1: null, oiChange7: null, source: "bad" })
-      : { oiNow: null, oiChange1: null, oiChange7: null, source: `error:${String(settled[1].reason || "")}` };
+    const oi = settledValue(results[1], {
+      oiNow: null, oiChange1: null, oiChange7: null, source: "oi-failed"
+    });
 
-    const etf = settled[2].status === "fulfilled"
-      ? safeObj(settled[2].value, { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "bad" })
-      : { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: `error:${String(settled[2].reason || "")}` };
+    const etf = settledValue(results[2], {
+      etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "etf-failed"
+    });
 
     // Liq from query overrides
     const liqQ = String(req.query?.liq || "");
@@ -68,10 +68,12 @@ export default async function handler(req, res) {
     liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
 
     if (!liqLevels.length) {
-      try {
-        const real = await fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 });
-        if (Array.isArray(real) && real.length) liqLevels = real;
-      } catch {}
+      // Best effort (meestal leeg bij jou, dan pakken we synthetic)
+      const liqTry = await Promise.allSettled([
+        fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 })
+      ]);
+      const real = settledValue(liqTry[0], []);
+      if (Array.isArray(real) && real.length) liqLevels = real;
     }
 
     if (!liqLevels.length) {
