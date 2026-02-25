@@ -1,6 +1,6 @@
 // api/_lib/derivs.js
 // Haalt derivaten-data (funding, OI, ETF flows, liquidation heatmap) op.
-// Default: CoinGlass API v4.
+// CoinGlass API v4
 // Zet env var: COINGLASS_KEY
 
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
@@ -9,19 +9,23 @@ function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 const BASE = "https://open-api-v4.coinglass.com";
 const KEY = process.env.COINGLASS_KEY || "";
 
+// Sommige CoinGlass accounts gebruiken net andere headernaam.
+// We sturen er 2 mee. (De server pakt de juiste.)
+function authHeaders() {
+  if (!KEY) return {};
+  return {
+    coinglassSecret: KEY,
+    "CG-API-KEY": KEY
+  };
+}
+
 async function fetchJson(url) {
   if (!KEY) return null;
 
-  const r = await fetch(url, {
-    headers: {
-      // CoinGlass gebruikt een secret header; bij sommige accounts heet dit exact zo.
-      // Als jouw key niet werkt: check CoinGlass dashboard "API" pagina voor headernaam.
-      "coinglassSecret": KEY
-    }
-  });
+  const r = await fetch(url, { headers: authHeaders() });
 
   if (!r.ok) {
-    // 401/403/429 etc => graceful fallback
+    // 401/403/429/etc -> netjes terugvallen
     return null;
   }
 
@@ -35,49 +39,85 @@ function unwrap(j) {
   return j.data ?? j.result ?? j;
 }
 
+// probeer uit allerlei vormen een "array history" te halen
+function pickArray(raw) {
+  if (!raw) return null;
+  if (Array.isArray(raw)) return raw;
+
+  // vaak: { list: [...] } of { data: [...] } of { history: [...] }
+  const candidates = [
+    raw.list,
+    raw.data,
+    raw.history,
+    raw.records,
+    raw.items,
+    raw.result
+  ];
+
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+
+  // soms: { ... , [symbol]: [...] }
+  for (const k of Object.keys(raw)) {
+    if (Array.isArray(raw[k])) return raw[k];
+  }
+
+  return null;
+}
+
 // --------------------
 // Funding (percentile + extremes + flip)
 // --------------------
 export async function fetchBtcFundingStats({
   lookbackDays = 120,
-  symbol = "BTC"
+  symbol = "BTC",
+  interval = "8h"
 } = {}) {
-  // Endpoint naam kan per CoinGlass variant verschillen.
-  // We proberen een “avg funding history”/funding history-achtig endpoint.
-  // Als CoinGlass jouw account een andere route geeft, pas hier alleen de url aan.
+  // ✅ JUISTE endpoint naam: funding-rate (niet fundingRate)
+  // Docs: /api/futures/funding-rate/history  [oai_citation:3‡CoinGlass-API](https://docs.coinglass.com/reference/fr-ohlc-histroy)
+  const limit = Math.max(30, Math.min(2000, lookbackDays * (interval === "8h" ? 3 : 1)));
+  const url =
+    `${BASE}/api/futures/funding-rate/history` +
+    `?symbol=${encodeURIComponent(symbol)}` +
+    `&interval=${encodeURIComponent(interval)}` +
+    `&limit=${encodeURIComponent(limit)}`;
 
-  // Veel accounts ondersteunen: /api/futures/fundingRate/history?symbol=BTC
-  const url = `${BASE}/api/futures/fundingRate/history?symbol=${encodeURIComponent(symbol)}&interval=8h&limit=${lookbackDays * 3}`;
   const raw = unwrap(await fetchJson(url));
-  if (!raw || !Array.isArray(raw)) return {
-    fundingRate: null,
-    fundingPercentile: null,
-    fundingExtreme: null,
-    fundingFlip: false,
-    fundingBias: 0
-  };
+  const arr = pickArray(raw);
+
+  if (!arr || arr.length < 30) {
+    return {
+      fundingRate: null,
+      fundingPercentile: null,
+      fundingExtreme: null,
+      fundingFlip: false,
+      fundingBias: 0
+    };
+  }
 
   // Verwacht items zoals: { time, fundingRate } (soms 'rate')
-  const rates = raw
-    .map(x => Number(x?.fundingRate ?? x?.rate))
+  const rates = arr
+    .map(x => Number(x?.fundingRate ?? x?.rate ?? x?.value))
     .filter(isNum);
 
-  if (rates.length < 30) return {
-    fundingRate: null,
-    fundingPercentile: null,
-    fundingExtreme: null,
-    fundingFlip: false,
-    fundingBias: 0
-  };
+  if (rates.length < 30) {
+    return {
+      fundingRate: null,
+      fundingPercentile: null,
+      fundingExtreme: null,
+      fundingFlip: false,
+      fundingBias: 0
+    };
+  }
 
   const last = rates[rates.length - 1];
+  const prev = rates[rates.length - 2];
 
   const sorted = rates.slice().sort((a, b) => a - b);
-  const rank = (() => {
-    let cnt = 0;
-    for (const v of sorted) if (v <= last) cnt++;
-    return cnt / sorted.length; // 0..1
-  })();
+  let cnt = 0;
+  for (const v of sorted) if (v <= last) cnt++;
+  const rank = cnt / sorted.length; // 0..1
 
   const extreme =
     rank >= 0.97 ? "EXTREME_POS" :
@@ -86,12 +126,9 @@ export async function fetchBtcFundingStats({
     rank <= 0.10 ? "HIGH_NEG" :
     null;
 
-  // flip: teken veranderd t.o.v. vorige
-  const prev = rates[rates.length - 2];
   const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
 
-  // bias: kleine drift (contrarian bij extreme)
-  // positief funding = crowded longs => bearish bias
+  // bias: contrarian bij crowded funding
   let bias = 0;
   if (extreme === "EXTREME_POS") bias = -0.0018;
   else if (extreme === "HIGH_POS") bias = -0.0010;
@@ -100,8 +137,8 @@ export async function fetchBtcFundingStats({
 
   return {
     fundingRate: last,
-    fundingPercentile: rank,        // 0..1
-    fundingExtreme: extreme,        // label
+    fundingPercentile: rank,
+    fundingExtreme: extreme,
     fundingFlip: !!flip,
     fundingBias: bias
   };
@@ -113,20 +150,26 @@ export async function fetchBtcFundingStats({
 export async function fetchBtcOpenInterestChange({
   symbol = "BTC",
   interval = "1d",
-  lookback = 60
+  lookback = 90
 } = {}) {
-  const url = `${BASE}/api/futures/openInterest/history?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${lookback}`;
+  // In v4 bestaat o.a. aggregated-stablecoin-history
+  // (werkt voor BTC en geeft OI time series)
+  const url =
+    `${BASE}/api/futures/open-interest/aggregated-stablecoin-history` +
+    `?symbol=${encodeURIComponent(symbol)}` +
+    `&interval=${encodeURIComponent(interval)}` +
+    `&limit=${encodeURIComponent(Math.max(20, Math.min(2000, lookback)))}`;
+
   const raw = unwrap(await fetchJson(url));
-  if (!raw || !Array.isArray(raw) || raw.length < 5) {
-    return {
-      oiNow: null,
-      oiChange1: null,
-      oiChange7: null
-    };
+  const arr = pickArray(raw);
+
+  if (!arr || arr.length < 8) {
+    return { oiNow: null, oiChange1: null, oiChange7: null };
   }
 
-  const vals = raw
-    .map(x => Number(x?.openInterest ?? x?.oi))
+  // Sommige endpoints geven {openInterest} / {oi} / {value}
+  const vals = arr
+    .map(x => Number(x?.openInterest ?? x?.oi ?? x?.value ?? x?.close))
     .filter(isNum);
 
   if (vals.length < 8) return { oiNow: null, oiChange1: null, oiChange7: null };
@@ -140,7 +183,7 @@ export async function fetchBtcOpenInterestChange({
 
   return {
     oiNow,
-    oiChange1: isNum(ch1) ? ch1 : null, // fraction (0.05 = +5%)
+    oiChange1: isNum(ch1) ? ch1 : null,
     oiChange7: isNum(ch7) ? ch7 : null
   };
 }
@@ -148,14 +191,14 @@ export async function fetchBtcOpenInterestChange({
 // --------------------
 // ETF flows (net flow + percentile)
 // --------------------
-export async function fetchBtcEtfFlows({
-  lookbackDays = 120
-} = {}) {
-  // CoinGlass heeft ETF endpoints (per account verschillend).
-  // We proberen: /api/etf/bitcoin/flow-history
-  const url = `${BASE}/api/etf/bitcoin/flow-history?limit=${lookbackDays}`;
+export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
+  // ✅ Endpoint volgens docs  [oai_citation:4‡CoinGlass-API](https://docs.coinglass.com/reference/etf-flows-history)
+  const url = `${BASE}/api/etf/bitcoin/flow-history?limit=${encodeURIComponent(lookbackDays)}`;
+
   const raw = unwrap(await fetchJson(url));
-  if (!raw || !Array.isArray(raw) || raw.length < 20) {
+  const arr = pickArray(raw);
+
+  if (!arr || arr.length < 20) {
     return {
       etfNetFlow: null,
       etfFlow7: null,
@@ -165,9 +208,9 @@ export async function fetchBtcEtfFlows({
     };
   }
 
-  // Verwacht: { time, netFlow } (of 'flow')
-  const flows = raw
-    .map(x => Number(x?.netFlow ?? x?.flow))
+  // Verwacht: { netFlow } of { flow }
+  const flows = arr
+    .map(x => Number(x?.netFlow ?? x?.flow ?? x?.value))
     .filter(isNum);
 
   if (flows.length < 20) {
@@ -181,20 +224,18 @@ export async function fetchBtcEtfFlows({
   }
 
   const last = flows[flows.length - 1];
+  const prev = flows[flows.length - 2];
   const flow7 = flows.slice(-7).reduce((a, b) => a + b, 0);
 
   const sorted = flows.slice().sort((a, b) => a - b);
-  const rank = (() => {
-    let cnt = 0;
-    for (const v of sorted) if (v <= last) cnt++;
-    return cnt / sorted.length;
-  })();
+  let cnt = 0;
+  for (const v of sorted) if (v <= last) cnt++;
+  const rank = cnt / sorted.length;
 
-  const prev = flows[flows.length - 2];
   const flip = (Math.sign(last) !== Math.sign(prev)) && (Math.abs(last) > 0);
 
-  // bias: flow positief = bullish drift, negatief = bearish drift (klein!)
-  const bias = clamp(last / 1_000_000_000, -0.0015, 0.0015); // schaal naar “klein effect”
+  // schaal naar klein effect
+  const bias = clamp(last / 1_000_000_000, -0.0015, 0.0015);
 
   return {
     etfNetFlow: last,
@@ -208,23 +249,27 @@ export async function fetchBtcEtfFlows({
 // --------------------
 // Liquidation heatmap => levels [{price, weight}]
 // --------------------
-export async function fetchBtcLiqHeatmapLevels({
-  symbol = "BTC",
-  topN = 10
-} = {}) {
-  // Proberen aggregate heatmap endpoint
-  const url = `${BASE}/api/futures/liquidation/heatmap?symbol=${encodeURIComponent(symbol)}`;
-  const raw = unwrap(await fetchJson(url));
-  if (!raw) return [];
+export async function fetchBtcLiqHeatmapLevels({ symbol = "BTC", topN = 10 } = {}) {
+  // ✅ Endpoint volgens docs  [oai_citation:5‡CoinGlass-API](https://docs.coinglass.com/reference/liquidation-aggregate-heatmap)
+  const url =
+    `${BASE}/api/futures/liquidation/aggregated-heatmap/model1` +
+    `?symbol=${encodeURIComponent(symbol)}`;
 
-  // Sommige responses: { levels: [{price, weight}] } of arrays
-  const levels = Array.isArray(raw?.levels) ? raw.levels : (Array.isArray(raw) ? raw : null);
+  const raw = unwrap(await fetchJson(url));
+
+  // Model1 responses verschillen: soms {levels:[...]} soms {data:[...]} etc.
+  const levels =
+    (Array.isArray(raw?.levels) ? raw.levels :
+     Array.isArray(raw?.data) ? raw.data :
+     Array.isArray(raw) ? raw :
+     null);
+
   if (!Array.isArray(levels)) return [];
 
   const out = levels
     .map(x => ({
-      price: Number(x?.price),
-      weight: Number(x?.weight ?? x?.score ?? x?.intensity)
+      price: Number(x?.price ?? x?.p),
+      weight: Number(x?.weight ?? x?.w ?? x?.score ?? x?.intensity)
     }))
     .filter(x => isNum(x.price) && isNum(x.weight))
     .map(x => ({ price: x.price, weight: clamp(x.weight, 0, 1) }))
@@ -237,11 +282,7 @@ export async function fetchBtcLiqHeatmapLevels({
 // --------------------
 // Fallback: “synthetic liq” (als je geen API key hebt)
 // --------------------
-export function buildSyntheticLiqLevels(candlesTruth, {
-  lookback = 220,
-  bins = 64,
-  topN = 10
-} = {}) {
+export function buildSyntheticLiqLevels(candlesTruth, { lookback = 220, bins = 64, topN = 10 } = {}) {
   if (!Array.isArray(candlesTruth) || candlesTruth.length < 50) return [];
   const closes = candlesTruth.map(c => Number(c?.close)).filter(isNum);
   if (closes.length < 50) return [];
@@ -256,7 +297,6 @@ export function buildSyntheticLiqLevels(candlesTruth, {
   const step = (hi - lo) / bins;
   const hist = Array(bins).fill(0);
 
-  // simpele cluster: hoe vaak prijs in bin zit
   for (const v of win) {
     const idx = clamp(Math.floor((v - lo) / step), 0, bins - 1);
     hist[idx] += 1;
