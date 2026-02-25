@@ -2,15 +2,23 @@
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
 
+const UA = "Mozilla/5.0 (compatible; CryptoVoorspeller/1.0; +https://crypto-voorspeller.vercel.app)";
+
 async function fetchText(url, opts = {}) {
-  const r = await fetch(url, opts);
+  const r = await fetch(url, {
+    ...opts,
+    headers: { "accept": "*/*", "user-agent": UA, ...(opts.headers || {}) }
+  });
   const t = await r.text();
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 180)}`);
   return t;
 }
 
 async function fetchJson(url, opts = {}) {
-  const r = await fetch(url, opts);
+  const r = await fetch(url, {
+    ...opts,
+    headers: { "accept": "application/json", "user-agent": UA, ...(opts.headers || {}) }
+  });
   const t = await r.text();
   let j = null;
   try { j = JSON.parse(t); } catch {}
@@ -19,83 +27,42 @@ async function fetchJson(url, opts = {}) {
 }
 
 // ------------------------------
-// CoinGlass helper (OPTIONEEL)
-// ------------------------------
-function getCoinglassKey() {
-  const k = process.env.COINGLASS_KEY;
-  return (typeof k === "string" && k.trim()) ? k.trim() : null;
-}
-
-async function fetchCoinglass(url) {
-  const key = getCoinglassKey();
-  if (!key) return { ok: false, denied: true, code: "NO_KEY", msg: "No key" };
-
-  const j = await fetchJson(url, {
-    headers: { accept: "application/json", coinglassSecret: key }
-  });
-
-  const code = String(j?.code ?? "");
-  const msg = String(j?.msg ?? "");
-  if (code !== "0") return { ok: false, denied: true, code, msg };
-
-  return { ok: true, data: j?.data ?? null };
-}
-
-// ------------------------------
 // BINANCE (gratis) Funding + OI
 // ------------------------------
 async function fetchBinancePremiumIndex({ symbol = "BTCUSDT" } = {}) {
-  // geeft o.a. lastFundingRate (meestal string)
   const url = `https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${encodeURIComponent(symbol)}`;
-  const j = await fetchJson(url, { headers: { accept: "application/json" } });
-
-  // Binance geeft soms {code, msg} met 200. Dat wil je zien.
+  const j = await fetchJson(url);
   if (j && typeof j === "object" && !Array.isArray(j) && "code" in j && "msg" in j) {
     throw new Error(`Binance premiumIndex error: ${j.code} ${j.msg}`);
   }
-
   const rate = Number(j?.lastFundingRate);
   return isNum(rate) ? rate : null;
 }
 
 async function fetchBinanceFundingHistory({ symbol = "BTCUSDT", limit = 200 } = {}) {
   const url = `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}`;
-  const arr = await fetchJson(url, { headers: { accept: "application/json" } });
+  const arr = await fetchJson(url);
 
-  // Binance kan ook error-object teruggeven met 200
   if (arr && typeof arr === "object" && !Array.isArray(arr) && "code" in arr && "msg" in arr) {
     throw new Error(`Binance fundingRate error: ${arr.code} ${arr.msg}`);
   }
 
   if (!Array.isArray(arr) || !arr.length) return [];
   return arr
-    .map(x => ({
-      time: Math.floor(Number(x?.fundingTime) / 1000),
-      rate: Number(x?.fundingRate)
-    }))
+    .map(x => ({ time: Math.floor(Number(x?.fundingTime) / 1000), rate: Number(x?.fundingRate) }))
     .filter(x => isNum(x.time) && isNum(x.rate));
 }
 
 function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
-  const lastRate = (hist.length && isNum(hist[hist.length - 1]?.rate))
-    ? hist[hist.length - 1].rate
-    : (isNum(fallbackRate) ? fallbackRate : null);
+  const lastRate =
+    (hist.length && isNum(hist[hist.length - 1]?.rate)) ? hist[hist.length - 1].rate :
+    (isNum(fallbackRate) ? fallbackRate : null);
 
-  // Zonder rate kunnen we niks
   if (!isNum(lastRate)) {
-    return {
-      fundingRate: null,
-      fundingPercentile: null,
-      fundingExtreme: null,
-      fundingFlip: false,
-      fundingBias: 0,
-      source: "binance-empty"
-    };
+    return { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "binance-empty" };
   }
 
   let pct = null;
-
-  // Als we historie hebben, percentile bepalen
   if (hist.length >= 20) {
     const sorted = hist.map(x => x.rate).slice().sort((a,b)=>a-b);
     let idx = 0;
@@ -103,10 +70,9 @@ function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
     pct = sorted.length > 1 ? (idx - 1) / (sorted.length - 1) : 0.5;
   }
 
-  // Extreme labels:
-  // - Als percentile bekend is: jouw regels (>97% zwaarder, >99.5% extreem)
-  // - Als percentile NIET bekend is: fallback op absolute funding rate
   let extreme = null;
+
+  // percentile-based (jouw wens: >97% zwaarder)
   if (isNum(pct)) {
     if (pct >= 0.995) extreme = "EXTREME_POS";
     else if (pct >= 0.97) extreme = "HIGH_POS";
@@ -114,7 +80,7 @@ function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
     if (pct <= 0.005) extreme = "EXTREME_NEG";
     else if (pct <= 0.03) extreme = "HIGH_NEG";
   } else {
-    // fallback (ruwe drempels, werkt altijd)
+    // fallback absolute
     if (lastRate >= 0.0020) extreme = "EXTREME_POS";
     else if (lastRate >= 0.0012) extreme = "HIGH_POS";
     if (lastRate <= -0.0020) extreme = "EXTREME_NEG";
@@ -123,7 +89,6 @@ function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
 
   const flip = !!extreme;
 
-  // bias klein; EXTREME sterker dan HIGH
   let bias = 0;
   if (extreme === "HIGH_POS") bias = -0.0007;
   if (extreme === "EXTREME_POS") bias = -0.0012;
@@ -140,19 +105,9 @@ function fundingStatsFromHistoryOrRate(hist, fallbackRate) {
   };
 }
 
-// ✅ Dit is de functie die forest.js gebruikt
-export async function fetchBtcFundingStats({ symbol = "BTCUSDT", lookbackDays = 120 } = {}) {
+// ✅ forest.js gebruikt deze naam
+export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
   try {
-    // 1) (optioneel) CoinGlass – bij jou denied, maar laten staan
-    const cg = await fetchCoinglass(
-      "https://open-api-v4.coinglass.com/api/futures/funding-rate/history?exchange=Binance&symbol=BTCUSDT&interval=8h&limit=200"
-    );
-    if (cg.ok && Array.isArray(cg.data) && cg.data.length) {
-      // Als CoinGlass ooit werkt: hier parse je cg.data naar {time, rate} en stats
-      // Voor nu: we gaan altijd Binance gebruiken.
-    }
-
-    // 2) Binance: altijd proberen (gratis)
     const fallbackRate = await fetchBinancePremiumIndex({ symbol });
     const hist = await fetchBinanceFundingHistory({ symbol, limit: 200 });
     return fundingStatsFromHistoryOrRate(hist, fallbackRate);
@@ -163,15 +118,14 @@ export async function fetchBtcFundingStats({ symbol = "BTCUSDT", lookbackDays = 
       fundingExtreme: null,
       fundingFlip: false,
       fundingBias: 0,
-      source: `binance-error:${String(e?.message || e).slice(0, 80)}`
+      source: `binance-error:${String(e?.message || e).slice(0, 90)}`
     };
   }
 }
 
 async function fetchBinanceOpenInterestNow({ symbol = "BTCUSDT" } = {}) {
-  // current OI (contracts) – niet perfect USD, maar geeft “nu”
   const url = `https://fapi.binance.com/fapi/v1/openInterest?symbol=${encodeURIComponent(symbol)}`;
-  const j = await fetchJson(url, { headers: { accept: "application/json" } });
+  const j = await fetchJson(url);
   if (j && typeof j === "object" && !Array.isArray(j) && "code" in j && "msg" in j) {
     throw new Error(`Binance openInterest error: ${j.code} ${j.msg}`);
   }
@@ -180,9 +134,8 @@ async function fetchBinanceOpenInterestNow({ symbol = "BTCUSDT" } = {}) {
 }
 
 async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
-  // 1d OI history (USD value)
   const url = `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=1d&limit=${limit}`;
-  const arr = await fetchJson(url, { headers: { accept: "application/json" } });
+  const arr = await fetchJson(url);
 
   if (arr && typeof arr === "object" && !Array.isArray(arr) && "code" in arr && "msg" in arr) {
     throw new Error(`Binance openInterestHist error: ${arr.code} ${arr.msg}`);
@@ -190,14 +143,11 @@ async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
 
   if (!Array.isArray(arr) || !arr.length) return [];
   return arr
-    .map(x => ({
-      time: Math.floor(Number(x?.timestamp) / 1000),
-      oi: Number(x?.sumOpenInterestValue) // USD value
-    }))
+    .map(x => ({ time: Math.floor(Number(x?.timestamp) / 1000), oi: Number(x?.sumOpenInterestValue) }))
     .filter(x => isNum(x.time) && isNum(x.oi));
 }
 
-// ✅ Dit is de functie die forest.js gebruikt
+// ✅ forest.js gebruikt deze naam
 export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
   try {
     const [oiNowFallback, hist] = await Promise.all([
@@ -206,12 +156,7 @@ export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
     ]);
 
     if (hist.length < 2) {
-      return {
-        oiNow: isNum(oiNowFallback) ? oiNowFallback : null,
-        oiChange1: null,
-        oiChange7: null,
-        source: "binance-empty"
-      };
+      return { oiNow: isNum(oiNowFallback) ? oiNowFallback : null, oiChange1: null, oiChange7: null, source: "binance-empty" };
     }
 
     const last = hist[hist.length - 1];
@@ -229,102 +174,55 @@ export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
       source: "binance"
     };
   } catch (e) {
-    return {
-      oiNow: null,
-      oiChange1: null,
-      oiChange7: null,
-      source: `binance-error:${String(e?.message || e).slice(0, 80)}`
-    };
+    return { oiNow: null, oiChange1: null, oiChange7: null, source: `binance-error:${String(e?.message || e).slice(0, 90)}` };
   }
 }
 
 // ------------------------------
-// ETF flows (gratis) via Bitbo HTML
+// ETF flows via Bitbo (best effort)
 // ------------------------------
-// Bitbo zet “Totals” per dag in de HTML (zoals jij in je browser ziet).
-// We pakken de laatste ~10 dagen en maken:
-// - etfNetFlow = laatst bekende "Totals" (USD)
-// - etfFlow7 = som van laatste 7 dagen (USD)
-// Percentile/flip/bias houden we simpel (maar wél echte data).
 function parseBitboTotals(html) {
-  const lines = String(html || "").split("\n").map(s => s.trim()).filter(Boolean);
-
-  // Voorbeeldregel in HTML tekst:
-  // "Feb 23, 2026 ... -202.1"
-  // We pakken: datum + laatste getal op de regel = Totals (US$m)
-  const rows = [];
-  const re = /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}\s+.*?(-?\d+(?:\.\d+)?)\s*$/;
-
-  for (const ln of lines) {
-    const m = ln.match(re);
-    if (!m) continue;
-    const totalM = Number(m[2]);
-    if (!isNum(totalM)) continue;
-    rows.push({ totalM });
+  const text = String(html || "");
+  // pak alle getallen die eruit zien als "Totals" in US$m (Bitbo gebruikt vaak US$m)
+  // We pakken een paar laatste matches, newest-first.
+  const matches = [];
+  const re = /Totals<\/[^>]*>\s*<\/[^>]*>\s*<[^>]*>\s*(-?\d+(?:\.\d+)?)/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const v = Number(m[1]);
+    if (isNum(v)) matches.push(v);
+    if (matches.length >= 10) break;
   }
-
-  // rows is newest-first in de Bitbo snippet (meestal).
-  return rows;
+  return matches; // in US$m
 }
 
-export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
+export async function fetchBtcEtfFlows() {
   try {
-    const html = await fetchText("https://bitbo.io/treasuries/etf-flows/", {
-      headers: { accept: "text/html" }
-    });
+    const html = await fetchText("https://bitbo.io/treasuries/etf-flows/");
+    const totalsM = parseBitboTotals(html);
 
-    const rows = parseBitboTotals(html);
-    if (!rows.length) {
-      return {
-        etfNetFlow: null,
-        etfFlow7: null,
-        etfPercentile: null,
-        etfFlip: false,
-        etfBias: 0,
-        source: "bitbo-empty"
-      };
+    if (!totalsM.length) {
+      return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "bitbo-empty" };
     }
 
-    // Bitbo toont meestal laatste ~10 dagen → genoeg voor “nu” en “7d”
-    const latest = rows[0].totalM * 1_000_000;
-    const sum7 = rows.slice(0, 7).reduce((a, r) => a + (r.totalM * 1_000_000), 0);
+    const latest = totalsM[0] * 1_000_000;
+    const sum7 = totalsM.slice(0, 7).reduce((a, x) => a + x * 1_000_000, 0);
 
-    // simpele flip: als vandaag negatief is na reeks positief (of omgekeerd)
-    const prev = rows[1]?.totalM ?? null;
-    const etfFlip = isNum(prev) ? (Math.sign(prev) !== Math.sign(rows[0].totalM) && rows[0].totalM !== 0) : false;
+    const prev = totalsM[1];
+    const etfFlip = isNum(prev) ? (Math.sign(prev) !== Math.sign(totalsM[0]) && totalsM[0] !== 0) : false;
+    const etfBias = totalsM[0] > 0 ? +0.0004 : totalsM[0] < 0 ? -0.0004 : 0;
 
-    // kleine bias (heel klein, alleen richting)
-    const etfBias = rows[0].totalM > 0 ? +0.0004 : rows[0].totalM < 0 ? -0.0004 : 0;
-
-    return {
-      etfNetFlow: isNum(latest) ? latest : null,
-      etfFlow7: isNum(sum7) ? sum7 : null,
-      etfPercentile: null,
-      etfFlip,
-      etfBias,
-      source: "bitbo"
-    };
+    return { etfNetFlow: latest, etfFlow7: sum7, etfPercentile: null, etfFlip, etfBias, source: "bitbo" };
   } catch (e) {
-    return {
-      etfNetFlow: null,
-      etfFlow7: null,
-      etfPercentile: null,
-      etfFlip: false,
-      etfBias: 0,
-      source: `bitbo-error:${String(e?.message || e).slice(0, 80)}`
-    };
+    return { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: `bitbo-error:${String(e?.message || e).slice(0, 90)}` };
   }
 }
 
 // ------------------------------
-// Liq heatmap (CoinGlass denied => leeg, dan pakt forest.js synthetic)
+// Liq heatmap: we doen GEEN CoinGlass meer (scheelt errors + tijd)
+// -> forest.js valt dan automatisch terug op synthetic
 // ------------------------------
-export async function fetchBtcLiqHeatmapLevels({ symbol = "BTCUSDT", topN = 12 } = {}) {
-  const cg = await fetchCoinglass(
-    `https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap?exchange=Binance&symbol=${encodeURIComponent(symbol)}`
-  );
-  if (!cg.ok) return [];
-  // als het ooit werkt: return [{price, weight}, ...]
+export async function fetchBtcLiqHeatmapLevels() {
   return [];
 }
 
