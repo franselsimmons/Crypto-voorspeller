@@ -13,8 +13,13 @@ import {
 
 export const config = { runtime: "nodejs" };
 
+const BUILD_TAG = "derivs-binance-v1"; // <- hiermee zie je 100% of Vercel de nieuwe code draait
+
 export default async function handler(req, res) {
   try {
+    // ✅ anti cache (anders zie je soms oude response)
+    res.setHeader("cache-control", "no-store, max-age=0");
+
     const tf = String(req.query?.tf || "1d").toLowerCase();
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
@@ -36,11 +41,11 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- Derivs (altijd “safe”) ----
+    // ---- Derivs (altijd safe) ----
     const settled = await Promise.allSettled([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
+      fetchBtcFundingStats({ symbol: "BTCUSDT" }),
       fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
-      fetchBtcEtfFlows({ lookbackDays: 120 })
+      fetchBtcEtfFlows({})
     ]);
 
     const funding = (settled[0].status === "fulfilled")
@@ -91,6 +96,8 @@ export default async function handler(req, res) {
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.status(200).send(JSON.stringify({
+      buildTag: BUILD_TAG,
+
       source: "kraken",
       interval: intervalLabel,
       truthCount: candlesTruth.length,
