@@ -1,198 +1,173 @@
-function $(id){ return document.getElementById(id); }
+// public/app.js
+/* global LightweightCharts */
 
-let state = {
-  tf: "1d",
-  h: 90
-};
+const $ = (id) => document.getElementById(id);
 
-function setPill(text){ $("statusPill").textContent = text; }
+const statusPill = $("statusPill");
+const metaEl = $("meta");
+const bigChance = $("bigChance");
+const debugEl = $("debug");
 
-function setActiveButtons() {
-  $("btnTF1D").classList.toggle("active", state.tf === "1d");
-  $("btnTF1W").classList.toggle("active", state.tf === "1w");
+let TF = "1d";
+let H = 30;
+let includeLive = 1;
 
-  document.querySelectorAll(".btn[data-h]").forEach(btn => {
-    btn.classList.toggle("active", Number(btn.dataset.h) === state.h);
-  });
+function setStatus(txt, cls = "") {
+  statusPill.textContent = txt;
+  statusPill.className = `pill ${cls}`.trim();
 }
 
-async function loadData(){
-  const url = `/api/forest?includeLive=1&tf=${encodeURIComponent(state.tf)}&h=${encodeURIComponent(state.h)}`;
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  const text = await r.text();
-  if (!r.ok) throw new Error(text || "API failed");
-  return JSON.parse(text);
-}
-
-async function runBacktest(){
-  const url = `/api/forest-backtest?tf=${encodeURIComponent(state.tf)}&h=${encodeURIComponent(Math.min(state.h, 90))}`;
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  const text = await r.text();
-  if (!r.ok) throw new Error(text || "Backtest failed");
-  return JSON.parse(text);
-}
-
-function makeChart(el, { height }) {
-  return LightweightCharts.createChart(el, {
-    width: el.clientWidth,
-    height,
-    layout: { background: { color: "#0e1117" }, textColor: "#d6d6d6" },
-    grid: { vertLines: { color: "#222" }, horzLines: { color: "#222" } },
-    rightPriceScale: { borderColor: "#222" },
-    timeScale: {
-      borderColor: "#222",
-      timeVisible: true,
-      secondsVisible: false,
-      rightOffset: 6,
-      barSpacing: 8
-    },
-    crosshair: { mode: 1 }
-  });
-}
-
-function bindCrosshairSync(a, b) {
-  a.subscribeCrosshairMove(param => {
-    if (!param || !param.time) return;
-    b.timeScale().setVisibleRange(a.timeScale().getVisibleRange());
-  });
-}
-
-function fmt(n, d=4){
+function fmt(n, d = 2) {
   if (typeof n !== "number" || !Number.isFinite(n)) return "n/a";
   return n.toFixed(d);
 }
 
-async function init(){
-  setActiveButtons();
-  setPill("Loading…");
+function fmtPct(n, d = 0) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "n/a";
+  return `${(n * 100).toFixed(d)}%`;
+}
 
-  const priceEl = $("priceChart");
-  const forestEl = $("forestChart");
+function fmtInt(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "n/a";
+  return Math.round(n).toString();
+}
 
-  const priceChart = makeChart(priceEl, { height: priceEl.clientHeight });
-  const forestChart = makeChart(forestEl, { height: forestEl.clientHeight });
+function pick(el, key, val) {
+  el.textContent = `${key}: ${val}`;
+}
 
-  // Z chart vaste schaal
-  forestChart.priceScale("right").applyOptions({
-    autoScale: false,
-    scaleMargins: { top: 0.2, bottom: 0.2 }
-  });
-
-  // series
-  const candleSeries = priceChart.addCandlestickSeries();
-  const forestTruth = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false });
-  const forestLive  = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
-
-  const fwdMid   = priceChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
-  const fwdUpper = priceChart.addLineSeries({ lineWidth: 1, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dotted });
-  const fwdLower = priceChart.addLineSeries({ lineWidth: 1, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dotted });
-
-  const zTruth = forestChart.addLineSeries({ lineWidth: 2, priceLineVisible: false });
-  const zLive  = forestChart.addLineSeries({ lineWidth: 2, priceLineVisible: false, lineStyle: LightweightCharts.LineStyle.Dashed });
-
-  // “nu” marker op Z chart
-  const zNow = forestChart.addLineSeries({ lineWidth: 0, priceLineVisible: false });
-
-  function applyData(data){
-    $("meta").textContent =
-      `Source: ${data.source} • TF: ${data.interval} • Truth: ${data.truthCount} • Live: ${data.hasLive ? "yes" : "no"} • Horizon: ${data.horizonBars}`;
-
-    candleSeries.setData(data.candles || []);
-
-    forestTruth.setData(data.forestOverlayTruth || []);
-    if (data.forestOverlayLive?.length) forestLive.setData(data.forestOverlayLive); else forestLive.setData([]);
-
-    // forward fan
-    fwdMid.setData(data.forestOverlayForwardMid || []);
-    fwdUpper.setData(data.forestOverlayForwardUpper || []);
-    fwdLower.setData(data.forestOverlayForwardLower || []);
-
-    zTruth.setData(data.forestZTruth || []);
-    if (data.forestZLive?.length) zLive.setData(data.forestZLive); else zLive.setData([]);
-
-    // nu marker: 1 punt
-    if (data?.nowPoint?.time && typeof data?.nowPoint?.z === "number") {
-      zNow.setData([{ time: data.nowPoint.time, value: data.nowPoint.z }]);
-    } else {
-      zNow.setData([]);
-    }
-
-    // info bovenin
-    const np = data.nowPoint || {};
-    const big =
-      `Regime: ${np.regimeNow ?? "n/a"} • Confidence: ${np.confidence ?? "n/a"} • FlipProb: ${fmt(np.flipProbability, 2)} • ` +
-      `DI+: ${fmt(np.diPlus, 2)} DI-: ${fmt(np.diMinus, 2)} • zWin: ${np.zWinUsed ?? "n/a"} • ` +
-      `LiqPressure: ${fmt(np.liqPressure, 2)} • Funding: ${fmt(np.fundingRate, 5)}`;
-
-    $("bigChance").textContent = big;
-
-    // debug blok
-    $("debug").textContent = JSON.stringify({
-      nowPoint: data.nowPoint,
-      bandsNow: data.bandsNow,
-      freezeNow: data.freezeNow,
-      funding: data.funding?.source ? data.funding : undefined,
-      liqLevelsTop: (data.liqLevels || []).slice(0, 6)
-    }, null, 2);
-
-    setPill(data.regimeLabel || "Forest");
-
-    priceChart.timeScale().fitContent();
-    forestChart.timeScale().fitContent();
-  }
-
-  async function reload(){
-    setActiveButtons();
-    setPill("Loading…");
-    const data = await loadData();
-    applyData(data);
-  }
-
-  // buttons
-  $("btnTF1D").addEventListener("click", () => { state.tf = "1d"; reload().catch(showErr); });
-  $("btnTF1W").addEventListener("click", () => { state.tf = "1w"; reload().catch(showErr); });
-
-  document.querySelectorAll(".btn[data-h]").forEach(btn => {
+function bindControls() {
+  document.querySelectorAll(".btn[data-tf]").forEach(btn => {
     btn.addEventListener("click", () => {
-      state.h = Number(btn.dataset.h);
-      reload().catch(showErr);
+      TF = btn.dataset.tf;
+      refresh();
     });
   });
 
-  $("btnBacktest").addEventListener("click", async () => {
-    try {
-      const bt = await runBacktest();
-      alert(`Backtest (${bt.interval}, horizon ${bt.horizonBars})\n` +
-        `high winrate: ${bt.buckets.high.winrate}\n` +
-        `mid  winrate: ${bt.buckets.mid.winrate}\n` +
-        `low  winrate: ${bt.buckets.low.winrate}\n\n` +
-        `signalsUsed: ${bt.signalsUsed}`);
-    } catch (e) {
-      showErr(e);
-    }
+  document.querySelectorAll(".btn[data-h]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      H = Number(btn.dataset.h);
+      refresh();
+    });
   });
 
-  function showErr(err){
-    console.error(err);
-    document.body.innerHTML =
-      `<pre style="color:#ff6666;padding:12px">${String(err?.message || err)}</pre>`;
+  // optioneel: Backtest button als aanwezig
+  const btBtn = document.getElementById("btnBacktest");
+  if (btBtn) {
+    btBtn.addEventListener("click", async () => {
+      btBtn.disabled = true;
+      btBtn.textContent = "Running…";
+      try {
+        const url = `/api/forest-backtest?tf=${encodeURIComponent(TF)}&h=${encodeURIComponent(H)}`;
+        const r = await fetch(url);
+        const j = await r.json();
+        debugEl.textContent = JSON.stringify(j, null, 2);
+      } finally {
+        btBtn.disabled = false;
+        btBtn.textContent = "Run";
+      }
+    });
   }
-
-  // resize fix (zoom/fit stabiel)
-  window.addEventListener("resize", () => {
-    priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
-    forestChart.applyOptions({ width: forestEl.clientWidth, height: forestEl.clientHeight });
-  });
-
-  // (lichte) sync
-  bindCrosshairSync(priceChart, forestChart);
-
-  // first load
-  await reload();
 }
 
-init().catch(err => {
-  console.error(err);
-  document.body.innerHTML =
-    `<pre style="color:#ff6666;padding:12px">${String(err?.message || err)}</pre>`;
-});
+let priceChart, forestChart;
+let seriesCandles, seriesOverlayTruth, seriesOverlayLive;
+let seriesFwdMid, seriesFwdUp, seriesFwdLo;
+let seriesZTruth, seriesZLive;
+
+function initCharts() {
+  priceChart = LightweightCharts.createChart($("priceChart"), {
+    autoSize: true,
+    layout: { background: { color: "#0b0f17" }, textColor: "#c9d1d9" },
+    grid: { vertLines: { color: "rgba(255,255,255,0.06)" }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+    rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false }
+  });
+
+  forestChart = LightweightCharts.createChart($("forestChart"), {
+    autoSize: true,
+    layout: { background: { color: "#0b0f17" }, textColor: "#c9d1d9" },
+    grid: { vertLines: { color: "rgba(255,255,255,0.06)" }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+    rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false }
+  });
+
+  seriesCandles = priceChart.addCandlestickSeries();
+
+  seriesOverlayTruth = priceChart.addLineSeries({ lineWidth: 2 });
+  seriesOverlayLive  = priceChart.addLineSeries({ lineWidth: 2 });
+
+  seriesFwdMid = priceChart.addLineSeries({ lineWidth: 2, lineStyle: 2 }); // dashed
+  seriesFwdUp  = priceChart.addLineSeries({ lineWidth: 1, lineStyle: 2 });
+  seriesFwdLo  = priceChart.addLineSeries({ lineWidth: 1, lineStyle: 2 });
+
+  seriesZTruth = forestChart.addLineSeries({ lineWidth: 2 });
+  seriesZLive  = forestChart.addLineSeries({ lineWidth: 2 });
+
+  // initial empty
+  seriesOverlayLive.setData([]);
+  seriesZLive.setData([]);
+}
+
+async function refresh() {
+  try {
+    setStatus("Loading…", "");
+    const url = `/api/forest?tf=${encodeURIComponent(TF)}&h=${encodeURIComponent(H)}&includeLive=${includeLive ? "1" : "0"}`;
+
+    const r = await fetch(url);
+    const j = await r.json();
+
+    if (j?.error) throw new Error(j.error);
+
+    // meta
+    metaEl.textContent = `Source: ${j.source} · TF: ${j.interval} · Truth: ${j.truthCount} · Live: ${j.hasLive ? "yes" : "no"} · Horizon: ${j.horizonBars}`;
+
+    // status label
+    const rp = j?.regimeLabel ?? "n/a";
+    setStatus(rp, "");
+
+    // biggest chance line
+    const np = j?.nowPoint || {};
+    const txt = [
+      `Regime: ${np.regimeNow ?? "n/a"}`,
+      `Confidence: ${np.confidence ?? "n/a"}`,
+      `FlipProb: ${fmtPct(np.flipProbability, 0)}`,
+      `DI+: ${fmt(np.diPlusNow, 2)}`,
+      `DI-: ${fmt(np.diMinusNow, 2)}`,
+      `zWin: ${fmtInt(np.zWinUsed)}`,
+      `LiqPressure: ${fmt(np.liqPressure, 2)}`,
+      `Funding: ${isFinite(np.fundingRate) ? fmt(np.fundingRate, 5) : "n/a"}`,
+      `OIΔ1: ${isFinite(np.oiChange1) ? fmtPct(np.oiChange1, 1) : "n/a"}`,
+      `ETF: ${isFinite(np.etfNetFlow) ? fmtInt(np.etfNetFlow) : "n/a"}`,
+      `SqueezeProb: ${fmtPct(np.squeezeProb, 0)}`
+    ].join(" · ");
+
+    bigChance.textContent = txt;
+
+    // charts
+    seriesCandles.setData(j.candles);
+
+    seriesOverlayTruth.setData(j.forestOverlayTruth || []);
+    seriesOverlayLive.setData(j.forestOverlayLive || []);
+
+    seriesFwdMid.setData(j.forestOverlayForwardMid || []);
+    seriesFwdUp.setData(j.forestOverlayForwardUpper || []);
+    seriesFwdLo.setData(j.forestOverlayForwardLower || []);
+
+    seriesZTruth.setData(j.forestZTruth || []);
+    seriesZLive.setData(j.forestZLive || []);
+
+    // debug
+    debugEl.textContent = JSON.stringify({ nowPoint: j.nowPoint }, null, 2);
+
+    setStatus(rp, "");
+  } catch (e) {
+    setStatus("Error", "bad");
+    debugEl.textContent = String(e?.message || e);
+  }
+}
+
+// boot
+bindControls();
+initCharts();
+refresh();
