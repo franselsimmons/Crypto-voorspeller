@@ -1,9 +1,46 @@
 // api/_lib/derivs.js
-import { kv } from "@vercel/kv";
 
 function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
 
+// ------------------------------
+// OPTIONAL KV (nooit crashen)
+// ------------------------------
+let kv = null;
+
+// Deze functie probeert KV te laden, maar faalt NOOIT hard.
+async function getKv() {
+  if (kv) return kv;
+  try {
+    // Dynamische import: als package/vars ontbreken -> catch -> kv blijft null
+    const mod = await import("@vercel/kv");
+    if (mod?.kv) kv = mod.kv;
+  } catch {}
+  return kv;
+}
+
+async function kvGet(key) {
+  try {
+    const k = await getKv();
+    if (!k) return null;
+    return await k.get(key);
+  } catch {
+    return null;
+  }
+}
+
+async function kvSet(key, value, exSeconds) {
+  try {
+    const k = await getKv();
+    if (!k) return;
+    // ex is TTL in seconden
+    await k.set(key, value, { ex: exSeconds });
+  } catch {}
+}
+
+// ------------------------------
+// fetchJson met timeout
+// ------------------------------
 async function fetchJson(url, opts = {}) {
   const timeoutMs = Number(opts?.timeoutMs ?? 9000);
   const headers = opts?.headers ?? {};
@@ -17,6 +54,7 @@ async function fetchJson(url, opts = {}) {
       headers: { accept: "application/json", ...headers },
       signal: ctrl.signal
     });
+
     const t = await r.text();
     let j = null;
     try { j = JSON.parse(t); } catch {}
@@ -54,10 +92,7 @@ async function fetchCoinglass(url) {
   if (!key) return { ok: false, denied: true, code: "NO_KEY", msg: "No key" };
 
   const j = await fetchJson(url, {
-    headers: {
-      accept: "application/json",
-      coinglassSecret: key
-    },
+    headers: { coinglassSecret: key },
     timeoutMs: 12000
   });
 
@@ -68,12 +103,11 @@ async function fetchCoinglass(url) {
 }
 
 // ------------------------------
-// BINANCE (gratis) funding + OI
+// BINANCE funding (gratis)
 // ------------------------------
 async function fetchBinanceFundingHistory({ symbol = "BTCUSDT", limit = 200 } = {}) {
   const urls = [
-    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
-    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}` // duplicate, maar houdt plek voor extra host
+    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(symbol)}&limit=${limit}`
   ];
   const r = await tryMany(urls, { timeoutMs: 9000 });
   if (!r.ok) return { ok: false, hist: [], err: r.error };
@@ -137,6 +171,9 @@ function fundingStatsFromHistory(hist) {
   };
 }
 
+// ------------------------------
+// BINANCE OI (gratis)
+// ------------------------------
 async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
   const urls = [
     `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(symbol)}&period=1d&limit=${limit}`
@@ -158,7 +195,7 @@ async function fetchBinanceOiHistory({ symbol = "BTCUSDT", limit = 15 } = {}) {
 }
 
 // ------------------------------
-// PUBLIC API (wat forest.js wil gebruiken)
+// EXPORTS (forest.js verwacht deze namen)
 // ------------------------------
 export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
   // 1) CoinGlass (bij jou meestal denied)
@@ -166,23 +203,20 @@ export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
     `https://open-api-v4.coinglass.com/api/futures/funding-rate/history?exchange=Binance&symbol=${encodeURIComponent(symbol)}&interval=8h&limit=200`
   );
   if (cg.ok && Array.isArray(cg.data) && cg.data.length) {
-    // Als je ooit upgrade: hier kun je cg.data mappen
+    // als je ooit upgrade: hier mappen
   }
 
   // 2) Binance (gratis)
   const b = await fetchBinanceFundingHistory({ symbol, limit: 200 });
   if (b.ok && b.hist.length) {
     const out = fundingStatsFromHistory(b.hist);
-    // cache
-    try { await kv.set("derivs:funding:last", out, { ex: 60 * 20 }); } catch {}
+    await kvSet("derivs:funding:last", out, 60 * 20);
     return out;
   }
 
-  // 3) Cache fallback (zodat UI niet n/a wordt door 1 timeout)
-  try {
-    const cached = await kv.get("derivs:funding:last");
-    if (cached && typeof cached === "object") return { ...cached, source: "cache" };
-  } catch {}
+  // 3) cache fallback
+  const cached = await kvGet("derivs:funding:last");
+  if (cached && typeof cached === "object") return { ...cached, source: "cache" };
 
   return {
     fundingRate: null,
@@ -195,19 +229,18 @@ export async function fetchBtcFundingStats({ symbol = "BTCUSDT" } = {}) {
 }
 
 export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
-  // 1) CoinGlass (bij jou denied)
+  // 1) CoinGlass (denied bij jou)
   const cg = await fetchCoinglass(
     `https://open-api-v4.coinglass.com/api/futures/open-interest/history?exchange=Binance&symbol=${encodeURIComponent(symbol)}&interval=1d&limit=120`
   );
   if (cg.ok && Array.isArray(cg.data) && cg.data.length) {
-    // als je upgrade: hier cg.data parsen
+    // als je ooit upgrade: hier mappen
   }
 
   // 2) Binance (gratis)
   const b = await fetchBinanceOiHistory({ symbol, limit: 15 });
   if (b.ok && b.hist.length >= 2) {
     const hist = b.hist;
-
     const last = hist[hist.length - 1];
     const prev1 = hist[hist.length - 2] || null;
     const prev7 = hist.length >= 8 ? hist[hist.length - 8] : null;
@@ -223,15 +256,13 @@ export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
       source: "binance"
     };
 
-    try { await kv.set("derivs:oi:last", out, { ex: 60 * 30 }); } catch {}
+    await kvSet("derivs:oi:last", out, 60 * 30);
     return out;
   }
 
-  // 3) Cache fallback
-  try {
-    const cached = await kv.get("derivs:oi:last");
-    if (cached && typeof cached === "object") return { ...cached, source: "cache" };
-  } catch {}
+  // 3) cache fallback
+  const cached = await kvGet("derivs:oi:last");
+  if (cached && typeof cached === "object") return { ...cached, source: "cache" };
 
   return {
     oiNow: null,
@@ -242,7 +273,6 @@ export async function fetchBtcOpenInterestChange({ symbol = "BTCUSDT" } = {}) {
 }
 
 export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
-  // CoinGlass denied -> ETF blijft n/a tenzij je andere bron toevoegt / upgrade
   const cg = await fetchCoinglass("https://open-api-v4.coinglass.com/api/etf/bitcoin/flow-history?limit=180");
   if (!cg.ok) {
     return {
@@ -254,8 +284,6 @@ export async function fetchBtcEtfFlows({ lookbackDays = 120 } = {}) {
       source: "coinglass-denied"
     };
   }
-
-  // Als het ooit werkt: hier data parsen
   return {
     etfNetFlow: null,
     etfFlow7: null,
@@ -271,7 +299,6 @@ export async function fetchBtcLiqHeatmapLevels({ symbol = "BTCUSDT", topN = 12 }
     `https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap?exchange=Binance&symbol=${encodeURIComponent(symbol)}`
   );
   if (!cg.ok) return [];
-  // als het ooit werkt: return [{price, weight}, ...]
   return [];
 }
 
