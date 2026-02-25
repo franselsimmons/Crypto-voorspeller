@@ -19,6 +19,10 @@ export default async function handler(req, res) {
     const hRaw = Number(req.query?.h || 90);
     const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
 
+    // optioneel override voor CoinGlass
+    const cgExchange = String(req.query?.cgEx || "Binance");
+    const cgSymbol   = String(req.query?.cgSym || "BTCUSDT");
+
     let candlesTruth, candlesWithLive, hasLive, intervalLabel;
     let weeklyTruthCandles = null;
 
@@ -28,32 +32,25 @@ export default async function handler(req, res) {
     } else {
       ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
-
       const w = await getWeeklyBtcCandlesKraken();
       weeklyTruthCandles = w?.candlesTruth ?? null;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ✅ Derivs (funding / OI / ETF / liq)
     const [funding, oi, etf, liqApi] = await Promise.all([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTC", interval: "8h" }),
-      fetchBtcOpenInterestChange({
-        symbol: "BTC",
-        interval: intervalLabel === "1w" ? "1w" : "1d",
-        lookback: 90
-      }),
-      fetchBtcEtfFlows({ lookbackDays: 120 }),
-      fetchBtcLiqHeatmapLevels({ symbol: "BTC", topN: 12 })
+      fetchBtcFundingStats({ lookbackDays: 120, exchange: cgExchange, symbol: cgSymbol, interval: "8h" }),
+      fetchBtcOpenInterestChange({ exchange: cgExchange, symbol: cgSymbol, interval: intervalLabel === "1w" ? "1w" : "1d", lookback: 90 }),
+      fetchBtcEtfFlows({ interval: "1w", lookback: 120 }),
+      fetchBtcLiqHeatmapLevels({ exchange: cgExchange, symbol: cgSymbol, topN: 10 })
     ]);
 
-    // ✅ Liq levels: eerst echt, anders synthetic
     const liqLevels = (Array.isArray(liqApi) && liqApi.length)
       ? liqApi
       : buildSyntheticLiqLevels(candlesTruth, {
           lookback: intervalLabel === "1d" ? 220 : 180,
           bins: intervalLabel === "1d" ? 64 : 48,
-          topN: 12
+          topN: 10
         });
 
     const out = buildForestOverlay({
