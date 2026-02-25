@@ -1,36 +1,32 @@
 // api/_lib/forestEngine.js
 import {
-  kama, std, mad, atr, sma, obv, adx,
+  kama, std, mad, atr, sma, obv,
+  adxDi,
   lastSwingLevels,
-  percentileFromWindow, clamp
+  percentileFromWindow, percentileRank, clamp
 } from "./indicators.js";
 
-function isNum(x){ return typeof x === "number" && Number.isFinite(x); }
+function isNum(x) { return typeof x === "number" && Number.isFinite(x); }
 
-function pickAdaptiveZWin(atrArr, lastIdx, lookback = 208) {
-  // idee: hoge volatiliteit => kortere window, lage volatiliteit => langere window
-  // we schatten ATR-regime met p20/p80 op lookback
-  if (!Array.isArray(atrArr) || lastIdx < 0) return 208;
+// ------------------------------
+// Adaptive zWin: ATR-percentile => zWinUsed
+// low vol => langer window (stabieler)
+// high vol => korter window (sneller reageren)
+// ------------------------------
+function adaptiveZWinFromAtr(atrArr, idx) {
+  const r = percentileRank(atrArr, idx, 520); // 0..1
+  if (!isNum(r)) return 208;
 
-  const start = Math.max(0, lastIdx - lookback + 1);
-  const win = atrArr.slice(start, lastIdx + 1).filter(isNum);
-  if (win.length < 30) return 208;
-
-  const p20 = percentileFromWindow(win, 20);
-  const p80 = percentileFromWindow(win, 80);
-  const now = atrArr[lastIdx];
-  if (!isNum(p20) || !isNum(p80) || !isNum(now) || p80 === p20) return 208;
-
-  // t=0 (laag vol) -> zWin 260, t=1 (hoog vol) -> zWin 80
-  const t = clamp((now - p20) / (p80 - p20), 0, 1);
-  const zWin = Math.round(260 - t * (260 - 80));
-  return clamp(zWin, 60, 260);
+  // 3 regimes (simpel maar werkt)
+  if (r >= 0.80) return 120;  // heel volatiel
+  if (r >= 0.55) return 160;  // normaal
+  return 220;                 // rustig => langer
 }
 
 function computeCore(candles, {
   kamaEr = 10, kamaFast = 2, kamaSlow = 30,
-  zWin = 208,
-  adxLen = 14
+  adxLen = 14,
+  zWin = 208
 } = {}) {
   const closes = candles.map(c => c.close);
   const highs  = candles.map(c => c.high);
@@ -40,9 +36,10 @@ function computeCore(candles, {
   const base = kama(closes, kamaEr, kamaFast, kamaSlow);
   const resid = closes.map((c, i) => (base[i] == null ? null : (c - base[i])));
 
+  const a = atr(highs, lows, closes, 14);
+
   const sd = std(resid, zWin);
   const rmad = mad(resid, zWin);
-  const a = atr(highs, lows, closes, 14);
 
   const zStd = resid.map((r, i) => {
     const s = sd[i];
@@ -56,6 +53,7 @@ function computeCore(candles, {
     return r / s;
   });
 
+  // beste z: robust waar kan, anders std
   const z = zStd.map((_, i) => (isNum(zRobust[i]) ? zRobust[i] : zStd[i]));
 
   const volSma = sma(vols, 20);
@@ -63,17 +61,17 @@ function computeCore(candles, {
 
   const obvArr = obv(closes, vols);
 
-  const adxPack = adx(highs, lows, closes, adxLen);
-  const adxArr = adxPack.adx;
-  const diPlusArr = adxPack.diPlus;
-  const diMinusArr = adxPack.diMinus;
+  const di = adxDi(highs, lows, closes, adxLen);
+  const adxArr = di.adx;
+  const diPlusArr = di.diPlus;
+  const diMinusArr = di.diMinus;
 
-  return { closes, highs, lows, vols, base, a, z, relVol, obvArr, adxArr, diPlusArr, diMinusArr };
-}
-
-function lastValidIndex(arr) {
-  for (let i = arr.length - 1; i >= 0; i--) if (isNum(arr[i])) return i;
-  return -1;
+  return {
+    closes, highs, lows, vols,
+    base, resid, a,
+    z, relVol, obvArr,
+    adxArr, diPlusArr, diMinusArr
+  };
 }
 
 function computeBands(zArr, atrArr, i, lookback = 208) {
@@ -85,8 +83,8 @@ function computeBands(zArr, atrArr, i, lookback = 208) {
 
   const p20ATR = percentileFromWindow(atrWin, 20);
   const atrNow = atrArr[i];
-  const freeze = (isNum(p20ATR) && isNum(atrNow)) ? (atrNow < p20ATR) : false;
 
+  const freeze = (isNum(p20ATR) && isNum(atrNow)) ? (atrNow < p20ATR) : false;
   return { bandsNow: { p35, p65, p20ATR }, freezeNow: freeze };
 }
 
@@ -132,7 +130,12 @@ function zSeries(candles, zArr) {
   return out;
 }
 
-// --- Liq influence ---
+function lastValidIndex(arr) {
+  for (let i = arr.length - 1; i >= 0; i--) if (isNum(arr[i])) return i;
+  return -1;
+}
+
+// --- Liquidation influence (nearest “magnet”) ---
 function liqInfluence(priceNow, liqLevels) {
   if (!isNum(priceNow) || !Array.isArray(liqLevels) || !liqLevels.length) {
     return { nearest: null, pull: 0, pressure: 0 };
@@ -147,16 +150,19 @@ function liqInfluence(priceNow, liqLevels) {
   }
   if (!best) return { nearest: null, pull: 0, pressure: 0 };
 
-  const distPct = best.dist / Math.max(1, priceNow);
-  const pressure = clamp((best.weight * 1.25) * (1 / Math.max(1, distPct / 0.01)), 0, 1);
+  const pressure = clamp((best.weight * 1.25) * (1 / Math.max(1, (best.dist / Math.max(1, priceNow)) / 0.01)), 0, 1);
   const dir = (best.price > priceNow) ? +1 : -1;
   const pull = dir * pressure;
 
   return { nearest: { price: best.price, weight: best.weight }, pull, pressure };
 }
 
-// --- Confidence ---
-function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow, diPlusNow, diMinusNow, regNow }) {
+// --- Confidence score ---
+function scoreConfidence({
+  zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow,
+  diPlusNow, diMinusNow,
+  oiChange1, etfNetFlow
+}) {
   let s = 0;
 
   if (isNum(zNow)) {
@@ -171,13 +177,10 @@ function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned, structure
     else if (adxNow >= 20) s += 1;
   }
 
-  // richting check: DI+ > DI- past bij BULL, anders bij BEAR
+  // DI direction sanity: DI- >> DI+ ondersteunt BEAR, andersom ondersteunt BULL
   if (isNum(diPlusNow) && isNum(diMinusNow)) {
-    const diBull = diPlusNow > diMinusNow;
-    const diBear = diMinusNow > diPlusNow;
-    if (regNow === "BULL" && diBull) s += 1;
-    if (regNow === "BEAR" && diBear) s += 1;
-    if (regNow !== "NEUTRAL" && ((regNow === "BULL" && diBear) || (regNow === "BEAR" && diBull))) s -= 1;
+    const diff = diPlusNow - diMinusNow;
+    if (Math.abs(diff) > 10) s += 1;
   }
 
   if (isNum(relVolNow)) {
@@ -191,6 +194,12 @@ function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned, structure
   if (structureOK) s += 2; else s -= 2;
   if (freezeNow) s -= 2;
 
+  // extra: OI change (explosie in leverage) verhoogt kans op “move”, maar ook flip risk
+  if (isNum(oiChange1) && Math.abs(oiChange1) > 0.03) s += 1;
+
+  // extra: ETF flows aanwezig en sterk => meer “bias confidence”
+  if (isNum(etfNetFlow) && Math.abs(etfNetFlow) > 200_000_000) s += 1;
+
   if (s >= 8) return "high";
   if (s >= 4) return "mid";
   return "low";
@@ -198,10 +207,13 @@ function scoreConfidence({ zNow, adxNow, relVolNow, obvSlope, aligned, structure
 
 function sigmoid(x){ return 1 / (1 + Math.exp(-x)); }
 
+// --- Regime flip probability (0..1) ---
 function computeFlipProbability({
   regNow, zNow, bandsNow, adxNow, structureOK, aligned, freezeNow,
-  fundingFlip, fundingRate,
-  liqPressure
+  fundingFlip, fundingPercentile, fundingExtreme,
+  liqPressure,
+  oiChange1,
+  etfFlip
 }) {
   const { p35, p65 } = bandsNow || {};
   if (!isNum(zNow) || !isNum(p35) || !isNum(p65)) return 0;
@@ -216,10 +228,22 @@ function computeFlipProbability({
   const alignBad = aligned ? 0 : 1;
   const freeze = freezeNow ? 1 : 0;
 
-  const fundFlip = fundingFlip ? 1 : 0;
-  const fundMag = isNum(fundingRate) ? clamp(Math.abs(fundingRate) / 0.002, 0, 1) : 0;
-
   const liq = clamp(liqPressure, 0, 1);
+
+  // funding extremes => hogere flip-kans (crowded)
+  const fundExtremeBoost =
+    (fundingExtreme === "EXTREME_POS" || fundingExtreme === "EXTREME_NEG") ? 1 :
+    (fundingExtreme === "HIGH_POS" || fundingExtreme === "HIGH_NEG") ? 0.6 :
+    0;
+
+  // OI spike => leverage => meer “snap”
+  const oi = isNum(oiChange1) ? clamp(Math.abs(oiChange1) / 0.06, 0, 1) : 0;
+
+  // ETF flip => macro-flow draait => flip-kans iets omhoog
+  const etf = etfFlip ? 1 : 0;
+
+  const fundFlip = fundingFlip ? 1 : 0;
+  const fundRank = isNum(fundingPercentile) ? clamp(Math.abs(fundingPercentile - 0.5) * 2, 0, 1) : 0;
 
   let x =
     1.6 * distWeak +
@@ -227,8 +251,11 @@ function computeFlipProbability({
     0.8 * structBad +
     0.7 * alignBad +
     0.6 * freeze +
-    0.5 * fundFlip * (0.5 + 0.5 * fundMag) +
-    0.6 * liq;
+    0.6 * liq +
+    0.7 * fundExtremeBoost +
+    0.5 * fundFlip * (0.5 + 0.5 * fundRank) +
+    0.6 * oi +
+    0.4 * etf;
 
   if (regNow === "NEUTRAL") x += 0.6;
 
@@ -236,7 +263,35 @@ function computeFlipProbability({
   return clamp(p, 0, 1);
 }
 
-// --- Forward fan (deterministisch) ---
+// --- Funding squeeze probability (0..1) ---
+// Idee: funding extreem + OI stijgt = crowding.
+// Als regime BEAR en funding positief extreem => long squeeze kans.
+// Als regime BULL en funding negatief extreem => short squeeze kans.
+function computeFundingSqueezeProb({
+  regNow,
+  fundingExtreme,
+  fundingRate,
+  oiChange1
+}) {
+  const oi = isNum(oiChange1) ? clamp(Math.max(0, oiChange1) / 0.06, 0, 1) : 0;
+
+  const extremePos = (fundingExtreme === "EXTREME_POS" || fundingExtreme === "HIGH_POS");
+  const extremeNeg = (fundingExtreme === "EXTREME_NEG" || fundingExtreme === "HIGH_NEG");
+
+  let base = 0;
+
+  if (regNow === "BEAR" && extremePos) base = 0.55; // longs crowded, maar prijs zwak
+  if (regNow === "BULL" && extremeNeg) base = 0.55; // shorts crowded, maar prijs sterk
+
+  // funding magnitude
+  const mag = isNum(fundingRate) ? clamp(Math.abs(fundingRate) / 0.0025, 0, 1) : 0;
+
+  // leverage buildup (OI up) maakt squeeze waarschijnlijker
+  const p = clamp(base + 0.25 * mag + 0.25 * oi, 0, 1);
+  return p;
+}
+
+// --- Forward fan helpers ---
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
@@ -249,9 +304,9 @@ function mulberry32(seed) {
 
 function sampleFat(rng) {
   const u = rng();
-  const n = (rng() + rng() + rng() + rng() - 2); // approx normal
+  const n = (rng() + rng() + rng() + rng() - 2);
   if (u < 0.9) return n * 0.6;
-  return n * 2.3; // shock
+  return n * 2.3;
 }
 
 function quantile(sortedArr, q) {
@@ -260,6 +315,7 @@ function quantile(sortedArr, q) {
   return sortedArr[idx];
 }
 
+// Forward fan met asymmetry + funding/liq/etf bias
 function buildForwardFan({
   candlesTruth,
   baseArr,
@@ -270,7 +326,8 @@ function buildForwardFan({
   regimeNow,
   stabilityScore,
   fundingBias,
-  liqPull
+  liqPull,
+  etfBias
 }) {
   const n = candlesTruth.length;
   if (n < 100) return { mid: [], upper: [], lower: [] };
@@ -306,7 +363,7 @@ function buildForwardFan({
   const tight = clamp(stabilityScore / 100, 0.2, 1.0);
   const fanScale = clamp(1.25 - 0.55 * tight, 0.6, 1.25);
 
-  // asymmetry: down sneller
+  // ✅ Asymmetry: bear sneller
   const downMult = (regimeNow === "BEAR") ? 1.25 : 1.10;
   const upMult   = (regimeNow === "BULL") ? 0.95 : 1.05;
 
@@ -315,7 +372,12 @@ function buildForwardFan({
     regimeNow === "BEAR" ? -0.0009 :
     0;
 
-  const bias = regimeBias + (isNum(fundingBias) ? fundingBias : 0) + (isNum(liqPull) ? liqPull * 0.0006 : 0);
+  // fundingBias en etfBias zijn al “klein”
+  const bias =
+    regimeBias +
+    (isNum(fundingBias) ? fundingBias : 0) +
+    (isNum(etfBias) ? etfBias : 0) +
+    (isNum(liqPull) ? liqPull * 0.0006 : 0);
 
   const paths = (horizonBars <= 60) ? 220 : 140;
   const seed = (lastTime ^ (tf === "1w" ? 1337 : 7331)) >>> 0;
@@ -366,28 +428,31 @@ export function buildForestOverlay({
   tf = "1d",
   horizonBars = 90,
   weeklyTruthCandles = null,
+
+  // extern (derivs)
   funding = null,
-  liqLevels = []
+  liqLevels = [],
+  oi = null,
+  etf = null
 }) {
-  // 1) eerst core met ATR zodat we zWinUsed kunnen kiezen
-  const closes0 = candlesTruth.map(c => c.close);
-  const highs0  = candlesTruth.map(c => c.high);
-  const lows0   = candlesTruth.map(c => c.low);
-  const atr0 = atr(highs0, lows0, closes0, 14);
-  const lastIdx0 = lastValidIndex(closes0);
+  // -------- 1) Eerst core met “dummy zWin”, dan adapt zWinUsed op ATR --------
+  const t0 = computeCore(candlesTruth, { zWin: 208 });
+  const lastIdxBase = lastValidIndex(t0.base);
+  const idx = lastIdxBase >= 0 ? lastIdxBase : lastValidIndex(t0.closes);
 
-  const zWinUsed = pickAdaptiveZWin(atr0, lastIdx0, 208);
+  // fallback
+  const zWinUsed = idx >= 0 ? adaptiveZWinFromAtr(t0.a, idx) : 208;
 
-  // 2) core met gekozen zWin
-  const t = computeCore(candlesTruth, { zWin: zWinUsed, adxLen: 14 });
+  // recompute core met echte zWinUsed
+  const t = computeCore(candlesTruth, { zWin: zWinUsed });
   const lastIdxT = lastValidIndex(t.z);
 
-  const zNow = (lastIdxT >= 0) ? t.z[lastIdxT] : null; // ✅ FIX: zNow staat NU bovenaan
-  const closeNow = (lastIdxT >= 0) ? t.closes[lastIdxT] : null;
-
   const { bandsNow, freezeNow } = (lastIdxT >= 0)
-    ? computeBands(t.z, t.a, lastIdxT, 208)
+    ? computeBands(t.z, t.a, lastIdxT, zWinUsed)
     : { bandsNow: {}, freezeNow: false };
+
+  // ✅ FIX: zNow direct hier, zodat je hem overal veilig kan gebruiken
+  const zNow = lastIdxT >= 0 ? t.z[lastIdxT] : null;
 
   let reg = regimeFromZ(zNow, bandsNow);
 
@@ -398,18 +463,18 @@ export function buildForestOverlay({
     if (Math.abs(zNow) < 1.2) reg = "NEUTRAL";
   }
 
+  const diPlusNow = t.diPlusArr[lastIdxT];
+  const diMinusNow = t.diMinusArr[lastIdxT];
+
   // volume/orderflow
   const relVolNow = t.relVol[lastIdxT];
   const obvNow = t.obvArr[lastIdxT];
   const obvPrev = t.obvArr[Math.max(0, lastIdxT - 5)];
   const obvSlope = (isNum(obvNow) && isNum(obvPrev)) ? (obvNow - obvPrev) : null;
 
-  // DI+/DI-
-  const diPlusNow = t.diPlusArr[lastIdxT];
-  const diMinusNow = t.diMinusArr[lastIdxT];
-
   // structuurfilter (pivot/swing break)
   const { lastSwingHigh, lastSwingLow } = lastSwingLevels(t.highs, t.lows, 3, 3, 220);
+  const closeNow = t.closes[lastIdxT];
   let structureOK = true;
   if (reg === "BULL" && isNum(lastSwingHigh) && isNum(closeNow)) structureOK = closeNow > lastSwingHigh;
   if (reg === "BEAR" && isNum(lastSwingLow) && isNum(closeNow)) structureOK = closeNow < lastSwingLow;
@@ -417,53 +482,75 @@ export function buildForestOverlay({
   // weekly alignment
   let aligned = true;
   let weeklyReg = null;
-
   if (tf === "1d" && Array.isArray(weeklyTruthCandles) && weeklyTruthCandles.length > 100) {
-    const wCl = weeklyTruthCandles.map(c => c.close);
-    const wHi = weeklyTruthCandles.map(c => c.high);
-    const wLo = weeklyTruthCandles.map(c => c.low);
-    const wAtr0 = atr(wHi, wLo, wCl, 14);
-    const wLast = lastValidIndex(wCl);
-    const wZWinUsed = pickAdaptiveZWin(wAtr0, wLast, 208);
+    const w0 = computeCore(weeklyTruthCandles, { zWin: 208 });
+    const wIdxBase = lastValidIndex(w0.base);
+    const wZWinUsed = wIdxBase >= 0 ? adaptiveZWinFromAtr(w0.a, wIdxBase) : 208;
 
-    const w = computeCore(weeklyTruthCandles, { zWin: wZWinUsed, adxLen: 14 });
+    const w = computeCore(weeklyTruthCandles, { zWin: wZWinUsed });
     const wIdx = lastValidIndex(w.z);
-    const wBands = computeBands(w.z, w.a, wIdx, 208).bandsNow;
-    weeklyReg = regimeFromZ(w.z[wIdx], wBands);
+    const wBands = computeBands(w.z, w.a, wIdx, wZWinUsed).bandsNow;
+
+    const wZNow = w.z[wIdx];
+    weeklyReg = regimeFromZ(wZNow, wBands);
 
     if (weeklyReg === "BULL" && reg === "BEAR") aligned = false;
     if (weeklyReg === "BEAR" && reg === "BULL") aligned = false;
 
-    const wZ = w.z[wIdx];
-    if (isNum(wZ) && Math.abs(wZ) >= 2.0) {
+    if (isNum(wZNow) && Math.abs(wZNow) >= 2.0) {
       if (weeklyReg !== "NEUTRAL") reg = weeklyReg;
     }
   }
 
-  // liq influence
+  // -------- 2) Liq influence --------
   const priceNow = isNum(closeNow) ? closeNow : null;
   const liq = liqInfluence(priceNow, liqLevels);
 
-  // funding
+  // -------- 3) Funding (percentile/extreme/flip/bias) + fallback --------
   let fundingRate = null;
   let fundingBias = 0;
   let fundingFlip = false;
+  let fundingPercentile = null;
+  let fundingExtreme = null;
 
   if (isNum(funding?.fundingRate)) {
     fundingRate = funding.fundingRate;
     fundingBias = isNum(funding?.fundingBias) ? funding.fundingBias : 0;
     fundingFlip = !!funding?.fundingFlip;
+    fundingPercentile = isNum(funding?.fundingPercentile) ? funding.fundingPercentile : null;
+    fundingExtreme = funding?.fundingExtreme ?? null;
   } else {
-    // fallback: synthetic funding pressure
+    // fallback: synthetic crowding
     if (isNum(zNow) && isNum(relVolNow)) {
-      if (zNow > 1.2 && relVolNow > 1.1) { fundingBias = -0.0015; fundingFlip = true; }
-      if (zNow < -1.2 && relVolNow > 1.1) { fundingBias = +0.0015; fundingFlip = true; }
+      if (zNow > 1.2 && relVolNow > 1.1) {
+        fundingBias = -0.0015; fundingFlip = true;
+        fundingExtreme = "HIGH_POS";
+      }
+      if (zNow < -1.2 && relVolNow > 1.1) {
+        fundingBias = +0.0015; fundingFlip = true;
+        fundingExtreme = "HIGH_NEG";
+      }
     }
   }
 
+  // -------- 4) Open Interest change --------
+  const oiNow = oi?.oiNow ?? null;
+  const oiChange1 = oi?.oiChange1 ?? null;
+  const oiChange7 = oi?.oiChange7 ?? null;
+
+  // -------- 5) ETF flows --------
+  const etfNetFlow = etf?.etfNetFlow ?? null;
+  const etfFlow7 = etf?.etfFlow7 ?? null;
+  const etfPercentile = etf?.etfPercentile ?? null;
+  const etfFlip = !!etf?.etfFlip;
+  const etfBias = etf?.etfBias ?? 0;
+
+  // -------- 6) Scores --------
   const confidence = scoreConfidence({
     zNow, adxNow, relVolNow, obvSlope, aligned, structureOK, freezeNow,
-    diPlusNow, diMinusNow, regNow: reg
+    diPlusNow, diMinusNow,
+    oiChange1,
+    etfNetFlow
   });
 
   const stabilityScore = Math.round(clamp(
@@ -484,20 +571,34 @@ export function buildForestOverlay({
     aligned,
     freezeNow,
     fundingFlip,
+    fundingPercentile,
+    fundingExtreme,
+    liqPressure: liq.pressure,
+    oiChange1,
+    etfFlip
+  });
+
+  const squeezeProb = computeFundingSqueezeProb({
+    regNow: reg,
+    fundingExtreme,
     fundingRate,
-    liqPressure: liq.pressure
+    oiChange1
   });
 
   const regimeLabel = `${strengthLabel(zNow)}${reg} (${isNum(zNow) ? zNow.toFixed(2) : "n/a"})`;
 
+  // -------- 7) Series --------
   const forestOverlayTruth = overlaySeries(candlesTruth, t.base, t.a, t.z);
   const forestZTruth = zSeries(candlesTruth, t.z);
 
   let forestOverlayLive = [];
   let forestZLive = [];
   if (hasLive && candlesWithLive?.length) {
-    // live gebruikt dezelfde zWinUsed zodat het consistent blijft
-    const l = computeCore(candlesWithLive, { zWin: zWinUsed, adxLen: 14 });
+    const l0 = computeCore(candlesWithLive, { zWin: 208 });
+    const lIdxBase = lastValidIndex(l0.base);
+    const lZWinUsed = lIdxBase >= 0 ? adaptiveZWinFromAtr(l0.a, lIdxBase) : zWinUsed;
+
+    const l = computeCore(candlesWithLive, { zWin: lZWinUsed });
     forestOverlayLive = overlaySeries(candlesWithLive, l.base, l.a, l.z);
     forestZLive = zSeries(candlesWithLive, l.z);
   }
@@ -514,7 +615,8 @@ export function buildForestOverlay({
     regimeNow: reg,
     stabilityScore,
     fundingBias,
-    liqPull: liq.pull
+    liqPull: liq.pull,
+    etfBias
   });
 
   const nowTime = candlesTruth[lastIdxT]?.time ?? null;
@@ -523,12 +625,19 @@ export function buildForestOverlay({
     time: isNum(nowTime) ? nowTime : null,
     price: isNum(priceNow) ? priceNow : null,
     overlay: forestOverlayTruth.length ? forestOverlayTruth[forestOverlayTruth.length - 1].value : null,
+
     z: isNum(zNow) ? zNow : null,
+    zWinUsed,
 
     regimeNow: reg,
     confidence,
     stabilityScore,
     flipProbability: flipProb,
+
+    // ADX direction
+    adxNow: isNum(adxNow) ? adxNow : null,
+    diPlusNow: isNum(diPlusNow) ? diPlusNow : null,
+    diMinusNow: isNum(diMinusNow) ? diMinusNow : null,
 
     weeklyReg,
     structureOK,
@@ -537,17 +646,30 @@ export function buildForestOverlay({
     lastSwingHigh: isNum(lastSwingHigh) ? lastSwingHigh : null,
     lastSwingLow: isNum(lastSwingLow) ? lastSwingLow : null,
 
+    // funding
     fundingRate,
     fundingBias,
     fundingFlip,
+    fundingPercentile,
+    fundingExtreme,
 
+    // liq heatmap
     liqNearest: liq.nearest,
     liqPressure: liq.pressure,
 
-    diPlus: isNum(diPlusNow) ? diPlusNow : null,
-    diMinus: isNum(diMinusNow) ? diMinusNow : null,
+    // OI
+    oiNow,
+    oiChange1,
+    oiChange7,
 
-    zWinUsed
+    // ETF
+    etfNetFlow,
+    etfFlow7,
+    etfPercentile,
+    etfFlip,
+
+    // squeeze
+    squeezeProb
   };
 
   return {
@@ -556,6 +678,7 @@ export function buildForestOverlay({
     confidence,
     stabilityScore,
     flipProbability: flipProb,
+    squeezeProb,
 
     forestOverlayTruth,
     forestOverlayLive,
