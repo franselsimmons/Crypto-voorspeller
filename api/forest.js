@@ -3,10 +3,10 @@ import { getWeeklyBtcCandlesKraken, getDailyBtcCandlesKraken } from "./_lib/krak
 import { buildForestOverlay } from "./_lib/forestEngine.js";
 import {
   fetchBtcFundingStats,
-  fetchBtcOpenInterestChange,
-  fetchBtcEtfFlows,
   fetchBtcLiqHeatmapLevels,
-  buildSyntheticLiqLevels
+  buildSyntheticLiqLevels,
+  parseLiqLevelsFromQuery,
+  parseLiqLevelsB64
 } from "./_lib/derivs.js";
 
 export const config = { runtime: "nodejs" };
@@ -28,27 +28,36 @@ export default async function handler(req, res) {
     } else {
       ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
+
       const w = await getWeeklyBtcCandlesKraken();
       weeklyTruthCandles = w?.candlesTruth ?? null;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ✅ Funding/OI van Binance fallback (gratis)
-    const [funding, oi, etf, liqApi] = await Promise.all([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
-      fetchBtcOpenInterestChange({ symbol: "BTCUSDT", interval: intervalLabel === "1w" ? "1w" : "1d", lookback: 90 }),
-      fetchBtcEtfFlows({ lookbackDays: 120 }),
-      fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 10 })
-    ]);
+    // ✅ funding (nu CoinGlass -> Bitget fallback)
+    const funding = await fetchBtcFundingStats({ lookbackDays: 120 });
 
-    const liqLevels = (Array.isArray(liqApi) && liqApi.length)
-      ? liqApi
-      : buildSyntheticLiqLevels(candlesTruth, {
-          lookback: intervalLabel === "1d" ? 220 : 180,
-          bins: intervalLabel === "1d" ? 64 : 48,
-          topN: 12
-        });
+    // liq levels: query override -> api -> synthetic
+    const liqQ = String(req.query?.liq || "");
+    const liqB64 = String(req.query?.liqB64 || "");
+
+    let liqLevels = [];
+    liqLevels = liqLevels.concat(parseLiqLevelsFromQuery(liqQ));
+    liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
+
+    if (!liqLevels.length) {
+      const real = await fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 });
+      if (Array.isArray(real) && real.length) liqLevels = real;
+    }
+
+    if (!liqLevels.length) {
+      liqLevels = buildSyntheticLiqLevels(candlesTruth, {
+        lookback: intervalLabel === "1d" ? 220 : 180,
+        bins: intervalLabel === "1d" ? 64 : 48,
+        topN: 12
+      });
+    }
 
     const out = buildForestOverlay({
       candlesTruth,
@@ -57,10 +66,14 @@ export default async function handler(req, res) {
       tf: intervalLabel,
       horizonBars,
       weeklyTruthCandles,
+
       funding,
       liqLevels,
-      oi,
-      etf
+
+      // jij had deze al in forestEngine, maar in jouw huidige forest.js stuur je ze niet mee.
+      // Laat ze later pas aanzetten als je ook echt data hebt:
+      oi: null,
+      etf: null
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -72,8 +85,6 @@ export default async function handler(req, res) {
       horizonBars,
 
       funding,
-      oi,
-      etf,
       liqLevels,
 
       candles: candles.map(c => ({
