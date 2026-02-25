@@ -13,13 +13,8 @@ import {
 
 export const config = { runtime: "nodejs" };
 
-const BUILD_TAG = "derivs-binance-v1"; // <- hiermee zie je 100% of Vercel de nieuwe code draait
-
 export default async function handler(req, res) {
   try {
-    // ✅ anti cache (anders zie je soms oude response)
-    res.setHeader("cache-control", "no-store, max-age=0");
-
     const tf = String(req.query?.tf || "1d").toLowerCase();
     const includeLive = String(req.query?.includeLive || "0") === "1";
 
@@ -41,24 +36,12 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- Derivs (altijd safe) ----
-    const settled = await Promise.allSettled([
-      fetchBtcFundingStats({ symbol: "BTCUSDT" }),
+    // ---- Derivs (funding + oi + etf + liq) ----
+    const [funding, oi, etf] = await Promise.all([
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
       fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
-      fetchBtcEtfFlows({})
+      fetchBtcEtfFlows({ lookbackDays: 120 })
     ]);
-
-    const funding = (settled[0].status === "fulfilled")
-      ? settled[0].value
-      : { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "funding-error" };
-
-    const oi = (settled[1].status === "fulfilled")
-      ? settled[1].value
-      : { oiNow: null, oiChange1: null, oiChange7: null, source: "oi-error" };
-
-    const etf = (settled[2].status === "fulfilled")
-      ? settled[2].value
-      : { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "etf-error" };
 
     // Liq from query overrides
     const liqQ = String(req.query?.liq || "");
@@ -96,8 +79,6 @@ export default async function handler(req, res) {
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.status(200).send(JSON.stringify({
-      buildTag: BUILD_TAG,
-
       source: "kraken",
       interval: intervalLabel,
       truthCount: candlesTruth.length,
