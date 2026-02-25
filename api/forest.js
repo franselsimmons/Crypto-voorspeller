@@ -13,6 +13,10 @@ import {
 
 export const config = { runtime: "nodejs" };
 
+function safeObj(x, fallback) {
+  return (x && typeof x === "object") ? x : fallback;
+}
+
 export default async function handler(req, res) {
   try {
     const tf = String(req.query?.tf || "1d").toLowerCase();
@@ -36,12 +40,24 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ---- Derivs (funding + oi + etf + liq) ----
-    const [funding, oi, etf] = await Promise.all([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT" }),
+    // ---- Derivs: NOOIT meer crashen ----
+    const settled = await Promise.allSettled([
+      fetchBtcFundingStats({ symbol: "BTCUSDT" }),
       fetchBtcOpenInterestChange({ symbol: "BTCUSDT" }),
       fetchBtcEtfFlows({ lookbackDays: 120 })
     ]);
+
+    const funding = settled[0].status === "fulfilled"
+      ? safeObj(settled[0].value, { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "bad" })
+      : { fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: `error:${String(settled[0].reason || "")}` };
+
+    const oi = settled[1].status === "fulfilled"
+      ? safeObj(settled[1].value, { oiNow: null, oiChange1: null, oiChange7: null, source: "bad" })
+      : { oiNow: null, oiChange1: null, oiChange7: null, source: `error:${String(settled[1].reason || "")}` };
+
+    const etf = settled[2].status === "fulfilled"
+      ? safeObj(settled[2].value, { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "bad" })
+      : { etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: `error:${String(settled[2].reason || "")}` };
 
     // Liq from query overrides
     const liqQ = String(req.query?.liq || "");
@@ -52,8 +68,10 @@ export default async function handler(req, res) {
     liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
 
     if (!liqLevels.length) {
-      const real = await fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 });
-      if (Array.isArray(real) && real.length) liqLevels = real;
+      try {
+        const real = await fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 });
+        if (Array.isArray(real) && real.length) liqLevels = real;
+      } catch {}
     }
 
     if (!liqLevels.length) {
