@@ -35,20 +35,25 @@ export default async function handler(req, res) {
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // derivs data
+    // ✅ Derivs (funding / OI / ETF / liq)
     const [funding, oi, etf, liqApi] = await Promise.all([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTC" }),
-      fetchBtcOpenInterestChange({ symbol: "BTC", interval: intervalLabel === "1w" ? "1w" : "1d", lookback: 90 }),
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTC", interval: "8h" }),
+      fetchBtcOpenInterestChange({
+        symbol: "BTC",
+        interval: intervalLabel === "1w" ? "1w" : "1d",
+        lookback: 90
+      }),
       fetchBtcEtfFlows({ lookbackDays: 120 }),
-      fetchBtcLiqHeatmapLevels({ symbol: "BTC", topN: 10 })
+      fetchBtcLiqHeatmapLevels({ symbol: "BTC", topN: 12 })
     ]);
 
+    // ✅ Liq levels: eerst echt, anders synthetic
     const liqLevels = (Array.isArray(liqApi) && liqApi.length)
       ? liqApi
       : buildSyntheticLiqLevels(candlesTruth, {
           lookback: intervalLabel === "1d" ? 220 : 180,
           bins: intervalLabel === "1d" ? 64 : 48,
-          topN: 10
+          topN: 12
         });
 
     const out = buildForestOverlay({
