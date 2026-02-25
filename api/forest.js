@@ -3,6 +3,8 @@ import { getWeeklyBtcCandlesKraken, getDailyBtcCandlesKraken } from "./_lib/krak
 import { buildForestOverlay } from "./_lib/forestEngine.js";
 import {
   fetchBtcFundingStats,
+  fetchBtcOpenInterestChange,
+  fetchBtcEtfFlows,
   fetchBtcLiqHeatmapLevels,
   buildSyntheticLiqLevels,
   parseLiqLevelsFromQuery,
@@ -28,17 +30,20 @@ export default async function handler(req, res) {
     } else {
       ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
       intervalLabel = "1d";
-
       const w = await getWeeklyBtcCandlesKraken();
       weeklyTruthCandles = w?.candlesTruth ?? null;
     }
 
     const candles = includeLive ? candlesWithLive : candlesTruth;
 
-    // ✅ funding (nu CoinGlass -> Bitget fallback)
-    const funding = await fetchBtcFundingStats({ lookbackDays: 120 });
+    // ---- Derivs (funding + oi + etf + liq) ----
+    const [funding, oi, etf] = await Promise.all([
+      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT", productType: "usdt-futures" }),
+      fetchBtcOpenInterestChange({ symbol: "BTCUSDT", productType: "usdt-futures" }),
+      fetchBtcEtfFlows({ lookbackDays: 120 })
+    ]);
 
-    // liq levels: query override -> api -> synthetic
+    // Liq from query overrides
     const liqQ = String(req.query?.liq || "");
     const liqB64 = String(req.query?.liqB64 || "");
 
@@ -66,14 +71,10 @@ export default async function handler(req, res) {
       tf: intervalLabel,
       horizonBars,
       weeklyTruthCandles,
-
       funding,
       liqLevels,
-
-      // jij had deze al in forestEngine, maar in jouw huidige forest.js stuur je ze niet mee.
-      // Laat ze later pas aanzetten als je ook echt data hebt:
-      oi: null,
-      etf: null
+      oi,
+      etf
     });
 
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -85,6 +86,8 @@ export default async function handler(req, res) {
       horizonBars,
 
       funding,
+      oi,
+      etf,
       liqLevels,
 
       candles: candles.map(c => ({
