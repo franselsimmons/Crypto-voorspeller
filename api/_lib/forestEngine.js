@@ -5,61 +5,48 @@ const regime = require("./regime");
 const forest = require("../forest");
 
 const INTERVAL = 1440;
-
-// “No-trade zone” drempel (log return). Startpunt, tune met backtest.
-const MIN_ABS_LOGRETURN = 0.003; // ~0.3% beweging
+const MIN_ABS_LOGRETURN = 0.003; // ~0.3%
 
 function mean(arr) {
   return arr.reduce((a, b) => a + b, 0) / (arr.length || 1);
 }
-
 function stdev(arr) {
   const m = mean(arr);
   const v = mean(arr.map((x) => (x - m) ** 2));
   return Math.sqrt(v);
 }
 
-// We schatten confidence via spreiding van tree predictions
 function predictWithConfidence(model, feat) {
   const trees = model?.estimators || model?.trees || null;
 
-  // Fallback
+  const basePred = model.predict([feat])[0];
   if (!Array.isArray(trees) || trees.length < 10) {
-    const p = model.predict([feat])[0];
-    return { pred: p, sigma: null, confidence: 0.5 };
+    return { pred: basePred, sigma: null, confidence: 0.5 };
   }
 
   const preds = trees
-    .map((t) => {
-      if (t && typeof t.predict === "function") return t.predict([feat])[0];
-      return null;
-    })
+    .map((t) => (typeof t.predict === "function" ? t.predict([feat])[0] : null))
     .filter((x) => typeof x === "number" && Number.isFinite(x));
 
   if (preds.length < 10) {
-    const p = model.predict([feat])[0];
-    return { pred: p, sigma: null, confidence: 0.5 };
+    return { pred: basePred, sigma: null, confidence: 0.5 };
   }
 
   const p = mean(preds);
   const s = stdev(preds);
-
-  // Hoe kleiner sigma, hoe hoger confidence
-  const confidence = Math.max(0, Math.min(1, 1 - s / 0.02));
+  const confidence = Math.max(0, Math.min(1, 1 - s / 0.02)); // tune later
 
   return { pred: p, sigma: s, confidence };
 }
 
 async function predict() {
   const now = Math.floor(Date.now() / 1000);
-
-  // genoeg marge voor 200MA + indicator warm-up
-  const from = now - 420 * 86400;
+  const from = now - 420 * 86400; // ~420 dagen
 
   const ohlc = await kraken.getOHLCRange("XBTUSD", INTERVAL, from, now);
 
-  if (!ohlc || ohlc.length < 260) {
-    throw new Error(`Te weinig candles (${ohlc ? ohlc.length : 0})`);
+  if (!Array.isArray(ohlc) || ohlc.length < 260) {
+    throw new Error(`Te weinig candles (${ohlc?.length || 0})`);
   }
 
   const reg = regime.determineRegime(ohlc);
@@ -72,22 +59,14 @@ async function predict() {
   const currentPrice = ohlc[ohlc.length - 1].close;
   const predictedPrice = currentPrice * Math.exp(predictedLogReturn);
 
-  // No-trade zone:
-  const shouldTrade =
-    Math.abs(predictedLogReturn) >= MIN_ABS_LOGRETURN &&
-    confidence >= 0.6;
+  const shouldTrade = Math.abs(predictedLogReturn) >= MIN_ABS_LOGRETURN && confidence >= 0.6;
 
-  // interval: gebaseerd op sigma als die er is, anders 2%
-  const width = sigma
-    ? Math.abs(currentPrice * Math.exp(sigma) - currentPrice)
-    : predictedPrice * 0.02;
-
+  const width = sigma ? currentPrice * (Math.exp(Math.abs(sigma)) - 1) : predictedPrice * 0.02;
   const lower = Math.max(0, predictedPrice - width);
   const upper = predictedPrice + width;
 
   return {
     timeframe: "1D",
-    candlesUsed: ohlc.length,
     regime: reg,
     currentPrice,
     predictedLogReturn,
