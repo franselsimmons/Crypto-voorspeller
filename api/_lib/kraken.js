@@ -1,6 +1,6 @@
-/* EOF: /api/lib/kraken.js */
+/* EOF: /api/_lib/kraken.js */
 const axios = require("axios");
-const logger = require("./logger");
+const logger = require("../_lib/logger"); // let op: _lib
 
 const BASE_URL = "https://api.kraken.com/0/public";
 const MAX_RETRIES = 3;
@@ -26,17 +26,11 @@ async function axiosWithRetry(config, retries = MAX_RETRIES) {
   }
 }
 
-function pickResultKey(resultObj, preferredKey) {
-  if (!resultObj || typeof resultObj !== "object") return null;
-  if (preferredKey && Array.isArray(resultObj[preferredKey])) return preferredKey;
-
-  // Kraken returned keys are often like "XXBTZUSD" even if you request "XBTUSD"
-  const keys = Object.keys(resultObj).filter((k) => k !== "last");
-  if (keys.length === 0) return null;
-
-  // Prefer something that looks like BTC/USD if present
-  const btcKey = keys.find((k) => k.includes("XBT") || k.includes("XXBT"));
-  return btcKey || keys[0];
+function pickKrakenResultArray(resultObj) {
+  if (!resultObj || typeof resultObj !== "object") return [];
+  const key = Object.keys(resultObj).find((k) => k !== "last");
+  const rows = key ? resultObj[key] : null;
+  return Array.isArray(rows) ? rows : [];
 }
 
 async function getTicker(pair = "XBTUSD") {
@@ -47,14 +41,15 @@ async function getTicker(pair = "XBTUSD") {
   });
 
   const result = res.data?.result;
-  const key = pickResultKey(result, pair);
-  if (!key) throw new Error("Kraken Ticker: geen result key gevonden");
-  return result[key];
+  if (!result || typeof result !== "object") return null;
+
+  const key = Object.keys(result)[0];
+  return key ? result[key] : null;
 }
 
 async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
   const params = { pair, interval };
-  if (since != null) params.since = since;
+  if (since !== null && since !== undefined) params.since = since;
 
   const res = await axiosWithRetry({
     method: "get",
@@ -62,11 +57,8 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
     params
   });
 
-  const result = res.data?.result;
-  const key = pickResultKey(result, pair);
-  const rows = key ? result?.[key] : null;
-
-  if (!Array.isArray(rows)) return [];
+  const rows = pickKrakenResultArray(res.data?.result);
+  if (!rows.length) return [];
 
   return rows.map((c) => ({
     time: Number(c[0]),
@@ -95,7 +87,6 @@ async function getOHLCRange(pair = "XBTUSD", interval = 1440, from, to) {
     const candles = await getOHLC(pair, interval, since);
     if (candles.length === 0) break;
 
-    // Kraken stuurt vaak overlap; alleen strikt nieuw
     const fresh = candles.filter((c) => c.time > since);
     all = all.concat(fresh);
 
