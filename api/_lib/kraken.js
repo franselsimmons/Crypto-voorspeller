@@ -1,3 +1,4 @@
+/* EOF: /api/lib/kraken.js */
 const axios = require("axios");
 const logger = require("./logger");
 
@@ -25,13 +26,33 @@ async function axiosWithRetry(config, retries = MAX_RETRIES) {
   }
 }
 
+// Kraken returned vaak keys zoals XXBTZUSD ipv XBTUSD
+function pickResultKey(resultObj) {
+  if (!resultObj || typeof resultObj !== "object") return null;
+  const keys = Object.keys(resultObj).filter((k) => k !== "last");
+  if (keys.length === 0) return null;
+  // meestal is er maar 1 key (de echte pair)
+  return keys[0];
+}
+
 async function getTicker(pair = "XBTUSD") {
   const res = await axiosWithRetry({
     method: "get",
     url: `${BASE_URL}/Ticker`,
     params: { pair }
   });
-  return res.data.result[pair];
+
+  const resultObj = res.data?.result;
+  if (!resultObj || typeof resultObj !== "object") return null;
+
+  // 1) probeer exact (soms werkt dit wél)
+  if (resultObj[pair]) return resultObj[pair];
+
+  // 2) pak de echte key die Kraken terugstuurt
+  const key = pickResultKey(resultObj);
+  if (key && resultObj[key]) return resultObj[key];
+
+  return null;
 }
 
 async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
@@ -44,10 +65,21 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
     params
   });
 
-  const result = res.data?.result?.[pair];
-  if (!Array.isArray(result)) return [];
+  const resultObj = res.data?.result;
+  if (!resultObj || typeof resultObj !== "object") return [];
 
-  return result.map((c) => ({
+  // 1) probeer exact
+  let rows = resultObj[pair];
+
+  // 2) anders: pak echte key (bv XXBTZUSD)
+  if (!Array.isArray(rows)) {
+    const key = pickResultKey(resultObj);
+    rows = key ? resultObj[key] : null;
+  }
+
+  if (!Array.isArray(rows)) return [];
+
+  return rows.map((c) => ({
     time: c[0],
     open: parseFloat(c[1]),
     high: parseFloat(c[2]),
