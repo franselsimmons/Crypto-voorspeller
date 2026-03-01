@@ -1,1 +1,3 @@
-gg
+module.exports = async (req, res) => {
+  res.status(200).json({ status: "ok", ts: new Date().toISOString() });
+};
