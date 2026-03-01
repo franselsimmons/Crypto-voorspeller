@@ -1,53 +1,48 @@
-async function fetchPrice() {
-  const el = document.querySelector("#current-price span");
-  try {
-    const r = await fetch("/api/price");
-    const j = await r.json();
-    if (j.price?.c?.[0]) el.textContent = `$${Number(j.price.c[0]).toFixed(2)}`;
-    else el.textContent = "niet beschikbaar";
-  } catch {
-    el.textContent = "fout";
-  }
-}
-
-async function fetchPrediction() {
-  const box = document.querySelector("#predictions");
-  box.innerHTML = `<div class="card">Voorspelling laden...</div>`;
+/* EOF: /public/app.js */
+async function fetchPredictions() {
+  const container = document.getElementById("predictions");
+  container.innerHTML = "<p>Voorspelling laden...</p>";
 
   try {
-    const r = await fetch("/api/predict", {
+    const res = await fetch("/api/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "forest" })
     });
-    const j = await r.json();
-    if (!j.prediction) throw new Error("Geen prediction");
 
-    const p = j.prediction;
+    const data = await res.json();
 
-    box.innerHTML = `
-      <div class="card">
-        <div><b>Regime:</b> ${p.regime}</div>
-        <div><b>Current:</b> $${Number(p.currentPrice).toFixed(2)}</div>
-        <div><b>Pred:</b> $${Number(p.predictedPrice).toFixed(2)}</div>
-        <div><b>Interval:</b> $${Number(p.interval[0]).toFixed(2)} – $${Number(p.interval[1]).toFixed(2)}</div>
-        <div><b>Pred log return:</b> ${Number(p.predictedLogReturn).toFixed(6)}</div>
-        <div><b>Confidence:</b> ${(p.confidence * 100).toFixed(0)}%</div>
-        <div><b>Should trade:</b> ${p.shouldTrade ? "✅ JA" : "❌ NEE"}</div>
-      </div>
+    if (!res.ok) {
+      container.innerHTML = `<p>API fout: ${data?.error || "unknown"}<br>${data?.detail || ""}</p>`;
+      return;
+    }
+
+    const pred = data.prediction;
+    if (!pred) {
+      container.innerHTML = `<p>Geen prediction in response. Raw: ${JSON.stringify(data)}</p>`;
+      return;
+    }
+
+    container.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "model";
+
+    const lower = Number(pred.interval?.[0] ?? 0).toFixed(2);
+    const upper = Number(pred.interval?.[1] ?? 0).toFixed(2);
+    const median = Number(pred.predictedPrice ?? 0).toFixed(2);
+
+    div.innerHTML = `
+      <strong>Random Forest (${pred.regime})</strong>
+      <p>Mediaan: $${median}</p>
+      <p>Interval: $${lower} – $${upper}</p>
+      <small>confidence: ${(Number(pred.confidence ?? 0) * 100).toFixed(0)}% | trade: ${pred.shouldTrade ? "JA" : "NEE"}</small>
     `;
-  } catch (e) {
-    box.innerHTML = `<div class="card">Fout: ${String(e.message || e)}</div>`;
+    container.appendChild(div);
+  } catch (err) {
+    container.innerHTML = `<p>Fout: ${String(err)}</p>`;
   }
 }
 
-document.querySelector("#refresh").addEventListener("click", async () => {
-  await fetchPrice();
-  await fetchPrediction();
-});
-
-(async () => {
-  await fetchPrice();
-  await fetchPrediction();
-  setInterval(fetchPrice, 30000);
-})();
+window.onload = () => {
+  fetchPredictions();
+};
