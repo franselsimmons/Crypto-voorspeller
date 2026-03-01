@@ -1,14 +1,23 @@
-const forestEngine = require("./_lib/forestEngine");
+const { predict } = require("./_lib/forestEngine");
 
 module.exports = async (req, res) => {
   try {
-    if (req.method !== "POST") {
-      res.status(405).json({ error: "Use POST" });
-      return;
+    // tijdelijk GET toestaan
+    if (req.method !== "POST" && req.method !== "GET") {
+      return res.status(405).json({ error: "Method not allowed" });
     }
-    const out = await forestEngine.predict();
-    res.status(200).json({ model: "forest", prediction: out });
+
+    const prediction = await predict();
+
+    res.status(200).json({
+      ok: true,
+      prediction
+    });
+
   } catch (e) {
-    res.status(500).json({ error: "predict failed", detail: String(e.message || e) });
+    res.status(500).json({
+      error: "Prediction failed",
+      detail: e.message
+    });
   }
 };
