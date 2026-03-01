@@ -1,6 +1,6 @@
 /* EOF: /api/_lib/kraken.js */
 const axios = require("axios");
-const logger = require("../_lib/logger"); // let op: _lib
+const logger = require("./logger");
 
 const BASE_URL = "https://api.kraken.com/0/public";
 const MAX_RETRIES = 3;
@@ -26,11 +26,13 @@ async function axiosWithRetry(config, retries = MAX_RETRIES) {
   }
 }
 
-function pickKrakenResultArray(resultObj) {
-  if (!resultObj || typeof resultObj !== "object") return [];
-  const key = Object.keys(resultObj).find((k) => k !== "last");
-  const rows = key ? resultObj[key] : null;
-  return Array.isArray(rows) ? rows : [];
+// Kraken geeft vaak keys als XXBTZUSD i.p.v. XBTUSD
+function pickResultKey(resultObj) {
+  if (!resultObj || typeof resultObj !== "object") return null;
+  const keys = Object.keys(resultObj);
+  // "last" is metadata, die willen we niet
+  const key = keys.find((k) => k !== "last");
+  return key || null;
 }
 
 async function getTicker(pair = "XBTUSD") {
@@ -41,10 +43,9 @@ async function getTicker(pair = "XBTUSD") {
   });
 
   const result = res.data?.result;
-  if (!result || typeof result !== "object") return null;
-
-  const key = Object.keys(result)[0];
-  return key ? result[key] : null;
+  const key = pickResultKey(result);
+  if (!key) return null;
+  return result[key];
 }
 
 async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
@@ -57,8 +58,11 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
     params
   });
 
-  const rows = pickKrakenResultArray(res.data?.result);
-  if (!rows.length) return [];
+  const result = res.data?.result;
+  const key = pickResultKey(result);
+  const rows = key ? result[key] : null;
+
+  if (!Array.isArray(rows)) return [];
 
   return rows.map((c) => ({
     time: Number(c[0]),
@@ -87,6 +91,7 @@ async function getOHLCRange(pair = "XBTUSD", interval = 1440, from, to) {
     const candles = await getOHLC(pair, interval, since);
     if (candles.length === 0) break;
 
+    // Kraken stuurt overlap; alleen strikt nieuw t.o.v. since
     const fresh = candles.filter((c) => c.time > since);
     all = all.concat(fresh);
 
@@ -106,8 +111,10 @@ async function getOHLCRange(pair = "XBTUSD", interval = 1440, from, to) {
     await sleep(900);
   }
 
+  // range filter
   all = all.filter((c) => c.time >= from && c.time <= to);
 
+  // dedupe
   const unique = new Map();
   for (const c of all) unique.set(c.time, c);
 
