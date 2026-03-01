@@ -1,145 +1,71 @@
-// api/forest.js
-import { getWeeklyBtcCandlesKraken, getDailyBtcCandlesKraken } from "./_lib/kraken.js";
-import { buildForestOverlay } from "./_lib/forestEngine.js";
-import {
-  fetchBtcFundingStats,
-  fetchBtcOpenInterestChange,
-  fetchBtcEtfFlows,
-  fetchBtcLiqHeatmapLevels,
-  buildSyntheticLiqLevels,
-  parseLiqLevelsFromQuery,
-  parseLiqLevelsB64
-} from "./_lib/derivs.js";
+const fs = require("fs").promises;
+const path = require("path");
+const { RandomForestRegression } = require("ml-random-forest");
+const logger = require("./_lib/logger");
 
-export const config = { runtime: "nodejs" };
+const MODEL_DIR = process.env.MODEL_PATH || path.join(__dirname, "../models");
+const MODEL_BEAR = path.join(MODEL_DIR, "rf_bear.json");
+const MODEL_BULL = path.join(MODEL_DIR, "rf_bull.json");
 
-function settledValue(r, fallback) {
-  return (r && r.status === "fulfilled") ? r.value : fallback;
+async function ensureModelDir() {
+  await fs.mkdir(MODEL_DIR, { recursive: true });
 }
 
-export default async function handler(req, res) {
+function trainRF(X, y) {
+  const options = {
+    nEstimators: 300,
+    maxDepth: 14,
+    minSamplesSplit: 4,
+    minSamplesLeaf: 2,
+    selectionMethod: "sqrt",
+    seed: 42
+  };
+  const model = new RandomForestRegression(options);
+  model.train(X, y);
+  return model;
+}
+
+async function saveModel(model, reg) {
+  await ensureModelDir();
+  const file = reg === "bear" ? MODEL_BEAR : MODEL_BULL;
+  await fs.writeFile(file, JSON.stringify(model.toJSON()));
+  logger.info(`Model opgeslagen: ${file}`);
+}
+
+async function loadModel(reg) {
+  const file = reg === "bear" ? MODEL_BEAR : MODEL_BULL;
   try {
-    const tf = String(req.query?.tf || "1d").toLowerCase();
-    const includeLive = String(req.query?.includeLive || "0") === "1";
-
-    const hRaw = Number(req.query?.h || 90);
-    const horizonBars = Number.isFinite(hRaw) ? Math.max(1, Math.min(hRaw, 180)) : 90;
-
-    let candlesTruth, candlesWithLive, hasLive, intervalLabel;
-    let weeklyTruthCandles = null;
-
-    if (tf === "1w") {
-      ({ candlesTruth, candlesWithLive, hasLive } = await getWeeklyBtcCandlesKraken());
-      intervalLabel = "1w";
-    } else {
-      ({ candlesTruth, candlesWithLive, hasLive } = await getDailyBtcCandlesKraken());
-      intervalLabel = "1d";
-      const w = await getWeeklyBtcCandlesKraken();
-      weeklyTruthCandles = w?.candlesTruth ?? null;
-    }
-
-    const candles = includeLive ? candlesWithLive : candlesTruth;
-
-    // ---- Derivs (funding + oi + etf) ----
-    const results = await Promise.allSettled([
-      fetchBtcFundingStats({ lookbackDays: 120, symbol: "BTCUSDT", productType: "usdt-futures" }),
-      fetchBtcOpenInterestChange({ symbol: "BTCUSDT", productType: "usdt-futures" }),
-      fetchBtcEtfFlows({ lookbackDays: 120 })
-    ]);
-
-    const funding = settledValue(results[0], {
-      fundingRate: null, fundingPercentile: null, fundingExtreme: null, fundingFlip: false, fundingBias: 0, source: "funding-failed"
-    });
-
-    const oi = settledValue(results[1], {
-      oiNow: null, oiChange1: null, oiChange7: null, source: "oi-failed"
-    });
-
-    const etf = settledValue(results[2], {
-      etfNetFlow: null, etfFlow7: null, etfPercentile: null, etfFlip: false, etfBias: 0, source: "etf-failed"
-    });
-
-    // Liq from query overrides
-    const liqQ = String(req.query?.liq || "");
-    const liqB64 = String(req.query?.liqB64 || "");
-
-    let liqLevels = [];
-    liqLevels = liqLevels.concat(parseLiqLevelsFromQuery(liqQ));
-    liqLevels = liqLevels.concat(parseLiqLevelsB64(liqB64));
-
-    if (!liqLevels.length) {
-      // Best effort (meestal leeg bij jou, dan pakken we synthetic)
-      const liqTry = await Promise.allSettled([
-        fetchBtcLiqHeatmapLevels({ symbol: "BTCUSDT", topN: 12 })
-      ]);
-      const real = settledValue(liqTry[0], []);
-      if (Array.isArray(real) && real.length) liqLevels = real;
-    }
-
-    if (!liqLevels.length) {
-      liqLevels = buildSyntheticLiqLevels(candlesTruth, {
-        lookback: intervalLabel === "1d" ? 220 : 180,
-        bins: intervalLabel === "1d" ? 64 : 48,
-        topN: 12
-      });
-    }
-
-    const out = buildForestOverlay({
-      candlesTruth,
-      candlesWithLive,
-      hasLive,
-      tf: intervalLabel,
-      horizonBars,
-      weeklyTruthCandles,
-      funding,
-      liqLevels,
-      oi,
-      etf
-    });
-
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.status(200).send(JSON.stringify({
-      source: "kraken",
-      interval: intervalLabel,
-      truthCount: candlesTruth.length,
-      hasLive,
-      horizonBars,
-
-      funding,
-      oi,
-      etf,
-      liqLevels,
-
-      candles: candles.map(c => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume ?? null
-      })),
-
-      forestOverlayTruth: out.forestOverlayTruth,
-      forestOverlayLive: out.forestOverlayLive,
-
-      forestOverlayForwardMid: out.forestOverlayForwardMid,
-      forestOverlayForwardUpper: out.forestOverlayForwardUpper,
-      forestOverlayForwardLower: out.forestOverlayForwardLower,
-
-      forestZTruth: out.forestZTruth,
-      forestZLive: out.forestZLive,
-      nowPoint: out.nowPoint,
-
-      bandsNow: out.bandsNow,
-      freezeNow: out.freezeNow,
-      regimeLabel: out.regimeLabel,
-
-      confidence: out.confidence,
-      stabilityScore: out.stabilityScore,
-      flipProbability: out.flipProbability,
-      squeezeProb: out.squeezeProb
-    }));
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
+    const raw = await fs.readFile(file, "utf8");
+    const json = JSON.parse(raw);
+    return RandomForestRegression.load(json);
+  } catch {
+    return null;
   }
 }
+
+function permutationImportance(model, X, y) {
+  const n = X.length;
+  const m = X[0].length;
+
+  const base = X.map((x) => model.predict([x])[0]);
+  const baseMSE = y.reduce((s, tv, i) => s + (tv - base[i]) ** 2, 0) / n;
+
+  const out = [];
+  for (let f = 0; f < m; f++) {
+    const Xp = X.map((r) => [...r]);
+    const col = X.map((r) => r[f]);
+
+    for (let i = col.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [col[i], col[j]] = [col[j], col[i]];
+    }
+    for (let i = 0; i < n; i++) Xp[i][f] = col[i];
+
+    const pp = Xp.map((x) => model.predict([x])[0]);
+    const mse = y.reduce((s, tv, i) => s + (tv - pp[i]) ** 2, 0) / n;
+    out.push(mse - baseMSE);
+  }
+  return out;
+}
+
+module.exports = { trainRF, saveModel, loadModel, permutationImportance };
