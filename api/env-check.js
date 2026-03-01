@@ -1,11 +1,14 @@
-// api/env-check.js
-export const config = { runtime: "nodejs" };
+const logger = require("./_lib/logger");
 
-export default async function handler(req, res) {
-  const key = process.env.COINGLASS_KEY || "";
-  res.status(200).json({
-    hasKey: !!key,
-    keyLength: key ? key.length : 0,
-    keyPrefix: key ? key.slice(0, 4) + "…" : null
-  });
+function check() {
+  const optional = ["GLASSNODE_API_KEY", "ALPHA_VANTAGE_KEY"];
+  for (const k of optional) {
+    if (!process.env[k]) logger.warn(`Optioneel mist: ${k}`);
+  }
+  logger.info("env-check klaar");
+  return true;
 }
+
+if (require.main === module) check();
+
+module.exports = { check };
