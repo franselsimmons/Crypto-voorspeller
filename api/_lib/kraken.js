@@ -26,13 +26,17 @@ async function axiosWithRetry(config, retries = MAX_RETRIES) {
   }
 }
 
-// Kraken returned vaak keys zoals XXBTZUSD ipv XBTUSD
-function pickResultKey(resultObj) {
+function pickResultKey(resultObj, preferredKey) {
   if (!resultObj || typeof resultObj !== "object") return null;
+  if (preferredKey && Array.isArray(resultObj[preferredKey])) return preferredKey;
+
+  // Kraken returned keys are often like "XXBTZUSD" even if you request "XBTUSD"
   const keys = Object.keys(resultObj).filter((k) => k !== "last");
   if (keys.length === 0) return null;
-  // meestal is er maar 1 key (de echte pair)
-  return keys[0];
+
+  // Prefer something that looks like BTC/USD if present
+  const btcKey = keys.find((k) => k.includes("XBT") || k.includes("XXBT"));
+  return btcKey || keys[0];
 }
 
 async function getTicker(pair = "XBTUSD") {
@@ -42,22 +46,15 @@ async function getTicker(pair = "XBTUSD") {
     params: { pair }
   });
 
-  const resultObj = res.data?.result;
-  if (!resultObj || typeof resultObj !== "object") return null;
-
-  // 1) probeer exact (soms werkt dit wél)
-  if (resultObj[pair]) return resultObj[pair];
-
-  // 2) pak de echte key die Kraken terugstuurt
-  const key = pickResultKey(resultObj);
-  if (key && resultObj[key]) return resultObj[key];
-
-  return null;
+  const result = res.data?.result;
+  const key = pickResultKey(result, pair);
+  if (!key) throw new Error("Kraken Ticker: geen result key gevonden");
+  return result[key];
 }
 
 async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
   const params = { pair, interval };
-  if (since) params.since = since;
+  if (since != null) params.since = since;
 
   const res = await axiosWithRetry({
     method: "get",
@@ -65,27 +62,19 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
     params
   });
 
-  const resultObj = res.data?.result;
-  if (!resultObj || typeof resultObj !== "object") return [];
-
-  // 1) probeer exact
-  let rows = resultObj[pair];
-
-  // 2) anders: pak echte key (bv XXBTZUSD)
-  if (!Array.isArray(rows)) {
-    const key = pickResultKey(resultObj);
-    rows = key ? resultObj[key] : null;
-  }
+  const result = res.data?.result;
+  const key = pickResultKey(result, pair);
+  const rows = key ? result?.[key] : null;
 
   if (!Array.isArray(rows)) return [];
 
   return rows.map((c) => ({
-    time: c[0],
-    open: parseFloat(c[1]),
-    high: parseFloat(c[2]),
-    low: parseFloat(c[3]),
-    close: parseFloat(c[4]),
-    volume: parseFloat(c[6])
+    time: Number(c[0]),
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+    volume: Number(c[6])
   }));
 }
 
@@ -112,28 +101,22 @@ async function getOHLCRange(pair = "XBTUSD", interval = 1440, from, to) {
 
     const lastTime = candles[candles.length - 1].time;
 
-    // stop als we voorbij 'to' zijn
     if (lastTime >= to) break;
 
-    // stop als Kraken niet vooruit gaat
     if (lastTime === lastTimeSeen) {
       logger.warn("Kraken paging: geen vooruitgang in tijd, stop.");
       break;
     }
-
     lastTimeSeen = lastTime;
 
-    // stop als minder dan max returned (meestal einde)
     if (candles.length < MAX_CANDLES_PER_REQUEST) break;
 
     since = lastTime + 1;
     await sleep(900);
   }
 
-  // filter range
   all = all.filter((c) => c.time >= from && c.time <= to);
 
-  // dedupe
   const unique = new Map();
   for (const c of all) unique.set(c.time, c);
 
