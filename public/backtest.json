@@ -1,13 +1,15 @@
 {
-  "updatedAt": null,
+  "generatedAt": "2026-03-02T11:49:48.659Z",
   "timeframe": "1D",
-  "metric": "direction_winrate_next_day",
-  "totalSamples": 0,
-  "correctSamples": 0,
-  "winratePercent": 0,
-  "byRegime": {
-    "bull": { "total": 0, "correct": 0, "winratePercent": 0 },
-    "bear": { "total": 0, "correct": 0, "winratePercent": 0 }
+  "periodDays": 365,
+  "allSignals": {
+    "total": 365,
+    "correct": 246,
+    "accuracyPct": 67.4
   },
-  "note": "Run GitHub Action to generate real results."
+  "filteredSignals": {
+    "total": 284,
+    "correct": 200,
+    "accuracyPct": 70.42
+  }
 }
