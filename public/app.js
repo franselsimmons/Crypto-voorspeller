@@ -1,14 +1,4 @@
 /* EOF: /public/app.js */
-
-async function safeRead(res) {
-  const text = await res.text();
-  try {
-    return { json: JSON.parse(text), text };
-  } catch {
-    return { json: null, text };
-  }
-}
-
 async function fetchPredictions() {
   const container = document.getElementById("predictions");
   container.innerHTML = "<p>Voorspelling laden...</p>";
@@ -20,47 +10,33 @@ async function fetchPredictions() {
       body: JSON.stringify({ model: "forest" })
     });
 
-    const { json, text } = await safeRead(res);
+    const data = await res.json();
 
-    // Als het niet OK is: toon status + raw response (dit is de echte debug)
     if (!res.ok) {
-      const err = json?.error || json?.message || "unknown";
-      const detail = json?.detail || "";
-      container.innerHTML = `
-        <p><b>API fout</b><br>
-        Status: ${res.status} ${res.statusText}<br>
-        Error: ${err}<br>
-        Detail: ${detail}<br><br>
-        Raw: <code>${text.replaceAll("<", "&lt;")}</code></p>
-      `;
+      container.innerHTML = `<p>API fout: ${data?.error || "unknown"}<br>${data?.detail || ""}</p>`;
       return;
     }
 
-    // Sommige servers sturen { model, prediction }, andere sturen prediction direct.
-    const pred = json?.prediction ? json.prediction : json;
+    // ✅ jouw API geeft direct de prediction terug
+    const pred = data;
 
-    if (!pred || pred.predictedPrice == null) {
-      container.innerHTML = `
-        <p>Geen geldige prediction ontvangen.<br>
-        Status: ${res.status} ${res.statusText}<br>
-        Raw: <code>${text.replaceAll("<", "&lt;")}</code></p>
-      `;
-      return;
-    }
+    container.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "model";
 
-    const current = Number(pred.currentPrice || 0).toFixed(2);
-    const predicted = Number(pred.predictedPrice || 0).toFixed(2);
-    const movePct = (Number(pred.predictedLogReturn || 0) * 100).toFixed(2);
-    const reg = (pred.regime || "unknown").toUpperCase();
+    const median = Number(pred.predictedPrice ?? 0).toFixed(2);
+    const movePct = Number(pred.movePct ?? 0).toFixed(2);
 
-    container.innerHTML = `
-      <div class="model">
-        <strong>BTC Forest Predictor (${reg})</strong>
-        <p>Huidige prijs: $${current}</p>
-        <p>Verwachte prijs: $${predicted}</p>
-        <p>Beweging: ${movePct}%</p>
-      </div>
+    div.innerHTML = `
+      <strong>Forest Bias (${pred.bias || pred.regime})</strong>
+      <p>Huidig: $${Number(pred.currentPrice ?? 0).toFixed(2)}</p>
+      <p>Voorspeld: $${median} (${movePct}%)</p>
+      <p>ADX14: ${Number(pred.adx14 ?? 0).toFixed(1)} | Trend: ${pred.isTrending ? "JA" : "NEE"}</p>
+      <p>Regime: ${pred.regime} | Bias: <b>${pred.bias || "NEUTRAL"}</b></p>
+      <small>confidence: ${(Number(pred.confidence ?? 0) * 100).toFixed(0)}% | reason: ${pred.reason || ""}</small>
     `;
+
+    container.appendChild(div);
   } catch (err) {
     container.innerHTML = `<p>Fout: ${String(err)}</p>`;
   }
