@@ -1,18 +1,21 @@
-/* EOF: /api/predict.js */
 const { predict } = require("./_lib/forestEngine");
 
-module.exports = async (req, res) => {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Use POST" });
-  }
-
+module.exports = async function handler(req, res) {
   try {
-    const prediction = await predict();
-    return res.status(200).json({ ok: true, prediction });
-  } catch (e) {
-    return res.status(500).json({
+    // Sta zowel GET als POST toe
+    if (req.method !== "GET" && req.method !== "POST") {
+      res.statusCode = 405;
+      return res.json({ error: "Method not allowed" });
+    }
+
+    const result = await predict();
+    res.statusCode = 200;
+    return res.json(result);
+  } catch (err) {
+    res.statusCode = 500;
+    return res.json({
       error: "Prediction failed",
-      detail: e?.message || String(e)
+      detail: err?.message || String(err)
     });
   }
 };
