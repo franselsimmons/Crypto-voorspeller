@@ -1,0 +1,13 @@
+{
+  "updatedAt": null,
+  "timeframe": "1D",
+  "metric": "direction_winrate_next_day",
+  "totalSamples": 0,
+  "correctSamples": 0,
+  "winratePercent": 0,
+  "byRegime": {
+    "bull": { "total": 0, "correct": 0, "winratePercent": 0 },
+    "bear": { "total": 0, "correct": 0, "winratePercent": 0 }
+  },
+  "note": "Run GitHub Action to generate real results."
+}
