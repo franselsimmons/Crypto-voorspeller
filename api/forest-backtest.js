@@ -1,5 +1,8 @@
-/* EOF: /api/forest-backtest.js */
-const ti = require("technicalindicators");
+/* EOF: /api/forest-backtest.js
+   Vercel API route: snelle direction-winrate backtest (1D)
+   Meet: klopt de richting van de voorspelling voor "volgende dag"?
+*/
+
 const kraken = require("./_lib/kraken");
 const features = require("./_lib/features");
 const regime = require("./_lib/regime");
@@ -8,118 +11,57 @@ const logger = require("./_lib/logger");
 
 const INTERVAL = 1440;
 
-// zelfde drempels als engine
-const MIN_ABS_LOGRETURN = 0.0025;
-const MIN_CONFIDENCE = 0.60;
-
-function clamp(v, a, b) {
-  return Math.max(a, Math.min(b, v));
-}
-function mean(arr) {
-  return arr.reduce((a, b) => a + b, 0) / (arr.length || 1);
-}
-function stdev(arr) {
-  const m = mean(arr);
-  const v = mean(arr.map((x) => (x - m) ** 2));
-  return Math.sqrt(v);
-}
-function predictWithConfidence(model, feat) {
-  const trees = model?.estimators || model?.trees || null;
-  if (!Array.isArray(trees) || trees.length < 10) {
-    const p = model.predict([feat])[0];
-    return { pred: p, sigma: null, confidence: 0.55 };
-  }
-
-  const preds = trees
-    .map((t) => (typeof t.predict === "function" ? t.predict([feat])[0] : null))
-    .filter((x) => typeof x === "number" && Number.isFinite(x));
-
-  if (preds.length < 10) {
-    const p = model.predict([feat])[0];
-    return { pred: p, sigma: null, confidence: 0.55 };
-  }
-
-  const p = mean(preds);
-  const s = stdev(preds);
-  const confidence = clamp(1 - (s / 0.02), 0, 1);
-  return { pred: p, sigma: s, confidence };
+// helper
+function pct(a, b) {
+  return b === 0 ? 0 : (a / b) * 100;
 }
 
-function getTrendState(ohlc) {
-  if (!Array.isArray(ohlc) || ohlc.length < 220) {
-    return { lastClose: null, sma200: null, adx: null, isTrending: false, aboveSma200: false };
-  }
-
-  const closes = ohlc.map((c) => c.close);
-  const high = ohlc.map((c) => c.high);
-  const low = ohlc.map((c) => c.low);
-
-  const lastClose = closes[closes.length - 1];
-  const sma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
-  const aboveSma200 = lastClose >= sma200;
-
-  const adxArr = ti.ADX.calculate({ high, low, close: closes, period: 14 });
-  const lastADX = adxArr.length ? adxArr[adxArr.length - 1].adx : 0;
-  const isTrending = lastADX >= 25;
-
-  return { lastClose, sma200, adx: lastADX, isTrending, aboveSma200 };
-}
-
-// exact dezelfde trend-only bias beslissing
-function decideBias({ reg, trend, predictedLogReturn, confidence }) {
-  const tooSmallMove = Math.abs(predictedLogReturn) < MIN_ABS_LOGRETURN;
-  const lowConf = confidence < MIN_CONFIDENCE;
-
-  if (tooSmallMove) return { bias: "NEUTRAL", reason: "move too small" };
-  if (lowConf) return { bias: "NEUTRAL", reason: "confidence too low" };
-  if (!trend.isTrending) return { bias: "NEUTRAL", reason: "not trending" };
-
-  const mlUp = predictedLogReturn > 0;
-  const mlDown = predictedLogReturn < 0;
-
-  if (reg === "bull" && trend.aboveSma200 && mlUp) return { bias: "BULL", reason: "trend-only bull confirmed" };
-  if (reg === "bear" && !trend.aboveSma200 && mlDown) return { bias: "BEAR", reason: "trend-only bear confirmed" };
-
-  return { bias: "NEUTRAL", reason: "trend-only not aligned" };
-}
-
-async function runBacktest() {
-  // we backtesten met dezelfde dataflow als live (Kraken public)
+async function runDirectionBacktest({
+  days = 365,
+  warmupDays = 260, // genoeg voor indicators + 200MA + feature lookback
+  thresholds = [0, 0.0015, 0.003, 0.005] // logreturn drempels (filter op "sterke" signalen)
+} = {}) {
   const now = Math.floor(Date.now() / 1000);
-  const from = now - 6 * 365 * 86400; // 6 jaar halen is meestal genoeg (200MA + ruimte)
+
+  // we hebben warmup + test + 1 nodig (voor next-day actual)
+  const totalNeeded = warmupDays + days + 1;
+
+  // haal iets ruimer op (Kraken max 720 candles per call)
+  const from = now - (totalNeeded + 10) * 86400;
+
   const ohlc = await kraken.getOHLCRange("XBTUSD", INTERVAL, from, now);
 
-  if (!Array.isArray(ohlc) || ohlc.length < 600) {
-    throw new Error(`Te weinig candles voor backtest (${Array.isArray(ohlc) ? ohlc.length : 0})`);
+  if (!Array.isArray(ohlc) || ohlc.length < totalNeeded) {
+    throw new Error(`Te weinig candles (${Array.isArray(ohlc) ? ohlc.length : 0}), nodig ~${totalNeeded}`);
   }
 
-  // modellen moeten bestaan (offline getraind + aanwezig in repo)
+  // pak alleen de laatste totalNeeded candles
+  const data = ohlc.slice(-totalNeeded);
+
+  // models 1x laden
   const bullModel = await forest.loadModel("bull");
   const bearModel = await forest.loadModel("bear");
-  if (!bullModel && !bearModel) {
-    throw new Error("Geen modellen gevonden. Train offline en commit models/ naar GitHub.");
+  if (!bullModel || !bearModel) {
+    throw new Error("Models ontbreken. Train via GitHub Action zodat /models/rf_bull.json en /models/rf_bear.json bestaan.");
   }
 
-  let signals = 0;
-  let correct = 0;
+  // stats per threshold
+  const stats = {};
+  for (const th of thresholds) {
+    stats[th] = {
+      total: 0,
+      correct: 0,
+      bull: { total: 0, correct: 0 },
+      bear: { total: 0, correct: 0 }
+    };
+  }
 
-  let bullSignals = 0, bullCorrect = 0;
-  let bearSignals = 0, bearCorrect = 0;
-
-  let neutrals = 0;
-
-  // loop per dag: gebruik slice tot dag i als “context”, voorspel dag i->i+1
-  // start pas als warmup echt ok is
-  const startAt = 260;
-
-  for (let i = startAt; i < ohlc.length - 1; i++) {
-    const slice = ohlc.slice(0, i + 1);
+  // loop over testperiode
+  // i is "vandaag index" binnen data, we voorspellen close(i+1) vs close(i)
+  for (let i = warmupDays; i < warmupDays + days; i++) {
+    const slice = data.slice(0, i + 1); // alles tot vandaag
     const reg = regime.determineRegime(slice);
-    const trend = getTrendState(slice);
-
-    let model = reg === "bull" ? bullModel : bearModel;
-    if (!model) model = bullModel || bearModel;
-    if (!model) continue;
+    const model = reg === "bear" ? bearModel : bullModel;
 
     let feat;
     try {
@@ -128,56 +70,70 @@ async function runBacktest() {
       continue;
     }
 
-    const { pred: predictedLogReturn, confidence } = predictWithConfidence(model, feat);
+    const predLog = model.predict([feat])[0];
+    const actualLog = Math.log(data[i + 1].close / data[i].close);
 
-    const d = decideBias({ reg, trend, predictedLogReturn, confidence });
-    if (d.bias === "NEUTRAL") {
-      neutrals++;
-      continue;
-    }
+    const predDir = predLog > 0 ? 1 : -1;
+    const actualDir = actualLog > 0 ? 1 : -1;
+    const isCorrect = predDir === actualDir;
 
-    // we hebben een “bias-signaal”
-    signals++;
+    for (const th of thresholds) {
+      if (Math.abs(predLog) < th) continue; // filter: “te klein signaal”
+      stats[th].total++;
+      if (isCorrect) stats[th].correct++;
 
-    const today = ohlc[i].close;
-    const tomorrow = ohlc[i + 1].close;
-    const realUp = tomorrow > today;
-
-    const isCorrect =
-      (d.bias === "BULL" && realUp) ||
-      (d.bias === "BEAR" && !realUp);
-
-    if (isCorrect) correct++;
-
-    if (d.bias === "BULL") {
-      bullSignals++;
-      if (isCorrect) bullCorrect++;
-    } else if (d.bias === "BEAR") {
-      bearSignals++;
-      if (isCorrect) bearCorrect++;
+      stats[th][reg].total++;
+      if (isCorrect) stats[th][reg].correct++;
     }
   }
 
-  const totalDays = (ohlc.length - 1) - startAt;
-  const neutralRate = totalDays > 0 ? (neutrals / totalDays) * 100 : 0;
-  const hitRate = signals > 0 ? (correct / signals) * 100 : 0;
+  // bouw response
+  const startTs = data[warmupDays].time;
+  const endTs = data[warmupDays + days].time;
 
-  const bullHit = bullSignals > 0 ? (bullCorrect / bullSignals) * 100 : 0;
-  const bearHit = bearSignals > 0 ? (bearCorrect / bearSignals) * 100 : 0;
+  const report = {
+    timeframe: "1D",
+    daysTested: days,
+    start: new Date(startTs * 1000).toISOString(),
+    end: new Date(endTs * 1000).toISOString(),
+    thresholds: thresholds.map((th) => ({
+      minAbsPredictedLogReturn: th,
+      totalSignals: stats[th].total,
+      winRate: pct(stats[th].correct, stats[th].total).toFixed(2) + "%",
+      bull: {
+        total: stats[th].bull.total,
+        winRate: pct(stats[th].bull.correct, stats[th].bull.total).toFixed(2) + "%"
+      },
+      bear: {
+        total: stats[th].bear.total,
+        winRate: pct(stats[th].bear.correct, stats[th].bear.total).toFixed(2) + "%"
+      }
+    }))
+  };
 
-  logger.info("========== BACKTEST (TREND-ONLY) ==========");
-  logger.info(`Dagen getest: ${totalDays}`);
-  logger.info(`NEUTRAL dagen: ${neutrals} (${neutralRate.toFixed(1)}%)`);
-  logger.info(`Signals: ${signals}`);
-  logger.info(`Hit-rate totaal: ${hitRate.toFixed(2)}%`);
-
-  logger.info(`BULL signals: ${bullSignals}, hit: ${bullHit.toFixed(2)}%`);
-  logger.info(`BEAR signals: ${bearSignals}, hit: ${bearHit.toFixed(2)}%`);
-
-  // Jip-en-Janneke interpretatie:
-  // - Als neutralRate hoog is => hij is streng (goed voor betrouwbaarheid)
-  // - Als hitRate > ~60% => sterke bias-filter
-  // - Als hitRate ~52-56% => oké maar nog tunen (drempels / features)
+  return report;
 }
 
-module.exports = { runBacktest };
+// ✅ Vercel API handler
+module.exports = async (req, res) => {
+  try {
+    // alleen GET
+    if (req.method !== "GET") {
+      return res.status(405).json({ error: "Use GET" });
+    }
+
+    const days = Math.max(60, Math.min(900, Number(req.query.days || 365)));
+    const warmupDays = Math.max(220, Math.min(500, Number(req.query.warmup || 260)));
+
+    logger.info(`Backtest API: days=${days}, warmup=${warmupDays}`);
+
+    const report = await runDirectionBacktest({ days, warmupDays });
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json(report);
+  } catch (err) {
+    const msg = err?.message || String(err);
+    logger.error(`Backtest API failed: ${msg}`);
+    return res.status(500).json({ error: "Backtest failed", detail: msg });
+  }
+};
