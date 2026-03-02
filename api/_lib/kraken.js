@@ -5,10 +5,9 @@ const logger = require("./logger");
 const BASE_URL = "https://api.kraken.com/0/public";
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
-const MAX_CANDLES_PER_REQUEST = 720;
 
 async function sleep(ms) {
-  await new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function axiosWithRetry(config, retries = MAX_RETRIES) {
@@ -26,13 +25,11 @@ async function axiosWithRetry(config, retries = MAX_RETRIES) {
   }
 }
 
-// Kraken geeft vaak keys als XXBTZUSD i.p.v. XBTUSD
-function pickResultKey(resultObj) {
+function pickResultKey(resultObj, requestedPair) {
   if (!resultObj || typeof resultObj !== "object") return null;
-  const keys = Object.keys(resultObj);
-  // "last" is metadata, die willen we niet
-  const key = keys.find((k) => k !== "last");
-  return key || null;
+  if (resultObj[requestedPair]) return requestedPair;
+  const keys = Object.keys(resultObj).filter((k) => k !== "last");
+  return keys.length ? keys[0] : null;
 }
 
 async function getTicker(pair = "XBTUSD") {
@@ -43,14 +40,18 @@ async function getTicker(pair = "XBTUSD") {
   });
 
   const result = res.data?.result;
-  const key = pickResultKey(result);
+  const key = pickResultKey(result, pair);
   if (!key) return null;
   return result[key];
 }
 
+/**
+ * Kraken OHLC geeft ook `last` terug: de juiste cursor voor paging.
+ * We retourneren { candles, last }.
+ */
 async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
   const params = { pair, interval };
-  if (since !== null && since !== undefined) params.since = since;
+  if (since != null) params.since = since;
 
   const res = await axiosWithRetry({
     method: "get",
@@ -59,12 +60,13 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
   });
 
   const result = res.data?.result;
-  const key = pickResultKey(result);
-  const rows = key ? result[key] : null;
+  const key = pickResultKey(result, pair);
+  const raw = key ? result[key] : null;
+  const last = result?.last != null ? Number(result.last) : null;
 
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(raw)) return { candles: [], last };
 
-  return rows.map((c) => ({
+  const candles = raw.map((c) => ({
     time: Number(c[0]),
     open: Number(c[1]),
     high: Number(c[2]),
@@ -72,51 +74,54 @@ async function getOHLC(pair = "XBTUSD", interval = 1440, since = null) {
     close: Number(c[4]),
     volume: Number(c[6])
   }));
+
+  return { candles, last };
 }
 
 /**
- * Betrouwbare range fetch met dedupe + stopconditie.
+ * Betrouwbare range fetch met:
+ * - paging via `last` cursor
+ * - dedupe op time
+ * - harde stopcondities
  */
 async function getOHLCRange(pair = "XBTUSD", interval = 1440, from, to) {
-  let all = [];
-  let since = from;
+  const unique = new Map();
+
+  let cursor = from;
   let attempts = 0;
-  const maxAttempts = 80;
-  let lastTimeSeen = 0;
+  const maxAttempts = 120;
 
   while (attempts < maxAttempts) {
     attempts++;
-    logger.info(`OHLC fetch since=${new Date(since * 1000).toISOString()}`);
+    logger.info(`OHLC fetch since=${new Date(cursor * 1000).toISOString()}`);
 
-    const candles = await getOHLC(pair, interval, since);
-    if (candles.length === 0) break;
+    const { candles, last } = await getOHLC(pair, interval, cursor);
+    if (!candles.length) break;
 
-    // Kraken stuurt overlap; alleen strikt nieuw t.o.v. since
-    const fresh = candles.filter((c) => c.time > since);
-    all = all.concat(fresh);
+    for (const c of candles) {
+      if (c.time >= from && c.time <= to) unique.set(c.time, c);
+    }
 
-    const lastTime = candles[candles.length - 1].time;
+    const lastCandleTime = candles[candles.length - 1].time;
 
-    if (lastTime >= to) break;
+    // Stop als we voorbij 'to' zijn
+    if (lastCandleTime >= to) break;
 
-    if (lastTime === lastTimeSeen) {
-      logger.warn("Kraken paging: geen vooruitgang in tijd, stop.");
+    // Stop als Kraken geen cursor geeft (zeldzaam)
+    if (!last || !Number.isFinite(last)) {
+      logger.warn("Kraken paging: geen 'last' cursor, stop.");
       break;
     }
-    lastTimeSeen = lastTime;
 
-    if (candles.length < MAX_CANDLES_PER_REQUEST) break;
+    // Stop als cursor niet vooruit gaat
+    if (last <= cursor) {
+      logger.warn("Kraken paging: 'last' gaat niet vooruit, stop.");
+      break;
+    }
 
-    since = lastTime + 1;
+    cursor = last;
     await sleep(900);
   }
-
-  // range filter
-  all = all.filter((c) => c.time >= from && c.time <= to);
-
-  // dedupe
-  const unique = new Map();
-  for (const c of all) unique.set(c.time, c);
 
   return Array.from(unique.values()).sort((a, b) => a.time - b.time);
 }
