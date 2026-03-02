@@ -26,4 +26,3 @@
   "env-check": "node api/env-check.js",
   "backtest:json": "node api/forest-backtest-cli.js"
 }
-}
