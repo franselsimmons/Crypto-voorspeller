@@ -1,43 +1,45 @@
 /* EOF: /public/app.js */
+
 async function fetchPredictions() {
   const container = document.getElementById("predictions");
   container.innerHTML = "<p>Voorspelling laden...</p>";
 
   try {
-    const res = await fetch("/api/predict", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "forest" })
-    });
-
+    const res = await fetch("/api/predict");
     const data = await res.json();
 
     if (!res.ok) {
-      container.innerHTML = `<p>API fout: ${data?.error || "unknown"}<br>${data?.detail || ""}</p>`;
+      container.innerHTML = `
+        <p>API fout: ${data?.error || "unknown"}<br>
+        ${data?.detail || ""}</p>
+      `;
       return;
     }
 
-    const pred = data.prediction;
-    if (!pred) {
-      container.innerHTML = `<p>Geen prediction in response. Raw: ${JSON.stringify(data)}</p>`;
+    if (!data.predictedPrice) {
+      container.innerHTML = `
+        <p>Geen geldige prediction ontvangen.<br>
+        Raw: ${JSON.stringify(data)}</p>
+      `;
       return;
     }
 
-    container.innerHTML = "";
-    const div = document.createElement("div");
-    div.className = "model";
+    const current = Number(data.currentPrice || 0).toFixed(2);
+    const predicted = Number(data.predictedPrice || 0).toFixed(2);
+    const move = (Number(data.predictedLogReturn || 0) * 100).toFixed(2);
+    const regime = data.regime || "unknown";
 
-    const lower = Number(pred.interval?.[0] ?? 0).toFixed(2);
-    const upper = Number(pred.interval?.[1] ?? 0).toFixed(2);
-    const median = Number(pred.predictedPrice ?? 0).toFixed(2);
+    const direction = move >= 0 ? "📈 Verwacht omhoog" : "📉 Verwacht omlaag";
 
-    div.innerHTML = `
-      <strong>Random Forest (${pred.regime})</strong>
-      <p>Mediaan: $${median}</p>
-      <p>Interval: $${lower} – $${upper}</p>
-      <small>confidence: ${(Number(pred.confidence ?? 0) * 100).toFixed(0)}% | trade: ${pred.shouldTrade ? "JA" : "NEE"}</small>
+    container.innerHTML = `
+      <div class="model">
+        <strong>BTC Forest Predictor (${regime.toUpperCase()})</strong>
+        <p>Huidige prijs: $${current}</p>
+        <p>Verwachte prijs: $${predicted}</p>
+        <p>Beweging: ${move}%</p>
+        <p>${direction}</p>
+      </div>
     `;
-    container.appendChild(div);
   } catch (err) {
     container.innerHTML = `<p>Fout: ${String(err)}</p>`;
   }
