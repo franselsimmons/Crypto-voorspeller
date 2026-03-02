@@ -1,15 +1,11 @@
-/* EOF: /package.json */
 {
   "name": "bitcoin-predictor",
   "version": "6.1.0",
-  "description": "Robuuste Bitcoin voorspeller",
-  "main": "server.js",
-  "engines": {
-    "node": "18.x"
-  },
+  "description": "Robuuste Bitcoin voorspeller met Random Forest, regime-detectie (dagelijks) en uitgebreide backtest",
+  "private": true,
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node api/_devserver.js",
     "backtest": "node api/backtest.js",
     "train": "node api/train.js",
     "importance": "node api/importance.js",
@@ -17,14 +13,9 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
     "ml-random-forest": "^1.0.0",
     "technicalindicators": "^3.1.0",
     "winston": "^3.11.0"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
-  }
+  "devDependencies": {}
 }
