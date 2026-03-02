@@ -12,9 +12,15 @@ function ensureModelDir() {
 }
 
 function trainRF(X, y) {
+  if (!X || !X.length) {
+    throw new Error("Geen training data");
+  }
+
+  const featureCount = X[0].length;
+
   const options = {
     seed: 42,
-    maxFeatures: Math.sqrt(X[0].length), // BELANGRIJK
+    maxFeatures: Math.max(1, Math.floor(Math.sqrt(featureCount))), // 🔥 FIX
     replacement: true,
     nEstimators: 100
   };
