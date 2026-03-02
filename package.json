@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node api/_devserver.js",
     "backtest": "node api/backtest.js",
+    "backtest:json": "node api/backtest-json.js",
     "train": "node api/train.js",
     "importance": "node api/importance.js",
     "env-check": "node api/env-check.js"
