@@ -3,7 +3,7 @@ name: Backtest and commit
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 6 * * *"
+    - cron: "15 6 * * *" # elke dag 06:15 UTC
 
 permissions:
   contents: write
@@ -11,7 +11,6 @@ permissions:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,11 +20,10 @@ jobs:
         with:
           node-version: "18"
 
-      # 🔥 BELANGRIJK: geen npm ci maar npm install
-      - name: Install dependencies
+      - name: Install
         run: npm install
 
-      - name: Run backtest
+      - name: Run backtest to JSON
         run: npm run backtest:json
 
       - name: Commit backtest.json if changed
