@@ -1,15 +1,15 @@
 {
-  "generatedAt": "2026-03-07T06:58:15.225Z",
+  "generatedAt": "2026-03-08T06:59:57.092Z",
   "timeframe": "1D",
   "periodDays": 365,
   "allSignals": {
     "total": 365,
-    "correct": 244,
-    "accuracyPct": 66.85
+    "correct": 243,
+    "accuracyPct": 66.58
   },
   "filteredSignals": {
     "total": 284,
-    "correct": 198,
-    "accuracyPct": 69.72
+    "correct": 197,
+    "accuracyPct": 69.37
   }
 }
