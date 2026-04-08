@@ -35,8 +35,8 @@ export async function GET() {
                     if (res.data && res.data.length > 200) {
                         const indicatorData = calculateCryptoCroc(res.data);
                         
+                        // We gooien alleen NEUTRAAL weg. Alle long/short trades mogen door.
                         if (indicatorData.signal === "NEUTRAAL") return null;
-                        if (indicatorData.type !== btcTrend) return null; // Negeer tegen-trend trades!
 
                         const rawRsi = parseFloat(indicatorData.rsi);
                         const baseScore = Math.abs(rawRsi - 50) * 2; 
@@ -51,8 +51,9 @@ export async function GET() {
             results.push(...batchResults.filter(Boolean));
         }
 
-        const top10 = results.sort((a, b) => b.score - a.score).slice(0, 10);
-        return NextResponse.json({ success: true, data: top10, btcTrend: btcTrend });
+        // We sturen de VOLLEDIGE lijst (gesorteerd) terug naar de website, niet slechts 10.
+        const sortedResults = results.sort((a, b) => b.score - a.score);
+        return NextResponse.json({ success: true, data: sortedResults, btcTrend: btcTrend });
 
     } catch (error) {
         return NextResponse.json({ success: false, error: "Fout bij scannen" }, { status: 500 });
