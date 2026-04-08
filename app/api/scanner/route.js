@@ -34,7 +34,7 @@ export async function GET() {
             });
 
             const batchResults = await Promise.all(promises);
-            // DIT IS DE FIX: Gooi alles weg dat leeg is OF 'NEUTRAAL' is!
+            // Alleen coins met een echt signaal (Long of Short) mogen door
             const validSetups = batchResults.filter(r => r && r.signal !== "NEUTRAAL");
             results.push(...validSetups);
         }
@@ -46,6 +46,6 @@ export async function GET() {
         return NextResponse.json({ success: true, data: top10 });
 
     } catch (error) {
-        return NextResponse.json({ success: false, error: "Kan data niet ophalen" }, { status: 500 });
+        return NextResponse.json({ success: false, error: "Fout bij scannen" }, { status: 500 });
     }
 }
