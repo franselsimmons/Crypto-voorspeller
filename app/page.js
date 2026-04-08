@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 
 export default function Home() {
     const [allCoins, setAllCoins] = useState([]);
+    const [btcTrend, setBtcTrend] = useState('neutral');
     const [loading, setLoading] = useState(true);
 
     const fetchSignals = useCallback(async () => {
@@ -10,7 +11,10 @@ export default function Home() {
         try {
             const res = await fetch('/api/scanner');
             const result = await res.json();
-            if (result.success) setAllCoins(result.data);
+            if (result.success) {
+                setAllCoins(result.data);
+                setBtcTrend(result.btcTrend);
+            }
         } catch (error) { console.error("Fout bij ophalen:", error); }
         setLoading(false);
     }, []);
@@ -22,23 +26,22 @@ export default function Home() {
     }, [fetchSignals]);
 
     const top10Mixed = [...allCoins].sort((a, b) => b.score - a.score).slice(0, 10);
-    const longSignals = allCoins.filter(c => c.type === 'long').sort((a, b) => b.score - a.score);
-    const shortSignals = allCoins.filter(c => c.type === 'short').sort((a, b) => b.score - a.score);
 
-    const Table = ({ title, data, color }) => (
+    const Table = ({ title, data }) => (
         <div className="mb-12">
-            <h2 className={`text-xl font-bold mb-4 flex items-center gap-2 ${color}`}>
+            <h2 className={`text-xl font-bold mb-4 flex items-center gap-2 text-yellow-400`}>
                 <span className="w-2 h-6 rounded-full bg-current opacity-50"></span>
                 {title} ({data.length})
             </h2>
             <div className="bg-gray-800 rounded-lg shadow-xl overflow-x-auto border border-gray-700">
-                <table className="w-full text-left border-collapse min-w-[900px]">
+                <table className="w-full text-left border-collapse min-w-[1000px]">
                     <thead>
                         <tr className="bg-gray-950 text-gray-400 text-sm uppercase">
                             <th className="p-4 border-b border-gray-700">Actie</th>
                             <th className="p-4 border-b border-gray-700">Coin / Filters</th>
                             <th className="p-4 border-b border-gray-700 text-center bg-blue-900/10">💰 IN (Entry)</th>
-                            <th className="p-4 border-b border-gray-700 text-center bg-green-900/10">🎯 TP (Winst)</th>
+                            <th className="p-4 border-b border-gray-700 text-center bg-green-900/10">🛡️ TP1 (Safe)</th>
+                            <th className="p-4 border-b border-gray-700 text-center bg-green-700/10">🎯 TP2 (Max)</th>
                             <th className="p-4 border-b border-gray-700 text-center bg-red-900/10">🛑 SL (Verlies)</th>
                         </tr>
                     </thead>
@@ -70,18 +73,22 @@ export default function Home() {
                                     </div>
                                 </td>
 
-                                {/* DIRECTE HANDELSDATA */}
                                 <td className="p-4 align-top text-center bg-blue-900/5">
                                     <div className="font-mono text-lg font-bold text-white">${coin.entry}</div>
                                     <div className="text-xs text-blue-400 mt-1 uppercase font-bold">Actueel</div>
                                 </td>
 
-                                <td className="p-4 align-top text-center bg-green-900/5">
-                                    <div className="font-mono text-lg font-bold text-green-400">${coin.tp}</div>
-                                    <div className="text-xs text-green-600 mt-1 uppercase font-bold">Risk/Reward 1:2</div>
+                                <td className="p-4 align-top text-center bg-green-900/5 border-l border-gray-700/50">
+                                    <div className="font-mono text-lg font-bold text-green-400">${coin.tp1}</div>
+                                    <div className="text-[10px] text-green-600 mt-1 uppercase font-bold">Zet hierna SL op Entry</div>
                                 </td>
 
-                                <td className="p-4 align-top text-center bg-red-900/5">
+                                <td className="p-4 align-top text-center bg-green-900/10">
+                                    <div className="font-mono text-lg font-bold text-green-300">${coin.tp2}</div>
+                                    <div className="text-[10px] text-green-500 mt-1 uppercase font-bold">Risk/Reward 1:2</div>
+                                </td>
+
+                                <td className="p-4 align-top text-center bg-red-900/5 border-l border-gray-700/50">
                                     <div className="font-mono text-lg font-bold text-red-400">${coin.sl}</div>
                                     <div className="text-xs text-red-600 mt-1 uppercase font-bold">Hard Stop</div>
                                 </td>
@@ -90,7 +97,7 @@ export default function Home() {
                     </tbody>
                 </table>
                 {data.length === 0 && (
-                    <div className="p-8 text-center text-gray-500 italic">Geen trades beschikbaar. Wacht op nieuwe setups.</div>
+                    <div className="p-8 text-center text-gray-500 italic">Geen trades beschikbaar die met de Bitcoin trend mee lopen. Wacht op nieuwe setups.</div>
                 )}
             </div>
         </div>
@@ -98,26 +105,31 @@ export default function Home() {
 
     return (
         <main className="min-h-screen p-4 md:p-8 font-sans bg-gray-950 text-white">
-            <div className="max-w-6xl mx-auto">
+            <div className="max-w-7xl mx-auto">
                 <header className="mb-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-gray-800 pb-6">
                     <div>
                         <h1 className="text-3xl font-black tracking-tight text-white italic">CRYPTO<span className="text-yellow-500">CROC</span> TRADER</h1>
-                        <p className="text-gray-500 font-medium">Auto-berekende Instap, Take Profit en Stop Loss</p>
+                        <p className="text-gray-500 font-medium mt-1 flex items-center gap-2">
+                            Macro Markt Status: 
+                            {btcTrend === 'long' ? (
+                                <span className="bg-green-900/50 text-green-400 px-2 py-0.5 rounded text-sm font-bold border border-green-700">🚀 BULLISH (Alleen Longs)</span>
+                            ) : btcTrend === 'short' ? (
+                                <span className="bg-red-900/50 text-red-400 px-2 py-0.5 rounded text-sm font-bold border border-red-700">🩸 BEARISH (Alleen Shorts)</span>
+                            ) : (
+                                <span className="text-gray-400">Scannen...</span>
+                            )}
+                        </p>
                     </div>
                     <button 
                         onClick={fetchSignals} 
-                        className="bg-yellow-600 hover:bg-yellow-500 text-white px-8 py-3 rounded-full font-black uppercase tracking-wider transition-all shadow-lg shadow-yellow-900/20 disabled:opacity-50"
+                        className="bg-yellow-600 hover:bg-yellow-500 text-white px-8 py-3 rounded-full font-black uppercase tracking-wider transition-all shadow-lg shadow-yellow-900/20 disabled:opacity-50 whitespace-nowrap"
                         disabled={loading}
                     >
                         {loading ? "Setups Berekenen..." : "Zoek Trades"}
                     </button>
                 </header>
 
-                <Table title="💎 Top 10 Kansen" data={top10Mixed} color="text-yellow-400" />
-                <div className="grid grid-cols-1 gap-8">
-                    <Table title="🚀 Long Trades" data={longSignals} color="text-green-400" />
-                    <Table title="📉 Short Trades" data={shortSignals} color="text-red-400" />
-                </div>
+                <Table title="💎 Veilige A+ Setups (Met BTC Trend)" data={top10Mixed} />
             </div>
         </main>
     );
