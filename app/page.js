@@ -25,7 +25,10 @@ export default function Home() {
         return () => clearInterval(interval);
     }, [fetchSignals]);
 
-    const top10Mixed = [...allCoins].sort((a, b) => b.score - a.score).slice(0, 10);
+    // Omdat we nu alle coins ontvangen, kunnen we netjes de 3 tabellen vullen
+    const top10Mixed = [...allCoins].slice(0, 10);
+    const longSignals = allCoins.filter(c => c.type === 'long');
+    const shortSignals = allCoins.filter(c => c.type === 'short');
 
     const Table = ({ title, data }) => (
         <div className="mb-12">
@@ -58,9 +61,17 @@ export default function Home() {
                                 </td>
                                 
                                 <td className="p-4 align-top">
-                                    <div className="font-black text-xl mb-2">{coin.symbol.replace('USDT', '')}</div>
+                                    <div className="font-black text-xl mb-2 flex items-center gap-2">
+                                        {coin.symbol.replace('USDT', '')}
+                                        {/* BTC WAARSCHUWING */}
+                                        {coin.type !== btcTrend && btcTrend !== 'neutral' && (
+                                            <span className="bg-orange-900/50 text-orange-400 border border-orange-700 text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap" title="Deze trade gaat tegen de algemene Bitcoin trend in!">
+                                                ⚡ Tegen BTC Trend
+                                            </span>
+                                        )}
+                                    </div>
                                     <div className="flex flex-wrap gap-1">
-                                        {coin.tags.length === 0 && <span className="text-gray-500 text-xs">⚠️ Tegen de trend in</span>}
+                                        {coin.tags.length === 0 && <span className="text-gray-500 text-xs">Geen A+ filters</span>}
                                         {coin.tags.map((tag, i) => (
                                             <span key={i} className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${
                                                 tag.includes('Trend') ? 'bg-blue-900 text-blue-200' :
@@ -97,7 +108,7 @@ export default function Home() {
                     </tbody>
                 </table>
                 {data.length === 0 && (
-                    <div className="p-8 text-center text-gray-500 italic">Geen trades beschikbaar die met de Bitcoin trend mee lopen. Wacht op nieuwe setups.</div>
+                    <div className="p-8 text-center text-gray-500 italic">Geen trades beschikbaar in deze categorie.</div>
                 )}
             </div>
         </div>
@@ -112,9 +123,9 @@ export default function Home() {
                         <p className="text-gray-500 font-medium mt-1 flex items-center gap-2">
                             Macro Markt Status: 
                             {btcTrend === 'long' ? (
-                                <span className="bg-green-900/50 text-green-400 px-2 py-0.5 rounded text-sm font-bold border border-green-700">🚀 BULLISH (Alleen Longs)</span>
+                                <span className="bg-green-900/50 text-green-400 px-2 py-0.5 rounded text-sm font-bold border border-green-700">🚀 BTC STIJGT (Focus op Longs)</span>
                             ) : btcTrend === 'short' ? (
-                                <span className="bg-red-900/50 text-red-400 px-2 py-0.5 rounded text-sm font-bold border border-red-700">🩸 BEARISH (Alleen Shorts)</span>
+                                <span className="bg-red-900/50 text-red-400 px-2 py-0.5 rounded text-sm font-bold border border-red-700">🩸 BTC DAALT (Focus op Shorts)</span>
                             ) : (
                                 <span className="text-gray-400">Scannen...</span>
                             )}
@@ -129,7 +140,11 @@ export default function Home() {
                     </button>
                 </header>
 
-                <Table title="💎 Veilige A+ Setups (Met BTC Trend)" data={top10Mixed} />
+                <Table title="💎 Top 10 Beste Kansen (Alle setups)" data={top10Mixed} />
+                <div className="grid grid-cols-1 gap-8">
+                    <Table title="🚀 Potentiële Long Trades" data={longSignals} />
+                    <Table title="📉 Potentiële Short Trades" data={shortSignals} />
+                </div>
             </div>
         </main>
     );
