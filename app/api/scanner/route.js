@@ -41,9 +41,9 @@ export async function GET() {
                 try {
                     const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=250`);
                     if (res.data && res.data.length > 200) {
-                        // FIX: We geven de btcTrend nu mee aan de rekenmachine!
                         const indicatorData = calculateCryptoCroc(res.data, btcTrend);
                         
+                        // Gooi alleen rotzooi weg zonder duidelijke richting, de rest mag gerankt worden
                         if (indicatorData.signal === "NEUTRAAL") return null;
                         return { symbol, ...indicatorData };
                     }
