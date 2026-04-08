@@ -25,10 +25,8 @@ export default function Home() {
         return () => clearInterval(interval);
     }, [fetchSignals]);
 
-    // Verdeel op basis van Actionability
     const primeSetups = allCoins.filter(c => c.actionability === 'TRADE_NOW');
     const earlySetups = allCoins.filter(c => c.actionability === 'EARLY');
-    // Pak de top 10 van de rest voor de "Best Available" lijst
     const bestAvailable = allCoins.filter(c => c.actionability === 'WATCHLIST').slice(0, 10);
 
     const Table = ({ title, data, borderColor }) => (
@@ -41,7 +39,7 @@ export default function Home() {
                 <table className="w-full text-left border-collapse min-w-[1000px]">
                     <thead>
                         <tr className="bg-gray-900 text-gray-400 text-xs uppercase tracking-wider">
-                            <th className="p-4 border-b border-gray-700">Rank</th>
+                            <th className="p-4 border-b border-gray-700 w-24">Rank</th>
                             <th className="p-4 border-b border-gray-700">Coin / Context</th>
                             <th className="p-4 border-b border-gray-700 text-center bg-blue-900/10">Instap</th>
                             <th className="p-4 border-b border-gray-700 text-center bg-green-900/10">TP1 / TP2</th>
@@ -72,13 +70,12 @@ export default function Home() {
                                         }`}>
                                             {coin.type}
                                         </span>
-                                        {coin.type !== btcTrend && btcTrend !== 'neutral' && (
-                                            <span className="bg-orange-900/50 text-orange-400 text-[10px] px-1.5 py-0.5 rounded" title="Tegen de BTC macro trend in">⚠️</span>
-                                        )}
                                     </div>
                                     <div className="flex flex-wrap gap-1">
                                         {coin.tags.map((tag, i) => (
                                             <span key={i} className={`px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${
+                                                tag.includes('BTC Mee') ? 'bg-green-950 text-green-300 border border-green-800' :
+                                                tag.includes('Tegen BTC') ? 'bg-orange-950 text-orange-300 border border-orange-800' :
                                                 tag.includes('Uptrend') || tag.includes('Downtrend') ? 'bg-blue-950 text-blue-300 border border-blue-800' :
                                                 tag.includes('Zijwaarts') ? 'bg-gray-800 text-gray-400 border border-gray-600' :
                                                 tag.includes('Vol') ? 'bg-purple-950 text-purple-300 border border-purple-800' :
@@ -122,7 +119,7 @@ export default function Home() {
                     <div>
                         <h1 className="text-3xl font-black tracking-tight text-white italic">CRYPTO<span className="text-blue-500">CROC</span> LEADERBOARD</h1>
                         <p className="text-gray-500 font-medium mt-1">
-                            BTC Regime: {btcTrend === 'long' ? <span className="text-green-400">BULLISH (> 50 EMA)</span> : <span className="text-red-400">BEARISH (< 50 EMA)</span>}
+                            BTC Macro Regime: {btcTrend === 'long' ? <span className="text-green-400 font-bold">BULLISH (> 50 EMA)</span> : <span className="text-red-400 font-bold">BEARISH (< 50 EMA)</span>}
                         </p>
                     </div>
                     <button 
