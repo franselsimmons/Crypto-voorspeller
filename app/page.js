@@ -25,9 +25,12 @@ export default function Home() {
         return () => clearInterval(interval);
     }, [fetchSignals]);
 
-    const primeSetups = allCoins.filter(c => c.actionability === 'TRADE_NOW');
-    const earlySetups = allCoins.filter(c => c.actionability === 'EARLY');
-    const bestAvailable = allCoins.filter(c => c.actionability === 'WATCHLIST').slice(0, 10);
+    // DE NIEUWE STRIKTE FILTERS (Geen C-Klasse in Prime of Early)
+    const primeSetups = allCoins.filter(c => c.actionability === 'TRADE_NOW' && c.setupClass !== 'C');
+    const earlySetups = allCoins.filter(c => c.actionability === 'EARLY' && c.setupClass !== 'C');
+    const bestAvailable = allCoins
+        .filter(c => !primeSetups.includes(c) && !earlySetups.includes(c))
+        .slice(0, 10);
 
     const Table = ({ title, data, borderColor }) => (
         <div className="mb-12">
@@ -119,7 +122,6 @@ export default function Home() {
                     <div>
                         <h1 className="text-3xl font-black tracking-tight text-white italic">CRYPTO<span className="text-blue-500">CROC</span> LEADERBOARD</h1>
                         <p className="text-gray-500 font-medium mt-1">
-                            {/* De fix zit hier: &gt; in plaats van > en &lt; in plaats van < */}
                             BTC Macro Regime: {btcTrend === 'long' ? <span className="text-green-400 font-bold">BULLISH (&gt; 50 EMA)</span> : <span className="text-red-400 font-bold">BEARISH (&lt; 50 EMA)</span>}
                         </p>
                     </div>
