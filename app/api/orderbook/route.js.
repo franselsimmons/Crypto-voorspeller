@@ -10,31 +10,43 @@ export async function GET(request) {
     if (!symbol) return NextResponse.json({ success: false, error: "Geen coin opgegeven" });
 
     try {
-        // Haal huidige prijs en het orderboek (tot 1000 orders diep) op
+        // FIX: Limit verlaagd naar 100! 1000 is te zwaar voor de publieke API en wordt geblokkeerd.
         const [priceRes, depthRes] = await Promise.all([
             axios.get(`https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`),
-            axios.get(`https://api.mexc.com/api/v3/depth?symbol=${symbol}&limit=1000`)
+            axios.get(`https://api.mexc.com/api/v3/depth?symbol=${symbol}&limit=100`)
         ]);
 
         const currentPrice = parseFloat(priceRes.data.price);
-        const { bids, asks } = depthRes.data; // Bids = kopers, Asks = verkopers
+        const { bids, asks } = depthRes.data;
 
-        // Zoek de grootste KOPERS muur (Support) in het orderboek
+        // Veiligheidscheck: is het orderboek per ongeluk leeg?
+        if (!bids || !asks || bids.length === 0 || asks.length === 0) {
+             return NextResponse.json({ success: false, error: "Leeg orderboek op MEXC" }, { status: 400 });
+        }
+
+        // Zoek de grootste KOPERS muur (Support)
         let maxBidVol = 0;
-        let supportPrice = 0;
+        let supportPrice = currentPrice;
         bids.forEach(b => {
             const vol = parseFloat(b[0]) * parseFloat(b[1]); // Prijs * Aantal
-            if(vol > maxBidVol) { maxBidVol = vol; supportPrice = parseFloat(b[0]); }
+            if(vol > maxBidVol) { 
+                maxBidVol = vol; 
+                supportPrice = parseFloat(b[0]); 
+            }
         });
 
-        // Zoek de grootste VERKOPERS muur (Resistance) in het orderboek
+        // Zoek de grootste VERKOPERS muur (Resistance)
         let maxAskVol = 0;
-        let resistPrice = 0;
+        let resistPrice = currentPrice;
         asks.forEach(a => {
             const vol = parseFloat(a[0]) * parseFloat(a[1]);
-            if(vol > maxAskVol) { maxAskVol = vol; resistPrice = parseFloat(a[0]); }
+            if(vol > maxAskVol) { 
+                maxAskVol = vol; 
+                resistPrice = parseFloat(a[0]); 
+            }
         });
 
+        // Bereken ook wat percentages voor een mooiere weergave (optioneel voor later)
         return NextResponse.json({ 
             success: true, 
             currentPrice: currentPrice.toFixed(4), 
@@ -43,6 +55,7 @@ export async function GET(request) {
         });
 
     } catch (error) {
-        return NextResponse.json({ success: false, error: "Kan orderboek niet uitlezen" }, { status: 500 });
+        console.error("Orderboek Error:", error.message);
+        return NextResponse.json({ success: false, error: "MEXC API weigert verbinding" }, { status: 500 });
     }
 }
