@@ -32,35 +32,37 @@ export default function Home() {
                 {title} ({data.length})
             </h2>
             <div className="bg-gray-800 rounded-lg shadow-xl overflow-x-auto border border-gray-700">
-                <table className="w-full text-left border-collapse min-w-[700px]">
+                <table className="w-full text-left border-collapse min-w-[900px]">
                     <thead>
                         <tr className="bg-gray-950 text-gray-400 text-sm uppercase">
-                            <th className="p-4 border-b border-gray-700">Kwaliteit</th>
-                            <th className="p-4 border-b border-gray-700">Coin</th>
-                            <th className="p-4 border-b border-gray-700 hidden sm:table-cell">A+ Filters</th>
-                            <th className="p-4 border-b border-gray-700">RSI / Band</th>
-                            <th className="p-4 border-b border-gray-700">Signaal</th>
+                            <th className="p-4 border-b border-gray-700">Actie</th>
+                            <th className="p-4 border-b border-gray-700">Coin / Filters</th>
+                            <th className="p-4 border-b border-gray-700 text-center bg-blue-900/10">💰 IN (Entry)</th>
+                            <th className="p-4 border-b border-gray-700 text-center bg-green-900/10">🎯 TP (Winst)</th>
+                            <th className="p-4 border-b border-gray-700 text-center bg-red-900/10">🛑 SL (Verlies)</th>
                         </tr>
                     </thead>
                     <tbody>
                         {data.map((coin, index) => (
                             <tr key={index} className="transition-colors border-b border-gray-700 last:border-none hover:bg-gray-750">
-                                <td className="p-4">
-                                    <div className="flex items-center justify-center w-10 h-10 rounded-full bg-gray-900 text-yellow-400 font-bold border border-yellow-700 shadow-[0_0_10px_rgba(234,179,8,0.2)]">
-                                        {Math.round(coin.score)}
-                                    </div>
+                                <td className="p-4 align-top pt-5">
+                                    <span className={`px-3 py-2 rounded text-sm font-black whitespace-nowrap border block text-center ${
+                                        coin.type === 'long' ? 'bg-green-900/40 text-green-400 border-green-700' :
+                                        'bg-red-900/40 text-red-400 border-red-700'
+                                    }`}>
+                                        {coin.signal}
+                                    </span>
                                 </td>
-                                <td className="p-4 font-bold text-lg">{coin.symbol.replace('USDT', '')}</td>
                                 
-                                {/* DIT ZIJN DE NIEUWE BADGES */}
-                                <td className="p-4 hidden sm:table-cell">
-                                    <div className="flex flex-wrap gap-2">
-                                        {coin.tags.length === 0 && <span className="text-gray-600 text-xs italic">Tegen-trend (Risico)</span>}
+                                <td className="p-4 align-top">
+                                    <div className="font-black text-xl mb-2">{coin.symbol.replace('USDT', '')}</div>
+                                    <div className="flex flex-wrap gap-1">
+                                        {coin.tags.length === 0 && <span className="text-gray-500 text-xs">⚠️ Tegen de trend in</span>}
                                         {coin.tags.map((tag, i) => (
-                                            <span key={i} className={`px-2 py-1 text-xs font-bold rounded border ${
-                                                tag.includes('Trend') ? 'bg-blue-900/40 text-blue-300 border-blue-700' :
-                                                tag.includes('Vol') ? 'bg-purple-900/40 text-purple-300 border-purple-700' :
-                                                'bg-yellow-900/40 text-yellow-300 border-yellow-700'
+                                            <span key={i} className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${
+                                                tag.includes('Trend') ? 'bg-blue-900 text-blue-200' :
+                                                tag.includes('Vol') ? 'bg-purple-900 text-purple-200' :
+                                                'bg-yellow-900 text-yellow-200'
                                             }`}>
                                                 {tag}
                                             </span>
@@ -68,28 +70,27 @@ export default function Home() {
                                     </div>
                                 </td>
 
-                                <td className="p-4 font-mono">
-                                    <span className="font-bold text-white">{coin.rsi}</span>
-                                    <span className="text-gray-500 mx-1">/</span>
-                                    <span className={coin.type === 'long' ? 'text-green-500' : 'text-red-500'}>
-                                        {coin.type === 'long' ? coin.L1 : coin.U1}
-                                    </span>
+                                {/* DIRECTE HANDELSDATA */}
+                                <td className="p-4 align-top text-center bg-blue-900/5">
+                                    <div className="font-mono text-lg font-bold text-white">${coin.entry}</div>
+                                    <div className="text-xs text-blue-400 mt-1 uppercase font-bold">Actueel</div>
                                 </td>
-                                <td className="p-4">
-                                    <span className={`px-3 py-1 rounded text-sm font-bold whitespace-nowrap border ${
-                                        coin.type === 'long' ? 'bg-green-900/40 text-green-300 border-green-700' :
-                                        coin.type === 'short' ? 'bg-red-900/40 text-red-300 border-red-700' :
-                                        'bg-gray-700 text-gray-300 border-gray-600'
-                                    }`}>
-                                        {coin.signal}
-                                    </span>
+
+                                <td className="p-4 align-top text-center bg-green-900/5">
+                                    <div className="font-mono text-lg font-bold text-green-400">${coin.tp}</div>
+                                    <div className="text-xs text-green-600 mt-1 uppercase font-bold">Risk/Reward 1:2</div>
+                                </td>
+
+                                <td className="p-4 align-top text-center bg-red-900/5">
+                                    <div className="font-mono text-lg font-bold text-red-400">${coin.sl}</div>
+                                    <div className="text-xs text-red-600 mt-1 uppercase font-bold">Hard Stop</div>
                                 </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
                 {data.length === 0 && (
-                    <div className="p-8 text-center text-gray-500 italic">Geen kansen gevonden.</div>
+                    <div className="p-8 text-center text-gray-500 italic">Geen trades beschikbaar. Wacht op nieuwe setups.</div>
                 )}
             </div>
         </div>
@@ -97,25 +98,25 @@ export default function Home() {
 
     return (
         <main className="min-h-screen p-4 md:p-8 font-sans bg-gray-950 text-white">
-            <div className="max-w-5xl mx-auto">
+            <div className="max-w-6xl mx-auto">
                 <header className="mb-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-gray-800 pb-6">
                     <div>
-                        <h1 className="text-3xl font-black tracking-tight text-white italic">CRYPTO<span className="text-yellow-500">CROC</span> A+ SCANNER</h1>
-                        <p className="text-gray-500 font-medium">Inclusief Trend, Volume & Divergentie AI</p>
+                        <h1 className="text-3xl font-black tracking-tight text-white italic">CRYPTO<span className="text-yellow-500">CROC</span> TRADER</h1>
+                        <p className="text-gray-500 font-medium">Auto-berekende Instap, Take Profit en Stop Loss</p>
                     </div>
                     <button 
                         onClick={fetchSignals} 
                         className="bg-yellow-600 hover:bg-yellow-500 text-white px-8 py-3 rounded-full font-black uppercase tracking-wider transition-all shadow-lg shadow-yellow-900/20 disabled:opacity-50"
                         disabled={loading}
                     >
-                        {loading ? "A+ Setups Zoeken..." : "Ververs Markt"}
+                        {loading ? "Setups Berekenen..." : "Zoek Trades"}
                     </button>
                 </header>
 
-                <Table title="Top 10 A+ Kansen (Meeste Vinkjes)" data={top10Mixed} color="text-yellow-400" />
-                <div className="grid grid-cols-1 gap-4">
-                    <Table title="Longs" data={longSignals} color="text-green-400" />
-                    <Table title="Shorts" data={shortSignals} color="text-red-400" />
+                <Table title="💎 Top 10 Kansen" data={top10Mixed} color="text-yellow-400" />
+                <div className="grid grid-cols-1 gap-8">
+                    <Table title="🚀 Long Trades" data={longSignals} color="text-green-400" />
+                    <Table title="📉 Short Trades" data={shortSignals} color="text-red-400" />
                 </div>
             </div>
         </main>
