@@ -5,22 +5,30 @@ import { calculateCryptoCroc } from '../../../lib/cryptocroc';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; 
 
+const BLOCKED_COINS = [
+    'PEPEUSDT', 'DOGEUSDT', 'SHIBUSDT', 'FLOKIUSDT', 'WIFUSDT', 
+    'BONKUSDT', 'BOMEUSDT', 'MEMEUSDT', 'PEPE2USDT', 'TURBOUSDT'
+];
+
 export async function GET() {
     try {
         let btcTrend = 'neutral';
         try {
-            const btcRes = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=60m&limit=250`);
+            const btcRes = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=60m&limit=100`);
             const btcCloses = btcRes.data.map(k => parseFloat(k[4]));
             const currentBtcPrice = btcCloses[btcCloses.length - 1];
-            const pastBtcPrice = btcCloses[btcCloses.length - 10]; 
-            btcTrend = currentBtcPrice >= pastBtcPrice ? 'long' : 'short';
-        } catch (e) { console.error("Kon BTC trend niet ophalen"); }
+            
+            const k = 2 / (50 + 1);
+            let ema = btcCloses[0];
+            for (let i = 1; i < btcCloses.length; i++) { ema = (btcCloses[i] - ema) * k + ema; }
+            btcTrend = currentBtcPrice >= ema ? 'long' : 'short';
+        } catch (e) { console.error("Kon BTC structuur niet ophalen"); }
 
         const tickerRes = await axios.get('https://api.mexc.com/api/v3/ticker/24hr');
         const topCoins = tickerRes.data
-            .filter(t => t.symbol.endsWith('USDT') && t.symbol !== 'BTCUSDT') 
+            .filter(t => t.symbol.endsWith('USDT') && t.symbol !== 'BTCUSDT' && !BLOCKED_COINS.includes(t.symbol)) 
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)) 
-            .slice(0, 300) 
+            .slice(0, 150) 
             .map(t => t.symbol);
 
         let results = [];
@@ -34,15 +42,8 @@ export async function GET() {
                     const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=250`);
                     if (res.data && res.data.length > 200) {
                         const indicatorData = calculateCryptoCroc(res.data);
-                        
-                        // We gooien alleen NEUTRAAL weg. Alle long/short trades mogen door.
-                        if (indicatorData.signal === "NEUTRAAL") return null;
-
-                        const rawRsi = parseFloat(indicatorData.rsi);
-                        const baseScore = Math.abs(rawRsi - 50) * 2; 
-                        const finalScore = baseScore * indicatorData.scoreMultiplier;
-
-                        return { symbol, score: finalScore, ...indicatorData };
+                        // DE KILL-SWITCH IS WEG. Alles mag door, we sorteren puur op rankScore.
+                        return { symbol, ...indicatorData };
                     }
                 } catch (e) { return null; } 
             });
@@ -51,8 +52,9 @@ export async function GET() {
             results.push(...batchResults.filter(Boolean));
         }
 
-        // We sturen de VOLLEDIGE lijst (gesorteerd) terug naar de website, niet slechts 10.
-        const sortedResults = results.sort((a, b) => b.score - a.score);
+        // Sorteer het volledige universum op de nieuwe rankScore
+        const sortedResults = results.sort((a, b) => b.rankScore - a.rankScore);
+        
         return NextResponse.json({ success: true, data: sortedResults, btcTrend: btcTrend });
 
     } catch (error) {
