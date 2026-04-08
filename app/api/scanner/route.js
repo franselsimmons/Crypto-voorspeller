@@ -2,16 +2,17 @@ import { NextResponse } from 'next/server';
 import axios from 'axios';
 import { calculateCryptoCroc } from '../../../lib/cryptocroc';
 
-// Je kunt hier onbeperkt coins aan toevoegen die op Binance staan
+export const dynamic = 'force-dynamic';
+
 const COINS_TO_SCAN = [
-  "BTCUSDT",
-  "ETHUSDT",
-  "SOLUSDT",
-  "TURBOUSDT",
-  "PEPEUSDT",
-  "XRPUSDT",
-  "ADAUSDT",
-  "DOGEUSDT"
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'TURBOUSDT',
+  'PEPEUSDT',
+  'XRPUSDT',
+  'ADAUSDT',
+  'DOGEUSDT'
 ];
 
 export async function GET() {
@@ -19,9 +20,11 @@ export async function GET() {
     const results = [];
 
     for (const symbol of COINS_TO_SCAN) {
-      // Haal 150 candles op van het 1-uur (1h) timeframe
       const response = await axios.get(
-        `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=150`
+        `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=150`,
+        {
+          timeout: 15000
+        }
       );
 
       const klines = response.data;
@@ -33,9 +36,17 @@ export async function GET() {
       });
     }
 
-    return NextResponse.json({ success: true, data: results });
+    return NextResponse.json(
+      { success: true, data: results },
+      {
+        headers: {
+          'Cache-Control': 'no-store'
+        }
+      }
+    );
   } catch (error) {
-    console.error('Fout bij ophalen data:', error);
+    console.error('Fout bij ophalen data:', error?.message || error);
+
     return NextResponse.json(
       { success: false, error: 'Kan data niet ophalen' },
       { status: 500 }
