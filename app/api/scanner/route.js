@@ -22,27 +22,27 @@ export async function GET() {
             
             const promises = batch.map(async (symbol) => {
                 try {
-                    const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=150`);
-                    if (res.data && res.data.length > 50) {
+                    // FIX: Limit verhoogd naar 250! We hebben dit nodig om de 200 EMA (Trend) te berekenen.
+                    const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=250`);
+                    if (res.data && res.data.length > 200) {
                         const indicatorData = calculateCryptoCroc(res.data);
                         const rawRsi = parseFloat(indicatorData.rsi);
-                        const score = Math.abs(rawRsi - 50) * 2; 
+                        
+                        // De score wordt nu vermenigvuldigd door onze kwaliteitsfilters!
+                        const baseScore = Math.abs(rawRsi - 50) * 2; 
+                        const finalScore = baseScore * indicatorData.scoreMultiplier;
 
-                        return { symbol, score, ...indicatorData };
+                        return { symbol, score: finalScore, ...indicatorData };
                     }
                 } catch (e) { return null; } 
             });
 
             const batchResults = await Promise.all(promises);
-            // Alleen coins met een echt signaal (Long of Short) mogen door
             const validSetups = batchResults.filter(r => r && r.signal !== "NEUTRAAL");
             results.push(...validSetups);
         }
 
-        const top10 = results
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 10);
-
+        const top10 = results.sort((a, b) => b.score - a.score).slice(0, 10);
         return NextResponse.json({ success: true, data: top10 });
 
     } catch (error) {
