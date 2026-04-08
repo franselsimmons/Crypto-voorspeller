@@ -5,51 +5,31 @@ import { calculateCryptoCroc } from '../../../lib/cryptocroc';
 export const dynamic = 'force-dynamic';
 
 const COINS_TO_SCAN = [
-  'BTCUSDT',
-  'ETHUSDT',
-  'SOLUSDT',
-  'TURBOUSDT',
-  'PEPEUSDT',
-  'XRPUSDT',
-  'ADAUSDT',
-  'DOGEUSDT'
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "TURBOUSDT", 
+    "PEPEUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"
 ];
 
 export async function GET() {
-  try {
-    const results = [];
+    try {
+        let results = [];
 
-    for (const symbol of COINS_TO_SCAN) {
-      const response = await axios.get(
-        `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=150`,
-        {
-          timeout: 15000
+        for (const symbol of COINS_TO_SCAN) {
+            // We gebruiken nu de MEXC API! Let op: MEXC gebruikt '60m' i.p.v. '1h'
+            const response = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=150`);
+            const klines = response.data;
+
+            const indicatorData = calculateCryptoCroc(klines);
+
+            results.push({
+                symbol: symbol,
+                ...indicatorData
+            });
         }
-      );
 
-      const klines = response.data;
-      const indicatorData = calculateCryptoCroc(klines);
+        return NextResponse.json({ success: true, data: results });
 
-      results.push({
-        symbol,
-        ...indicatorData
-      });
+    } catch (error) {
+        console.error("Fout bij ophalen data:", error.message);
+        return NextResponse.json({ success: false, error: "Kan data niet ophalen" }, { status: 500 });
     }
-
-    return NextResponse.json(
-      { success: true, data: results },
-      {
-        headers: {
-          'Cache-Control': 'no-store'
-        }
-      }
-    );
-  } catch (error) {
-    console.error('Fout bij ophalen data:', error?.message || error);
-
-    return NextResponse.json(
-      { success: false, error: 'Kan data niet ophalen' },
-      { status: 500 }
-    );
-  }
 }
