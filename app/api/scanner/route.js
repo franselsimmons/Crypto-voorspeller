@@ -7,9 +7,18 @@ export const maxDuration = 300;
 
 export async function GET() {
     try {
+        let btcTrend = 'neutral';
+        try {
+            const btcRes = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=60m&limit=250`);
+            const btcCloses = btcRes.data.map(k => parseFloat(k[4]));
+            const currentBtcPrice = btcCloses[btcCloses.length - 1];
+            const pastBtcPrice = btcCloses[btcCloses.length - 10]; 
+            btcTrend = currentBtcPrice >= pastBtcPrice ? 'long' : 'short';
+        } catch (e) { console.error("Kon BTC trend niet ophalen"); }
+
         const tickerRes = await axios.get('https://api.mexc.com/api/v3/ticker/24hr');
         const topCoins = tickerRes.data
-            .filter(t => t.symbol.endsWith('USDT')) 
+            .filter(t => t.symbol.endsWith('USDT') && t.symbol !== 'BTCUSDT') 
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)) 
             .slice(0, 300) 
             .map(t => t.symbol);
@@ -22,13 +31,14 @@ export async function GET() {
             
             const promises = batch.map(async (symbol) => {
                 try {
-                    // FIX: Limit verhoogd naar 250! We hebben dit nodig om de 200 EMA (Trend) te berekenen.
                     const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=250`);
                     if (res.data && res.data.length > 200) {
                         const indicatorData = calculateCryptoCroc(res.data);
-                        const rawRsi = parseFloat(indicatorData.rsi);
                         
-                        // De score wordt nu vermenigvuldigd door onze kwaliteitsfilters!
+                        if (indicatorData.signal === "NEUTRAAL") return null;
+                        if (indicatorData.type !== btcTrend) return null; // Negeer tegen-trend trades!
+
+                        const rawRsi = parseFloat(indicatorData.rsi);
                         const baseScore = Math.abs(rawRsi - 50) * 2; 
                         const finalScore = baseScore * indicatorData.scoreMultiplier;
 
@@ -38,12 +48,11 @@ export async function GET() {
             });
 
             const batchResults = await Promise.all(promises);
-            const validSetups = batchResults.filter(r => r && r.signal !== "NEUTRAAL");
-            results.push(...validSetups);
+            results.push(...batchResults.filter(Boolean));
         }
 
         const top10 = results.sort((a, b) => b.score - a.score).slice(0, 10);
-        return NextResponse.json({ success: true, data: top10 });
+        return NextResponse.json({ success: true, data: top10, btcTrend: btcTrend });
 
     } catch (error) {
         return NextResponse.json({ success: false, error: "Fout bij scannen" }, { status: 500 });
