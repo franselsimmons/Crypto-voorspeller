@@ -1,8 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from 'react';
 
-// Chique Goud-Bronzen accentkleur: #C5A070 (of Tailwind amber-400 / yellow-500 in nuances)
-
 export default function Home() {
     const [allCoins, setAllCoins] = useState([]);
     const [btcTrend, setBtcTrend] = useState('neutral');
@@ -21,126 +19,106 @@ export default function Home() {
         setLoading(false);
     }, []);
 
-    useEffect(() => {
-        scanMarket();
-        const interval = setInterval(scanMarket, 5 * 60 * 1000); 
-        return () => clearInterval(interval);
-    }, [scanMarket]);
+    useEffect(() => { scanMarket(); }, [scanMarket]);
 
     const copySignal = (c) => {
-        const text = `COIN: ${c.symbol.replace('USDT','')}\nRICHTING: ${c.type.toUpperCase()}\n\nInstap (Nu): $${c.entry}\nVeilige Winst (TP1): $${c.tp1}\nHoofddoel (TP2): $${c.tp2}\nStop Loss: $${c.sl}`;
+        const text = `ASSET: ${c.symbol.replace('USDT','')}\nSIDE: ${c.type.toUpperCase()}\nENTRY: ${c.entry}\nTARGET 1: ${c.tp1}\nTARGET 2: ${c.tp2}\nSTOP: ${c.sl}`;
         navigator.clipboard.writeText(text);
-        // Alert ook rustiger maken (visueel, optioneel later)
-        alert("Signaal gekopieerd.");
+        alert("EXECUTION DATA COPIED");
     };
 
     return (
-        <main className="min-h-screen bg-slate-950 text-slate-200 p-6 md:p-12 font-sans tracking-tight">
-            <div className="max-w-5xl mx-auto">
+        <main className="min-h-screen bg-[#050505] text-zinc-400 p-8 md:p-16 font-mono uppercase tracking-tighter">
+            <div className="max-w-6xl mx-auto">
                 
-                {/* --- CHIQUE HEADER --- */}
-                <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-16 border-b border-slate-800 pb-10 gap-6">
+                {/* --- INSTITUTIONAL HEADER --- */}
+                <header className="flex flex-col md:flex-row justify-between items-baseline mb-20 border-b border-zinc-900 pb-12 gap-8">
                     <div>
-                        <div className="flex items-center gap-2">
-                            <span className="text-yellow-500 text-3xl">✦</span>
-                            <h1 className="text-3xl font-light tracking-tighter text-white">
-                                <span className="font-bold">CRYPTO</span>CROC <span className="text-yellow-500/80 font-mono text-xl">V2.1</span>
-                            </h1>
+                        <h1 className="text-2xl font-bold text-white tracking-[0.2em]">
+                            CRYPTO<span className="text-zinc-500">CROC</span> // TERMINAL
+                        </h1>
+                        <div className="flex gap-6 mt-4 text-[10px] tracking-widest text-zinc-600">
+                            <span>SYSTEM_STATUS: <span className="text-emerald-500 italic text-xs">ONLINE</span></span>
+                            <span>MARKET_REGIME: <span className={btcTrend === 'long' ? 'text-emerald-500' : 'text-rose-500'}>{btcTrend}</span></span>
                         </div>
-                        <p className="text-slate-500 mt-2 text-sm font-medium tracking-normal">
-                            Professional Grade Crypto Terminal &nbsp; | &nbsp; 
-                            BTC: {btcTrend === 'long' ? 
-                                <span className="text-green-400 font-bold bg-green-950 px-2 py-0.5 rounded text-xs">BULLISH</span> : 
-                                <span className="text-red-400 font-bold bg-red-950 px-2 py-0.5 rounded text-xs">BEARISH</span>
-                            }
-                        </p>
                     </div>
                     <button 
                         onClick={scanMarket} 
                         disabled={loading} 
-                        className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 px-8 py-3 rounded-full font-bold uppercase text-xs transition-all disabled:opacity-50 shadow-lg shadow-yellow-950/30 whitespace-nowrap active:scale-95"
+                        className="border border-zinc-800 hover:border-zinc-100 hover:text-white px-10 py-3 text-[11px] transition-all duration-300 disabled:opacity-30"
                     >
-                        {loading ? "Analysing Markt..." : "Execute Scan"}
+                        {loading ? "[ RUNNING_ANALYSIS ]" : "[ EXECUTE_SCAN ]"}
                     </button>
                 </header>
 
                 {allCoins.length > 0 ? (
-                    <div className="space-y-8">
-                        <h2 className="text-sm font-bold uppercase text-slate-600 tracking-widest text-center md:text-left">Actieve Markt Kansen (Min. Score 50)</h2>
-                        
+                    <div className="space-y-1">
+                        {/* TABLE HEADER */}
+                        <div className="grid grid-cols-5 text-[10px] text-zinc-600 pb-4 px-6 tracking-[0.2em] font-bold">
+                            <span>Asset / Status</span>
+                            <span className="text-center">Entry_Point</span>
+                            <span className="text-center">Profit_Target</span>
+                            <span className="text-center">Protection_Stop</span>
+                            <span className="text-right">Action</span>
+                        </div>
+
                         {allCoins.map((c, i) => (
-                            <div key={i} className={`relative overflow-hidden bg-slate-900 ${i === 0 ? 'border border-yellow-500/50 shadow-[0_0_25px_rgba(197,160,112,0.1)]' : 'border border-slate-800'} rounded-2xl p-7 transition-all hover:border-yellow-500/30`}>
+                            <div key={i} className={`group grid grid-cols-5 items-center p-6 bg-zinc-950/30 border border-zinc-900 transition-all duration-500 hover:bg-zinc-900/40 ${i === 0 ? 'border-l-4 border-l-amber-600' : ''}`}>
                                 
-                                {/* CHIQUE GOUDEN LABEL VOOR NR 1 */}
-                                {i === 0 && (
-                                    <div className="absolute top-0 right-0 flex items-center gap-1.5 bg-yellow-500 text-slate-950 px-4 py-1.5 text-[11px] font-black uppercase rounded-bl-lg">
-                                        <span>✦</span> Premium Pick
+                                {/* ASSET INFO */}
+                                <div className="flex flex-col gap-1">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-lg font-bold text-white">{c.symbol.replace('USDT', '')}</span>
+                                        <span className={`text-[10px] ${c.type === 'long' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                            [{c.type}]
+                                        </span>
                                     </div>
-                                )}
-                                
-                                <div className="flex flex-col md:flex-row justify-between items-center gap-8">
-                                    
-                                    {/* COIN INFO BLOCK */}
-                                    <div className="text-center md:text-left w-full md:w-auto">
-                                        <div className="flex items-center justify-center md:justify-start gap-4">
-                                            <h3 className="text-4xl font-extrabold tracking-tighter text-white">{c.symbol.replace('USDT', '')}</h3>
-                                            <span className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase ${c.type === 'long' ? 'text-green-400 bg-green-950/50' : 'text-red-400 bg-red-950/50'}`}>
-                                                {c.type.toUpperCase()}
-                                            </span>
-                                        </div>
-                                        <div className="flex flex-wrap justify-center md:justify-start gap-2 mt-4">
-                                            <span className="text-[10px] bg-slate-800 px-2 py-1 rounded-md text-slate-400 font-medium uppercase tracking-wider">Score: {Math.round(c.score)}</span>
-                                            {c.tags.map((t, x) => (
-                                                <span key={x} className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase ${t.includes('BTC') ? 'bg-yellow-950/50 text-yellow-300' : 'bg-slate-800 text-slate-400'}`}>
-                                                    {t}
-                                                </span>
-                                            ))}
-                                        </div>
+                                    <div className="flex gap-2 text-[9px] text-zinc-600">
+                                        <span>ACC: {Math.round(c.score)}%</span>
+                                        {c.tags.slice(0, 1).map((t, x) => <span key={x} className="text-zinc-500">| {t}</span>)}
                                     </div>
+                                </div>
 
-                                    {/* DATA BLOCK (CHIQUE EN STRAK) */}
-                                    <div className="grid grid-cols-3 gap-5 w-full md:w-auto bg-slate-950 p-5 rounded-xl border border-slate-800">
-                                        <div className="text-center">
-                                            <p className="text-[11px] text-slate-500 uppercase font-medium tracking-wider">Entry</p>
-                                            <p className="font-mono font-bold text-lg md:text-xl text-white mt-1">${c.entry}</p>
-                                        </div>
-                                        <div className="text-center border-x border-slate-800 px-5">
-                                            <p className="text-[11px] text-green-500 uppercase font-medium tracking-wider">Target</p>
-                                            <p className="font-mono font-bold text-lg md:text-xl text-green-500 mt-1">${c.tp2}</p>
-                                        </div>
-                                        <div className="text-center">
-                                            <p className="text-[11px] text-red-500 uppercase font-medium tracking-wider">Stop</p>
-                                            <p className="font-mono font-bold text-lg md:text-xl text-red-500 mt-1">${c.sl}</p>
-                                        </div>
-                                    </div>
+                                {/* DATA POINTS */}
+                                <div className="text-center text-sm font-medium text-zinc-300">
+                                    ${c.entry}
+                                </div>
 
-                                    {/* ACTIE KNOP (ELEGANT DONKER) */}
+                                <div className="text-center">
+                                    <div className="text-sm text-emerald-500 font-bold">${c.tp2}</div>
+                                    <div className="text-[9px] text-zinc-600">LIMIT_ORDER</div>
+                                </div>
+
+                                <div className="text-center">
+                                    <div className="text-sm text-rose-500/80">${c.sl}</div>
+                                    <div className="text-[9px] text-zinc-600">STRUCTURAL_STOP</div>
+                                </div>
+
+                                {/* ACTION */}
+                                <div className="text-right">
                                     <button 
                                         onClick={() => copySignal(c)} 
-                                        className="w-full md:w-auto bg-slate-800 hover:bg-slate-700 text-white px-7 py-3.5 rounded-lg font-bold uppercase text-[11px] tracking-wider transition-colors active:scale-95"
+                                        className="text-[10px] text-zinc-500 hover:text-white border-b border-transparent hover:border-white transition-all pb-0.5"
                                     >
-                                        Copy Signal
+                                        COPY_DATA
                                     </button>
                                 </div>
                             </div>
                         ))}
                     </div>
                 ) : (
-                    <div className="py-24 text-center border-2 border-dashed border-slate-800 rounded-2xl bg-slate-900/40">
-                        {loading ? (
-                            <p className="text-yellow-400 font-medium animate-pulse">Markt wordt geanalyseerd...</p>
-                        ) : (
-                            <div>
-                                <span className="text-4xl text-slate-700">✦</span>
-                                <p className="text-slate-500 font-medium text-lg mt-5">De markt is op dit moment te zwak voor een betrouwbaar signaal.</p>
-                                <p className="text-slate-600 text-sm mt-2">Geen munten boven de minimumscore van 50.</p>
-                            </div>
-                        )}
+                    <div className="py-40 text-center border border-zinc-900 bg-zinc-950/20">
+                        <p className="text-[11px] tracking-[0.3em] text-zinc-700 uppercase">
+                            {loading ? "Decrypting_Market_Flow..." : "No_High_Conviction_Assets_Found"}
+                        </p>
                     </div>
                 )}
 
-                <footer className="mt-20 pt-8 border-t border-slate-800 text-center text-slate-700 text-xs">
-                    Professional Trading Tools &copy; 2024. Use with discipline.
+                {/* --- FOOTER --- */}
+                <footer className="mt-32 pt-8 border-t border-zinc-900 flex justify-between text-[9px] text-zinc-700 tracking-widest">
+                    <span>V2.1 // QUANT_LOGIC</span>
+                    <span>&copy; 2026 ALPHA_MODULAR_SYSTEMS</span>
+                    <span>SECURE_CONNECTION</span>
                 </footer>
             </div>
         </main>
