@@ -41,8 +41,10 @@ export async function GET() {
                 try {
                     const res = await axios.get(`https://api.mexc.com/api/v3/klines?symbol=${symbol}&interval=60m&limit=250`);
                     if (res.data && res.data.length > 200) {
-                        const indicatorData = calculateCryptoCroc(res.data);
-                        // DE KILL-SWITCH IS WEG. Alles mag door, we sorteren puur op rankScore.
+                        // FIX: We geven de btcTrend nu mee aan de rekenmachine!
+                        const indicatorData = calculateCryptoCroc(res.data, btcTrend);
+                        
+                        if (indicatorData.signal === "NEUTRAAL") return null;
                         return { symbol, ...indicatorData };
                     }
                 } catch (e) { return null; } 
@@ -52,7 +54,6 @@ export async function GET() {
             results.push(...batchResults.filter(Boolean));
         }
 
-        // Sorteer het volledige universum op de nieuwe rankScore
         const sortedResults = results.sort((a, b) => b.rankScore - a.rankScore);
         
         return NextResponse.json({ success: true, data: sortedResults, btcTrend: btcTrend });
