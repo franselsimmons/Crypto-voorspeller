@@ -1,0 +1,48 @@
+import { NextResponse } from 'next/server';
+import axios from 'axios';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(request) {
+    const { searchParams } = new URL(request.url);
+    const symbol = searchParams.get('symbol');
+
+    if (!symbol) return NextResponse.json({ success: false, error: "Geen coin opgegeven" });
+
+    try {
+        // Haal huidige prijs en het orderboek (tot 1000 orders diep) op
+        const [priceRes, depthRes] = await Promise.all([
+            axios.get(`https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`),
+            axios.get(`https://api.mexc.com/api/v3/depth?symbol=${symbol}&limit=1000`)
+        ]);
+
+        const currentPrice = parseFloat(priceRes.data.price);
+        const { bids, asks } = depthRes.data; // Bids = kopers, Asks = verkopers
+
+        // Zoek de grootste KOPERS muur (Support) in het orderboek
+        let maxBidVol = 0;
+        let supportPrice = 0;
+        bids.forEach(b => {
+            const vol = parseFloat(b[0]) * parseFloat(b[1]); // Prijs * Aantal
+            if(vol > maxBidVol) { maxBidVol = vol; supportPrice = parseFloat(b[0]); }
+        });
+
+        // Zoek de grootste VERKOPERS muur (Resistance) in het orderboek
+        let maxAskVol = 0;
+        let resistPrice = 0;
+        asks.forEach(a => {
+            const vol = parseFloat(a[0]) * parseFloat(a[1]);
+            if(vol > maxAskVol) { maxAskVol = vol; resistPrice = parseFloat(a[0]); }
+        });
+
+        return NextResponse.json({ 
+            success: true, 
+            currentPrice: currentPrice.toFixed(4), 
+            support: supportPrice.toFixed(4), 
+            resistance: resistPrice.toFixed(4) 
+        });
+
+    } catch (error) {
+        return NextResponse.json({ success: false, error: "Kan orderboek niet uitlezen" }, { status: 500 });
+    }
+}
