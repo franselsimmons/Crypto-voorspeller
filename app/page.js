@@ -19,15 +19,14 @@ export default function Home() {
         setLoading(false);
     };
 
-    // Haal data op bij het inladen, en refresh elke 5 minuten
     useEffect(() => {
         fetchSignals();
-        const interval = setInterval(fetchSignals, 5 * 60 * 1000);
+        const interval = setInterval(fetchSignals, 5 * 60 * 1000); // 5 minuten refresh
         return () => clearInterval(interval);
     }, []);
 
     return (
-        <main className="min-h-screen bg-gray-900 text-white p-8 font-sans">
+        <main className="min-h-screen p-8 font-sans">
             <div className="max-w-5xl mx-auto">
                 <header className="mb-8 flex justify-between items-center">
                     <div>
