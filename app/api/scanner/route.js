@@ -21,6 +21,7 @@ export async function GET() {
         const contractRes = await axios.get('https://contract.mexc.com/api/v1/contract/ticker');
         const allContracts = contractRes.data.data || [];
         
+        // Pak ALLE USDT futures contracten (geen restricties meer)
         const futuresCoins = allContracts
             .filter(t => t.symbol.endsWith('_USDT'))
             .sort((a, b) => parseFloat(b.amount24) - parseFloat(a.amount24))
@@ -28,6 +29,7 @@ export async function GET() {
 
         let results = [];
         
+        // Scan de hele markt in batches van 25
         for (let i = 0; i < futuresCoins.length; i += 25) {
             const batch = futuresCoins.slice(i, i + 25);
             const promises = batch.map(async (symbol) => {
@@ -56,23 +58,20 @@ export async function GET() {
 
         let validSetups = results.filter(Boolean);
 
-        // =========================================================
-        // JOUW SORTEER LOGICA: RSI IS KONING
-        // =========================================================
+        // --- SORTEER LOGICA: RSI BEPAALT DE VOLGORDE ---
         if (btcTrend === 'long') {
-            // BTC is LONG -> We willen alleen DIPS (RSI onder 50)
-            // We sorteren oplopend: de LAAGSTE RSI (meest oversold) komt bovenaan
+            // BTC is LONG: We willen DIPS. Pak alle Long signalen en sorteer op LAAGSTE RSI.
             validSetups = validSetups
                 .filter(c => c.type === 'long')
                 .sort((a, b) => parseFloat(a.rsi) - parseFloat(b.rsi));
         } else {
-            // BTC is SHORT -> We willen alleen RIPS (RSI boven 50)
-            // We sorteren aflopend: de HOOGSTE RSI (meest overbought) komt bovenaan
+            // BTC is SHORT: We willen RIPS. Pak alle Short signalen en sorteer op HOOGSTE RSI.
             validSetups = validSetups
                 .filter(c => c.type === 'short')
                 .sort((a, b) => parseFloat(b.rsi) - parseFloat(a.rsi));
         }
 
+        // Pak de absolute top 10 van dat moment
         const top10 = validSetups.slice(0, 10);
         return NextResponse.json({ success: true, data: top10, btcTrend });
         
