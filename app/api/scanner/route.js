@@ -5,7 +5,7 @@ import { classifyRegime, calculateSpreadZScore, calculateOFI, evaluateTrade } fr
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; 
 
-// Thematische Baskets (Cointegratie-kandidaten) met werkende configuratie
+// Thematische Baskets (Cointegratie-kandidaten)
 const BASKETS =;
 
 async function fetchMarketData(symbol) {
@@ -17,7 +17,6 @@ async function fetchMarketData(symbol) {
 
         let klines =;
         const dataObj = klinesRes.data.data;
-        // Fix de array mapping crash
         if (dataObj && dataObj.close) {
             for (let i = 0; i < dataObj.close.length; i++) {
                 klines.push([
@@ -40,7 +39,6 @@ async function fetchMarketData(symbol) {
 
 export async function GET() {
     try {
-        // 1. Bepaal Macro Regime
         const btcData = await fetchMarketData("BTC_USDT");
         if (!btcData |
 
@@ -51,7 +49,6 @@ export async function GET() {
 
         let executions =;
 
-        // 2. Scan Thematische Baskets
         for (const pair of BASKETS) {
             try {
                 const dataA = pair.legA === "BTC_USDT"? btcData : await fetchMarketData(pair.legA);
@@ -59,15 +56,11 @@ export async function GET() {
 
                 if (!dataA.klines.length ||!dataB.klines.length) continue;
 
-                // A. StatArb Core (Z-Score)
                 const spreadData = calculateSpreadZScore(dataA.klines, dataB.klines, pair.hedge);
-
-                // B. Orderbook Execution Filter (OFI)
                 const ofiA = calculateOFI(dataA.depth);
                 const ofiB = calculateOFI(dataB.depth);
                 const bookConfirmation = (ofiA.confirmation + ofiB.confirmation) / 2;
 
-                // C. Synthetische Evaluatie
                 const evaluation = evaluateTrade(spreadData.zScore, marketRegime.confidence, bookConfirmation);
 
                 if (evaluation.action!== "FLAT") {
