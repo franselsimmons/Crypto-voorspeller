@@ -7,7 +7,7 @@ export const maxDuration = 300;
 
 export async function GET() {
     try {
-        let btcTrend = 'long'; // Default fallback
+        let btcTrend = 'long'; 
         try {
             const btcRes = await axios.get(`https://contract.mexc.com/api/v1/contract/kline/BTC_USDT?interval=Min60&limit=100`);
             const btcCloses = btcRes.data.data.close.map(c => parseFloat(c));
@@ -24,13 +24,12 @@ export async function GET() {
         const futuresCoins = allContracts
             .filter(t => t.symbol.endsWith('_USDT'))
             .sort((a, b) => parseFloat(b.amount24) - parseFloat(a.amount24))
-            .slice(0, 80)
             .map(t => t.symbol);
 
         let results = [];
         
-        for (let i = 0; i < futuresCoins.length; i += 10) {
-            const batch = futuresCoins.slice(i, i + 10);
+        for (let i = 0; i < futuresCoins.length; i += 25) {
+            const batch = futuresCoins.slice(i, i + 25);
             const promises = batch.map(async (symbol) => {
                 try {
                     const res = await axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min60&limit=200`);
@@ -46,7 +45,6 @@ export async function GET() {
                         }
                         
                         const analysis = calculateCryptoCroc(formattedKlines, btcTrend);
-                        // DE FIX: We sturen de coin ALTIJD door naar de verzamellijst, ongeacht de score!
                         return { symbol, ...analysis };
                     }
                     return null;
@@ -56,8 +54,26 @@ export async function GET() {
             results.push(...batchRes.filter(Boolean));
         }
 
-        // Sorteer de hele berg coins van hoog naar laag en pak de top 10
-        const top10 = results.sort((a, b) => b.score - a.score).slice(0, 10);
+        let validSetups = results.filter(Boolean);
+
+        // =========================================================
+        // JOUW SORTEER LOGICA: RSI IS KONING
+        // =========================================================
+        if (btcTrend === 'long') {
+            // BTC is LONG -> We willen alleen DIPS (RSI onder 50)
+            // We sorteren oplopend: de LAAGSTE RSI (meest oversold) komt bovenaan
+            validSetups = validSetups
+                .filter(c => c.type === 'long')
+                .sort((a, b) => parseFloat(a.rsi) - parseFloat(b.rsi));
+        } else {
+            // BTC is SHORT -> We willen alleen RIPS (RSI boven 50)
+            // We sorteren aflopend: de HOOGSTE RSI (meest overbought) komt bovenaan
+            validSetups = validSetups
+                .filter(c => c.type === 'short')
+                .sort((a, b) => parseFloat(b.rsi) - parseFloat(a.rsi));
+        }
+
+        const top10 = validSetups.slice(0, 10);
         return NextResponse.json({ success: true, data: top10, btcTrend });
         
     } catch (e) { 
