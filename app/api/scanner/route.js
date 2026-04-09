@@ -29,13 +29,20 @@ function processData(dataObj, btcTrend, fundingRate) {
 
 function applyStrictFilter(setups, btcTrend) {
     let valid = setups.filter(Boolean);
+    let confirmed = [], watch = [];
+
     if (btcTrend === 'long') {
-        return valid.filter(c => c.type === 'long' && parseFloat(c.rsi) <= 35)
-                    .sort((a, b) => b.score - a.score).slice(0, 5); // Hoogste score (met squeeze bonus) eerst
+        confirmed = valid.filter(c => c.status === 'trigger' && c.type === 'long')
+                         .sort((a, b) => b.score - a.score).slice(0, 5);
+        watch = valid.filter(c => c.status === 'watch' && c.type === 'long')
+                     .sort((a, b) => parseFloat(a.rsi) - parseFloat(b.rsi)).slice(0, 10);
     } else {
-        return valid.filter(c => c.type === 'short' && parseFloat(c.rsi) >= 65)
-                    .sort((a, b) => b.score - a.score).slice(0, 5);
+        confirmed = valid.filter(c => c.status === 'trigger' && c.type === 'short')
+                         .sort((a, b) => b.score - a.score).slice(0, 5);
+        watch = valid.filter(c => c.status === 'watch' && c.type === 'short')
+                     .sort((a, b) => parseFloat(b.rsi) - parseFloat(a.rsi)).slice(0, 10);
     }
+    return { confirmed, watch };
 }
 
 export async function GET() {
@@ -47,7 +54,6 @@ export async function GET() {
         const contractRes = await axios.get('https://contract.mexc.com/api/v1/contract/ticker');
         const allContracts = contractRes.data.data || [];
         
-        // Sla de funding rate op in een database (Map)
         const fundingMap = {};
         const futuresCoins = allContracts
             .filter(t => {
@@ -83,9 +89,9 @@ export async function GET() {
 
             const batchRes = (await Promise.all(promises)).filter(Boolean);
             batchRes.forEach(r => {
-                if(r.m15.type !== "neutral") results15m.push(r.m15);
-                if(r.h1.type !== "neutral") results1h.push(r.h1);
-                if(r.h4.type !== "neutral") results4h.push(r.h4);
+                if(r.m15.status !== "none") results15m.push(r.m15);
+                if(r.h1.status !== "none") results1h.push(r.h1);
+                if(r.h4.status !== "none") results4h.push(r.h4);
             });
         }
 
