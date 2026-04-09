@@ -40,14 +40,22 @@ export default function Home() {
             {coins.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {coins.map((c, i) => (
-                        <div key={i} className={`relative bg-zinc-950/40 border border-zinc-900 p-5 hover:bg-zinc-900/40 transition-all ${i === 0 ? 'border-l-2 border-l-amber-600' : ''}`}>
+                        <div key={i} className={`relative bg-zinc-950/40 border border-zinc-900 p-5 hover:bg-zinc-900/40 transition-all ${c.isSqueeze ? 'border-l-2 border-l-purple-600 bg-purple-900/10' : ''}`}>
                             <div className="flex justify-between items-start mb-4">
                                 <div>
                                     <div className="text-xl font-bold text-white">{c.symbol.replace('_USDT', '')}</div>
-                                    <div className="flex gap-3 items-center mt-1">
+                                    <div className="flex gap-3 items-center mt-1 flex-wrap">
                                         <span className={`text-[10px] font-bold ${c.type === 'long' ? 'text-emerald-500' : 'text-rose-500'}`}>{c.type}</span>
                                         <span className="text-[8px] text-zinc-500">RSI: {c.rsi}</span>
+                                        <span className={`text-[8px] border px-1.5 py-0.5 rounded-sm ${c.fundingRate.includes('-') ? 'text-emerald-400 border-emerald-900/50' : 'text-rose-400 border-rose-900/50'}`}>
+                                            FUNDING: {c.fundingRate}
+                                        </span>
                                     </div>
+                                    {c.isSqueeze && (
+                                        <div className="mt-2 text-[8px] tracking-widest font-bold text-purple-400 animate-pulse">
+                                            [ LIQUIDATION SQUEEZE DETECTED ]
+                                        </div>
+                                    )}
                                 </div>
                                 <button onClick={() => copySignal(c, timeframeLabel)} className="text-[8px] text-zinc-500 border border-zinc-800 px-3 py-1 hover:text-white">COPY</button>
                             </div>
@@ -72,21 +80,21 @@ export default function Home() {
             <div className="max-w-6xl mx-auto">
                 <header className="flex flex-col md:flex-row justify-between items-start md:items-baseline mb-12 gap-6">
                     <div>
-                        <h1 className="text-2xl font-bold text-white tracking-[0.2em]">CRYPTO<span className="text-zinc-600">CROC</span> // OMNI_TERMINAL</h1>
-                        <p className="mt-2 text-[9px] tracking-widest text-emerald-500 italic">MTF_SCANNER_ACTIVE</p>
+                        <h1 className="text-2xl font-bold text-white tracking-[0.2em]">CRYPTO<span className="text-zinc-600">CROC</span> // QUANT_TERMINAL</h1>
+                        <p className="mt-2 text-[9px] tracking-widest text-purple-500 italic">SMART_MONEY_RADAR_ACTIVE</p>
                     </div>
                     <button 
                         onClick={scanMarket} 
                         disabled={loading} 
                         className="w-full md:w-auto border border-zinc-800 hover:border-zinc-200 hover:text-white px-8 py-3 text-[10px] transition-all disabled:opacity-20 bg-zinc-950"
                     >
-                        {loading ? "[ RUNNING_OMNI_SCAN ]" : "[ EXECUTE_OMNI_SCAN ]"}
+                        {loading ? "[ SCANNING_LIQUIDATIONS ]" : "[ EXECUTE_QUANT_SCAN ]"}
                     </button>
                 </header>
 
                 {loading ? (
                     <div className="py-32 text-center">
-                        <p className="text-[10px] tracking-[0.3em] text-zinc-600 animate-pulse">Scanning_1000+_Data_Points...</p>
+                        <p className="text-[10px] tracking-[0.3em] text-zinc-600 animate-pulse">Analyzing_Funding_Rates & RSI_Hooks...</p>
                     </div>
                 ) : (
                     <>
@@ -97,7 +105,7 @@ export default function Home() {
                 )}
 
                 <footer className="mt-20 pt-8 border-t border-zinc-900 text-center text-[8px] text-zinc-800 tracking-[0.2em]">
-                    FUTURES_OMNI_TERMINAL_V5.0 // &copy; 2026 ACCESS_GRANTED
+                    QUANT_TERMINAL_V6.0 // &copy; 2026 SPECIAL_FORCES
                 </footer>
             </div>
         </main>
