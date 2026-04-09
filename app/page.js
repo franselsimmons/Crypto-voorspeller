@@ -2,7 +2,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export default function Home() {
-    // FIX: React UseState correct initialiseren
     const = useState({ executions:, marketRegime: {} });
     const [loading, setLoading] = useState(false);
 
@@ -94,7 +93,7 @@ export default function Home() {
 
 | engineData.executions.length === 0) &&!loading && (
                         <div className="py-20 text-center border border-zinc-900 bg-zinc-950/20">
-                            <p className="text-[10px] tracking-[0.2em] text-zinc-700">WAITING_FOR_DATA_STREAM</p>
+                            <p className="text-[10px] tracking-[0.2em] text-zinc-700">WAITING_FOR_STATIONARY_DISLOCATIONS</p>
                         </div>
                     )}
                 </div>
