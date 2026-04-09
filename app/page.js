@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export default function Home() {
+    // FIX: React UseState correct initialiseren
     const = useState({ executions:, marketRegime: {} });
     const [loading, setLoading] = useState(false);
 
@@ -10,7 +11,9 @@ export default function Home() {
         try {
             const res = await fetch('/api/scanner');
             const result = await res.json();
-            if (result.success) setEngineData(result);
+            if (result.success) {
+                setEngineData(result);
+            }
         } catch (e) { console.error(e); }
         setLoading(false);
     },);
@@ -22,7 +25,7 @@ export default function Home() {
         if (regime.includes('CALM')) return 'text-emerald-400';
         if (regime.includes('BULL')) return 'text-blue-400';
         if (regime.includes('BEAR')) return 'text-orange-400';
-        return 'text-rose-500';
+        return 'text-rose-500'; 
     };
 
     return (
@@ -32,11 +35,9 @@ export default function Home() {
                     <div>
                         <h1 className="text-2xl font-bold text-white tracking-[0.2em]">STAT_ARB <span className="text-zinc-600">// EXECUTION_CORE</span></h1>
                         <div className="flex gap-4 mt-3 text-[10px] tracking-widest text-zinc-500">
-                            <span>GOVERNOR_STATE: <span className={`font-bold ${getRegimeColor(engineData.marketRegime?.regime)}`}>
-                                {engineData.marketRegime?.regime |
+                            <span>GOVERNOR_STATE: <span className={`font-bold ${getRegimeColor(engineData.marketRegime?.regime)}`}>{engineData.marketRegime?.regime |
 
-| 'INITIALIZING'}
-                            </span></span>
+| 'INITIALIZING'}</span></span>
                             <span>REGIME_CONFIDENCE: <span className="text-white">{engineData.marketRegime?.confidence |
 
 | 0}</span></span>
@@ -58,7 +59,7 @@ export default function Home() {
                                 <div>
                                     <div className="text-xl font-bold text-white tracking-widest mb-1">{trade.basket}</div>
                                     <div className="flex gap-3 items-center">
-                                        <span className="text-[10px] font-bold px-2 py-0.5 border border-emerald-500 text-emerald-400">
+                                        <span className={`text-[10px] font-bold px-2 py-0.5 border ${trade.action!== 'FLAT'? 'border-emerald-500 text-emerald-400' : 'border-zinc-700 text-zinc-500'}`}>
                                             ACTION: {trade.action}
                                         </span>
                                         <span className="text-[10px] text-zinc-500 tracking-[0.1em]">TRADE_SCORE: {trade.score.toFixed(1)}</span>
@@ -66,23 +67,23 @@ export default function Home() {
                                 </div>
                                 <div className="text-right">
                                     <div className="text-[10px] text-zinc-600 mb-1">Z_SCORE DISLOCATION</div>
-                                    <div className={`font-mono text-lg font-bold ${Math.abs(trade.zScore) > 2.0? 'text-amber-400' : 'text-zinc-300'}`}>{trade.zScore}</div>
+                                    <div className={`font-mono text-lg font-bold ${Math.abs(trade.zScore) > 2? 'text-amber-400' : 'text-zinc-300'}`}>{trade.zScore}</div>
                                 </div>
                             </div>
                             
                             <div className="grid grid-cols-2 gap-4 border-t border-zinc-900/50 pt-5">
                                 <div className="flex justify-between items-center bg-zinc-900/30 p-3 border border-zinc-800/50">
-                                    <span className="text-[10px] font-bold text-white">LEG A: {trade.legA}</span>
+                                    <span className="text-[10px] font-bold text-white">LEG_A: {trade.legA}</span>
                                     <div className="text-right">
-                                        <span className="text-[8px] text-zinc-600 block">ORDER_FLOW_IMBALANCE</span>
-                                        <span className={`text-[10px] font-bold ${parseFloat(trade.imbalanceA) > 0? 'text-emerald-500' : 'text-rose-500'}`}>{trade.imbalanceA}</span>
+                                        <span className="text-[8px] text-zinc-600 block">ORDERBOOK_IMBALANCE</span>
+                                        <span className={`text-[10px] ${parseFloat(trade.imbalanceA) > 0? 'text-emerald-500' : 'text-rose-500'}`}>{trade.imbalanceA}</span>
                                     </div>
                                 </div>
                                 <div className="flex justify-between items-center bg-zinc-900/30 p-3 border border-zinc-800/50">
-                                    <span className="text-[10px] font-bold text-white">LEG B: {trade.legB}</span>
+                                    <span className="text-[10px] font-bold text-white">LEG_B: {trade.legB}</span>
                                     <div className="text-right">
-                                        <span className="text-[8px] text-zinc-600 block">ORDER_FLOW_IMBALANCE</span>
-                                        <span className={`text-[10px] font-bold ${parseFloat(trade.imbalanceB) > 0? 'text-emerald-500' : 'text-rose-500'}`}>{trade.imbalanceB}</span>
+                                        <span className="text-[8px] text-zinc-600 block">ORDERBOOK_IMBALANCE</span>
+                                        <span className={`text-[10px] ${parseFloat(trade.imbalanceB) > 0? 'text-emerald-500' : 'text-rose-500'}`}>{trade.imbalanceB}</span>
                                     </div>
                                 </div>
                             </div>
@@ -93,7 +94,7 @@ export default function Home() {
 
 | engineData.executions.length === 0) &&!loading && (
                         <div className="py-20 text-center border border-zinc-900 bg-zinc-950/20">
-                            <p className="text-[10px] tracking-[0.2em] text-zinc-700">NO_STATIONARY_DISLOCATIONS_DETECTED</p>
+                            <p className="text-[10px] tracking-[0.2em] text-zinc-700">WAITING_FOR_DATA_STREAM</p>
                         </div>
                     )}
                 </div>
