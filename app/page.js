@@ -61,7 +61,9 @@ export default function Home() {
                                             <span className={`text-[10px] font-bold ${c.type === 'long' ? 'text-emerald-500' : 'text-rose-500'}`}>
                                                 {c.type}
                                             </span>
-                                            <span className="text-[8px] text-zinc-600 tracking-[0.2em]">CONFIDENCE: {Math.round(c.score)}%</span>
+                                            <span className="text-[8px] text-zinc-600 tracking-[0.2em]">
+                                                RSI: {c.rsi} // CONFIDENCE: {Math.round(c.score)}%
+                                            </span>
                                         </div>
                                     </div>
                                     <button onClick={() => copySignal(c)} className="text-[9px] text-zinc-500 border border-zinc-800 px-3 py-1.5 hover:text-white hover:border-zinc-500">
@@ -88,13 +90,13 @@ export default function Home() {
                 ) : (
                     <div className="py-32 text-center border border-zinc-900 bg-zinc-950/20">
                         <p className="text-[10px] tracking-[0.3em] text-zinc-700 uppercase">
-                            {loading ? "Decrypting_Market_Flow..." : "Waiting_For_High_Conviction_Alpha"}
+                            {loading ? "Decrypting_Market_Flow..." : "Waiting_For_Market_Data"}
                         </p>
                     </div>
                 )}
 
                 <footer className="mt-20 pt-8 border-t border-zinc-900 flex flex-col md:flex-row justify-between gap-4 text-[8px] text-zinc-800 tracking-[0.2em]">
-                    <span>FUTURES_TERMINAL_V2.2</span>
+                    <span>FUTURES_TERMINAL_V3.0</span>
                     <span>&copy; 2026 ACCESS_GRANTED</span>
                 </footer>
             </div>
