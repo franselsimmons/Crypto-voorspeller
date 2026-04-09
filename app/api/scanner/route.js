@@ -5,31 +5,53 @@ import { classifyRegime, calculateSpreadZScore, calculateOFI, evaluateTrade } fr
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; 
 
-// Multivariate Cointegratie Baskets (Statisch berekende v1 paren)
+// Thematische Baskets (Cointegratie-kandidaten) met werkende configuratie
 const BASKETS =;
 
 async function fetchMarketData(symbol) {
-    const klinesRes = await axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min15&limit=200`);
-    const depthRes = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=20`);
-    
-    return {
-        klines: klinesRes.data.data.close? klinesRes.data.data.close.map((c, i) =>, klinesRes.data.data.open[i], klinesRes.data.data.high[i], 
-            klinesRes.data.data.low[i], c, klinesRes.data.data.vol[i]) :,
-        depth: depthRes.data.data |
+    try {
+        const = await Promise.all([
+            axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min15&limit=200`),
+            axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=20`)
+        ]);
+
+        let klines =;
+        const dataObj = klinesRes.data.data;
+        // Fix de array mapping crash
+        if (dataObj && dataObj.close) {
+            for (let i = 0; i < dataObj.close.length; i++) {
+                klines.push([
+                    dataObj.time[i], dataObj.open[i], dataObj.high[i], 
+                    dataObj.low[i], dataObj.close[i], dataObj.vol[i]);
+            }
+        }
+        
+        return {
+            klines: klines,
+            depth: depthRes.data.data |
 
 | { bids:, asks: }
-    };
+        };
+    } catch (e) {
+        console.error(`Fout bij ophalen data voor ${symbol}:`, e.message);
+        return { klines:, depth: { bids:, asks: } };
+    }
 }
 
 export async function GET() {
     try {
-        // 1. BEPAAL HET MACRO REGIME (De Kameleon)
+        // 1. Bepaal Macro Regime
         const btcData = await fetchMarketData("BTC_USDT");
+        if (!btcData |
+
+| btcData.klines.length === 0) {
+            return NextResponse.json({ success: false, error: "BTC data onbeschikbaar" }, { status: 500 });
+        }
         const marketRegime = classifyRegime(btcData.klines);
 
         let executions =;
 
-        // 2. ITEREER OVER BEWEZEN BASKETS
+        // 2. Scan Thematische Baskets
         for (const pair of BASKETS) {
             try {
                 const dataA = pair.legA === "BTC_USDT"? btcData : await fetchMarketData(pair.legA);
@@ -48,7 +70,6 @@ export async function GET() {
                 // C. Synthetische Evaluatie
                 const evaluation = evaluateTrade(spreadData.zScore, marketRegime.confidence, bookConfirmation);
 
-                // Filter posities die niet aan execution requirements voldoen
                 if (evaluation.action!== "FLAT") {
                     executions.push({
                         basket: pair.id,
@@ -66,7 +87,6 @@ export async function GET() {
             }
         }
 
-        // Sorteer op de synthese van dislocation, regime en ofi
         const sortedExecutions = executions.sort((a, b) => b.score - a.score);
 
         return NextResponse.json({ 
@@ -76,6 +96,6 @@ export async function GET() {
         });
 
     } catch (e) { 
-        return NextResponse.json({ success: false, error: e.message }); 
+        return NextResponse.json({ success: false, error: e.message }, { status: 500 }); 
     }
 }
