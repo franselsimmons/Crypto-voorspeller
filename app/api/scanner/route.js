@@ -1,109 +1,77 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import { calculateCryptoCroc } from '../../../lib/cryptocroc';
+import { classifyRegime, calculateSpreadZScore, calculateOFI, evaluateTrade } from '../../../lib/quantEngine';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; 
 
-const NON_CRYPTO = ['USOIL', 'UKOIL', 'COPSTOCK', 'CHECK', 'ESP', 'BTW', 'ATH', 'LA', 'APR', 'BMT', 'SP500', 'NAS100', 'CRMSTOCK', 'TSLA', 'AAPL'];
+// Thematische Baskets (Voorbeeld van Cointegratie-kandidaten)
+const BASKETS =;
 
-async function getBtcTrend(interval) {
-    try {
-        const res = await axios.get(`https://contract.mexc.com/api/v1/contract/kline/BTC_USDT?interval=${interval}&limit=100`);
-        const closes = res.data.data.close.map(c => parseFloat(c));
-        const k = 2 / (50 + 1);
-        let ema = closes[0];
-        for (let i = 1; i < closes.length; i++) { ema = (closes[i] - ema) * k + ema; }
-        return closes[closes.length - 1] >= ema ? 'long' : 'short';
-    } catch (e) { return 'long'; }
-}
-
-function processData(dataObj, btcTrend, fundingRate) {
-    if (!dataObj || !dataObj.close || dataObj.close.length < 150) return null;
-    const formatted = dataObj.close.map((_, j) => [
-        dataObj.time[j], dataObj.open[j], dataObj.high[j], 
-        dataObj.low[j], dataObj.close[j], dataObj.vol[j]
-    ]);
-    return calculateCryptoCroc(formatted, btcTrend, fundingRate);
-}
-
-function applyStrictFilter(setups, btcTrend) {
-    let valid = setups.filter(Boolean);
-    let confirmed = [], watch = [];
-
-    if (btcTrend === 'long') {
-        confirmed = valid.filter(c => c.status === 'trigger' && c.type === 'long')
-                         .sort((a, b) => b.score - a.score).slice(0, 5);
-        watch = valid.filter(c => c.status === 'watch' && c.type === 'long')
-                     .sort((a, b) => parseFloat(a.rsi) - parseFloat(b.rsi)).slice(0, 10);
-    } else {
-        confirmed = valid.filter(c => c.status === 'trigger' && c.type === 'short')
-                         .sort((a, b) => b.score - a.score).slice(0, 5);
-        watch = valid.filter(c => c.status === 'watch' && c.type === 'short')
-                     .sort((a, b) => parseFloat(b.rsi) - parseFloat(a.rsi)).slice(0, 10);
-    }
-    return { confirmed, watch };
+async function fetchMarketData(symbol) {
+    const klinesRes = await axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min15&limit=200`);
+    const depthRes = await axios.get(`https://contract.mexc.com/api/v1/contract/depth/${symbol}?limit=20`);
+    return {
+        klines: klinesRes.data.data.close? klinesRes.data.data.close.map((c, i) =>, klinesRes.data.data.open[i], klinesRes.data.data.high[i], 
+            klinesRes.data.data.low[i], c, klinesRes.data.data.vol[i]) :,
+        depth: depthRes.data.data
+    };
 }
 
 export async function GET() {
     try {
-        const [btc15m, btc1h, btc4h] = await Promise.all([
-            getBtcTrend('Min15'), getBtcTrend('Min60'), getBtcTrend('Min240')
-        ]);
+        // 1. Bepaal Macro Regime (via BTC)
+        const btcData = await fetchMarketData("BTC_USDT");
+        const marketRegime = classifyRegime(btcData.klines);
 
-        const contractRes = await axios.get('https://contract.mexc.com/api/v1/contract/ticker');
-        const allContracts = contractRes.data.data || [];
-        
-        const fundingMap = {};
-        const futuresCoins = allContracts
-            .filter(t => {
-                const symbol = t.symbol.split('_')[0];
-                if(t.symbol.endsWith('_USDT') && !NON_CRYPTO.includes(symbol)) {
-                    fundingMap[t.symbol] = parseFloat(t.fundingRate || 0);
-                    return true;
-                }
-                return false;
-            })
-            .sort((a, b) => parseFloat(b.amount24) - parseFloat(a.amount24))
-            .map(t => t.symbol);
+        let executions =;
 
-        let results15m = [], results1h = [], results4h = [];
-        
-        for (let i = 0; i < futuresCoins.length; i += 10) {
-            const batch = futuresCoins.slice(i, i + 10);
-            const promises = batch.map(async (symbol) => {
-                try {
-                    const [res15, res60, res240] = await Promise.all([
-                        axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min15&limit=200`),
-                        axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min60&limit=200`),
-                        axios.get(`https://contract.mexc.com/api/v1/contract/kline/${symbol}?interval=Min240&limit=200`)
-                    ]);
-                    const fr = fundingMap[symbol];
-                    return {
-                        m15: { symbol, ...processData(res15.data.data, btc15m, fr) },
-                        h1: { symbol, ...processData(res60.data.data, btc1h, fr) },
-                        h4: { symbol, ...processData(res240.data.data, btc4h, fr) }
-                    };
-                } catch (e) { return null; }
-            });
+        // 2. Scan Thematische Baskets
+        for (const pair of BASKETS) {
+            try {
+                const dataA = pair.legA === "BTC_USDT"? btcData : await fetchMarketData(pair.legA);
+                const dataB = await fetchMarketData(pair.legB);
 
-            const batchRes = (await Promise.all(promises)).filter(Boolean);
-            batchRes.forEach(r => {
-                if(r.m15.status !== "none") results15m.push(r.m15);
-                if(r.h1.status !== "none") results1h.push(r.h1);
-                if(r.h4.status !== "none") results4h.push(r.h4);
-            });
+                if (!dataA.klines.length ||!dataB.klines.length) continue;
+
+                // A. StatArb Core (Z-Score)
+                const spreadData = calculateSpreadZScore(dataA.klines, dataB.klines, pair.hedge);
+
+                // B. Orderbook Execution Filter (OFI)
+                const ofiA = calculateOFI(dataA.depth);
+                const ofiB = calculateOFI(dataB.depth);
+                
+                // We nemen het gemiddelde bevestigingssignaal van het orderboek voor de spread
+                const bookConfirmation = (ofiA.confirmation + ofiB.confirmation) / 2;
+
+                // C. Evaluatie via de Synthetische Formule
+                const evaluation = evaluateTrade(spreadData.zScore, marketRegime.confidence, bookConfirmation);
+
+                executions.push({
+                    basket: pair.id,
+                    legA: pair.legA.replace('_USDT', ''),
+                    legB: pair.legB.replace('_USDT', ''),
+                    zScore: spreadData.zScore.toFixed(3),
+                    imbalanceA: (ofiA.imbalance * 100).toFixed(1) + '%',
+                    imbalanceB: (ofiB.imbalance * 100).toFixed(1) + '%',
+                    score: evaluation.finalScore,
+                    action: evaluation.action
+                });
+
+            } catch (e) {
+                console.error(`Error processing pair ${pair.id}:`, e.message);
+            }
         }
+
+        const sortedExecutions = executions.sort((a, b) => b.score - a.score);
 
         return NextResponse.json({ 
             success: true, 
-            data: { 
-                m15: applyStrictFilter(results15m, btc15m), 
-                h1: applyStrictFilter(results1h, btc1h), 
-                h4: applyStrictFilter(results4h, btc4h) 
-            }, 
-            btcTrends: { m15: btc15m, h1: btc1h, h4: btc4h } 
+            marketRegime, 
+            executions: sortedExecutions 
         });
-        
-    } catch (e) { return NextResponse.json({ success: false, error: e.message }); }
+
+    } catch (e) { 
+        return NextResponse.json({ success: false, error: e.message }); 
+    }
 }
