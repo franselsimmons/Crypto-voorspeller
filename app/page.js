@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 
 export default function Home() {
-  const = useState({
-    executions:,
+  const [engineData, setEngineData] = useState({
+    executions: [],
     marketRegime: {},
   });
   const [loading, setLoading] = useState(false);
@@ -26,7 +26,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  },);
+  }, []);
 
   useEffect(() => {
     runQuantEngine();
@@ -57,16 +57,14 @@ export default function Home() {
                     engineData.marketRegime?.regime
                   )}`}
                 >
-                  {engineData.marketRegime?.regime |
-
-| "INITIALIZING"}
+                  {engineData.marketRegime?.regime || "INITIALIZING"}
                 </span>
               </span>
 
               <span>
                 REGIME_CONFIDENCE:{" "}
                 <span className="text-white">
-                  {engineData.marketRegime?.confidence?? 0}
+                  {engineData.marketRegime?.confidence ?? 0}
                 </span>
               </span>
             </div>
@@ -77,7 +75,7 @@ export default function Home() {
             disabled={loading}
             className="w-full md:w-auto border border-zinc-800 hover:border-zinc-300 hover:text-white px-8 py-3 text-[10px] transition-all disabled:opacity-20 bg-zinc-950"
           >
-            {loading? "SCANNING..." : "RUN_SCAN"}
+            {loading ? "SCANNING..." : "RUN_SCAN"}
           </button>
         </header>
 
@@ -87,8 +85,8 @@ export default function Home() {
               <div
                 key={i}
                 className={`relative bg-zinc-950/40 border border-zinc-900 p-6 transition-all ${
-                  trade.action!== "FLAT"
-                   ? "border-l-2 border-l-emerald-500 bg-emerald-950/10"
+                  trade.action !== "FLAT"
+                    ? "border-l-2 border-l-emerald-500 bg-emerald-950/10"
                     : ""
                 }`}
               >
@@ -101,8 +99,8 @@ export default function Home() {
                     <div className="flex gap-3 items-center">
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 border ${
-                          trade.action!== "FLAT"
-                           ? "border-emerald-500 text-emerald-400"
+                          trade.action !== "FLAT"
+                            ? "border-emerald-500 text-emerald-400"
                             : "border-zinc-700 text-zinc-500"
                         }`}
                       >
@@ -122,7 +120,7 @@ export default function Home() {
                     <div
                       className={`font-mono text-lg font-bold ${
                         Math.abs(Number(trade.zScore)) > 2
-                         ? "text-amber-400"
+                          ? "text-amber-400"
                           : "text-zinc-300"
                       }`}
                     >
@@ -143,7 +141,7 @@ export default function Home() {
                       <span
                         className={`text-[10px] ${
                           parseFloat(trade.imbalanceA) > 0
-                           ? "text-emerald-500"
+                            ? "text-emerald-500"
                             : "text-rose-500"
                         }`}
                       >
@@ -163,7 +161,7 @@ export default function Home() {
                       <span
                         className={`text-[10px] ${
                           parseFloat(trade.imbalanceB) > 0
-                           ? "text-emerald-500"
+                            ? "text-emerald-500"
                             : "text-rose-500"
                         }`}
                       >
@@ -175,10 +173,8 @@ export default function Home() {
               </div>
             ))}
 
-          {(!engineData.executions |
-
-| engineData.executions.length === 0) &&
-           !loading && (
+          {(!engineData.executions || engineData.executions.length === 0) &&
+            !loading && (
               <div className="py-20 text-center border border-zinc-900 bg-zinc-950/20">
                 <p className="text-[10px] tracking-[0.2em] text-zinc-700">
                   WAITING_FOR_STATIONARY_DISLOCATIONS
