@@ -25,7 +25,7 @@ function createClient(): SqlClient | null {
 
 async function emptySqlResult<T extends any[] = any[]>(): Promise<T> {
   console.warn("DATABASE_URL missing. Returning empty SQL result.");
-  return [] as T;
+  return [] as unknown as T;
 }
 
 type SqlTag = {
