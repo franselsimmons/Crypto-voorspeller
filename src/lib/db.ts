@@ -9,61 +9,75 @@ let client: SqlClient | null = null;
 export const hasDatabase = Boolean(DATABASE_URL);
 
 function createClient(): SqlClient | null {
-  if (!DATABASE_URL) {
-    return null;
-  }
-
-  if (client) {
-    return client;
-  }
+  if (!DATABASE_URL) return null;
+  if (client) return client;
 
   client = postgres(DATABASE_URL, {
     max: 5,
     idle_timeout: 20,
     connect_timeout: 10,
     prepare: false,
-    ssl: DATABASE_URL.includes("sslmode=require")
-      ? "require"
-      : undefined
+    ssl: DATABASE_URL.includes("sslmode=require") ? "require" : undefined
   });
 
   return client;
 }
 
-async function emptySqlResult() {
+async function emptySqlResult<T extends any[] = any[]>(): Promise<T> {
   console.warn("DATABASE_URL missing. Returning empty SQL result.");
-  return [];
+  return [] as T;
 }
 
 type SqlTag = {
-  (strings: TemplateStringsArray, ...values: unknown[]): Promise<any[]>;
-  unsafe: (query: string, values?: unknown[]) => Promise<any[]>;
-  begin: <T>(fn: (tx: SqlClient) => Promise<T>) => Promise<T>;
+  <T extends any[] = any[]>(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T>;
+
+  unsafe: <T extends any[] = any[]>(
+    query: string,
+    values?: unknown[]
+  ) => Promise<T>;
+
+  begin: <T>(
+    fn: (tx: SqlClient) => Promise<T>
+  ) => Promise<T>;
+
   end: () => Promise<void>;
 };
 
 export const sql: SqlTag = Object.assign(
-  async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  async <T extends any[] = any[]>(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T> => {
     const db = createClient();
 
     if (!db) {
-      return emptySqlResult();
+      return emptySqlResult<T>();
     }
 
-    return db(strings, ...values);
+    const rows = await (db as any)(strings, ...values);
+    return rows as T;
   },
   {
-    unsafe: async (query: string, values: unknown[] = []) => {
+    unsafe: async <T extends any[] = any[]>(
+      query: string,
+      values: unknown[] = []
+    ): Promise<T> => {
       const db = createClient();
 
       if (!db) {
-        return emptySqlResult();
+        return emptySqlResult<T>();
       }
 
-      return db.unsafe(query, values);
+      const rows = await (db as any).unsafe(query, values);
+      return rows as T;
     },
 
-    begin: async <T>(fn: (tx: SqlClient) => Promise<T>) => {
+    begin: async <T>(
+      fn: (tx: SqlClient) => Promise<T>
+    ): Promise<T> => {
       const db = createClient();
 
       if (!db) {
@@ -73,7 +87,7 @@ export const sql: SqlTag = Object.assign(
       return db.begin(fn);
     },
 
-    end: async () => {
+    end: async (): Promise<void> => {
       if (!client) return;
 
       await client.end();
@@ -86,11 +100,11 @@ export async function dbQuery<T = any>(
   strings: TemplateStringsArray,
   ...values: unknown[]
 ): Promise<T[]> {
-  const rows = await sql(strings, ...values);
-  return rows as T[];
+  const rows = await sql<T[]>(strings, ...values);
+  return rows;
 }
 
-export async function closeDb() {
+export async function closeDb(): Promise<void> {
   await sql.end();
 }
 
