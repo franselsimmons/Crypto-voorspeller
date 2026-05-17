@@ -1,132 +1,107 @@
-import crypto from "crypto";
-import { saveTradeEvent } from "@/lib/store";
+import { normalizeWebhookBody, type NormalizedWebhookEvent } from "./normalize";
+import { saveTradeEvent } from "./store";
+import { verifyWebhookSignature } from "./security";
 
-type AnyRecord = Record<string, any>;
+type IngestResult = {
+  ok: boolean;
+  accepted: boolean;
+  deduped: boolean;
+  eventId: string;
+  eventType: string;
+  symbol: string | null;
+  side: string | null;
+  tradeId: string | null;
+  cohortKey: string | null;
+  saved?: unknown;
+};
 
-function isObject(value: unknown): value is AnyRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+type IngestOptions = {
+  signature?: string | null;
+  timestamp?: string | null;
+  secret?: string | null;
+  requireSignature?: boolean;
+};
 
-function normalizeSide(side: unknown): "LONG" | "SHORT" {
-  const s = String(side || "").toLowerCase();
-
-  if (["short", "bear", "sell", "bearish"].includes(s)) return "SHORT";
-
-  return "LONG";
-}
-
-function normalizeEventType(payload: AnyRecord): "ENTRY" | "EXIT" {
-  const rawType = String(payload.type || payload.eventType || payload.kind || "").toUpperCase();
-  const reason = String(payload.reason || payload.exitReason || "").toUpperCase();
-
-  if (rawType.includes("EXIT")) return "EXIT";
-  if (reason === "TP" || reason === "SL" || reason.includes("STOP") || reason.includes("TAKE")) return "EXIT";
-
-  return "ENTRY";
-}
-
-function stableHash(payload: AnyRecord) {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify(payload))
-    .digest("hex");
-}
-
-function pickNumber(...values: unknown[]) {
-  for (const value of values) {
-    const n = Number(value);
-    if (Number.isFinite(n)) return n;
+function shouldRequireSignature(options?: IngestOptions): boolean {
+  if (typeof options?.requireSignature === "boolean") {
+    return options.requireSignature;
   }
 
-  return null;
+  return Boolean(process.env.WEBHOOK_SECRET);
 }
 
-function pickString(...values: unknown[]) {
-  for (const value of values) {
-    if (value === undefined || value === null || value === "") continue;
-    return String(value);
+function assertValidBody(rawBody: string): void {
+  if (!rawBody || !rawBody.trim()) {
+    throw new Error("EMPTY_WEBHOOK_BODY");
+  }
+}
+
+function assertSignature(rawBody: string, options?: IngestOptions): void {
+  const requireSignature = shouldRequireSignature(options);
+
+  if (!requireSignature) return;
+
+  const secret = options?.secret || process.env.WEBHOOK_SECRET || "";
+  const signature = options?.signature || "";
+
+  if (!secret) {
+    throw new Error("WEBHOOK_SECRET_MISSING");
   }
 
-  return null;
-}
-
-function buildCohortKey(payload: AnyRecord) {
-  const analytics = isObject(payload.analytics) ? payload.analytics : {};
-  const market = isObject(payload.market) ? payload.market : {};
-  const ob = isObject(payload.ob) ? payload.ob : {};
-  const rsi = isObject(payload.rsi) ? payload.rsi : {};
-  const rr = isObject(payload.rr) ? payload.rr : {};
-  const structure = isObject(payload.structure) ? payload.structure : {};
-
-  const parts = [
-    `SETUP=${pickString(payload.setupClass, payload.class, analytics.setupClass) || "NA"}`,
-    `SIDE=${String(payload.side || "NA").toLowerCase()}`,
-    `REASON=${pickString(payload.entryReason, payload.reason, analytics.entryReason) || "NA"}`,
-    `RSI=${pickString(payload.rsiZone, rsi.rsiZone, rsi.zone) || "NA"}`,
-    `EDGE=${pickString(payload.rsiEdge, rsi.rsiEdge, rsi.edge) || "NA"}`,
-    `FLOW=${pickString(payload.flow, market.flow) || "NA"}`,
-    `BTC=${pickString(payload.btcState, market.btcState) || "NA"}`,
-    `OB=${pickString(payload.obBias, ob.bias) || "NA"}`,
-    `SPREAD=${pickString(payload.spreadBucket, ob.spreadBucket) || "NA"}`,
-    `DEPTH=${pickString(payload.depthBucket, ob.depthBucket) || "NA"}`,
-    `PULLBACK=${structure.pullbackConfirmed === true ? "YES" : "NO"}`,
-    `SWEEP=${structure.sweepConfirmed === true ? "YES" : "NO"}`,
-    `RETEST=${structure.retestConfirmed === true ? "YES" : "NO"}`,
-    `RR=${pickNumber(payload.finalRr, rr.finalRr) ?? "NA"}`
-  ];
-
-  return parts.join("|");
-}
-
-export async function ingestTradeSystemEvent(payload: unknown) {
-  if (!isObject(payload)) {
-    throw new Error("Webhook payload must be an object");
+  if (!signature) {
+    throw new Error("WEBHOOK_SIGNATURE_MISSING");
   }
 
-  const eventType = normalizeEventType(payload);
-  const symbol = String(payload.symbol || payload.coin || "UNKNOWN").toUpperCase();
-  const side = normalizeSide(payload.side);
+  const valid = verifyWebhookSignature(rawBody, signature, secret);
 
-  const eventId =
-    pickString(payload.eventId, payload.id, payload.tradeId) ||
-    `${symbol}-${side}-${eventType}-${stableHash(payload).slice(0, 24)}`;
+  if (!valid) {
+    throw new Error("WEBHOOK_SIGNATURE_INVALID");
+  }
+}
 
-  const cohortKey = pickString(payload.cohortKey) || buildCohortKey(payload);
-
-  const normalized = {
-    eventId,
-    eventType,
-    symbol,
-    side,
-    cohortKey,
-    createdAt: new Date().toISOString(),
-
-    entryPrice: pickNumber(payload.entry, payload.entryPrice, payload.price?.entry),
-    exitPrice: pickNumber(payload.exit, payload.exitPrice, payload.price?.exit),
-    tpPrice: pickNumber(payload.tp, payload.takeProfit, payload.price?.tp),
-    slPrice: pickNumber(payload.sl, payload.stopLoss, payload.price?.sl),
-
-    reason: pickString(payload.reason, payload.entryReason, payload.exitReason),
-    grade: pickString(payload.grade, payload.liveGrade, payload.setup?.grade),
-    setupClass: pickString(payload.setupClass, payload.class, payload.setup?.setupClass),
-
-    pnlPct: pickNumber(payload.pnlPct, payload.pnl, payload.outcome?.pnlPct),
-    exitR: pickNumber(payload.exitR, payload.rMultiple, payload.outcome?.exitR),
-    mfer: pickNumber(payload.mfeR, payload.path?.mfeR),
-    maer: pickNumber(payload.maeR, payload.path?.maeR),
-
-    raw: payload
-  };
-
-  const saved = await saveTradeEvent(normalized);
-
+function buildResult(
+  normalized: NormalizedWebhookEvent,
+  saved: any
+): IngestResult {
   return {
     ok: true,
-    deduped: saved.deduped,
-    eventId,
-    eventType,
-    symbol,
-    side,
-    cohortKey
+    accepted: true,
+    deduped: Boolean(saved?.deduped),
+    eventId: normalized.eventId,
+    eventType: normalized.eventType,
+    symbol: normalized.symbol,
+    side: normalized.side,
+    tradeId: normalized.tradeId,
+    cohortKey: normalized.cohortKey,
+    saved
   };
 }
+
+export async function ingestTradeSystemWebhook(
+  rawBody: string,
+  options: IngestOptions = {}
+): Promise<IngestResult> {
+  assertValidBody(rawBody);
+  assertSignature(rawBody, options);
+
+  const normalized = normalizeWebhookBody(rawBody);
+  const saved = await saveTradeEvent(normalized);
+
+  return buildResult(normalized, saved);
+}
+
+export async function ingestWebhook(
+  rawBody: string,
+  options: IngestOptions = {}
+): Promise<IngestResult> {
+  return ingestTradeSystemWebhook(rawBody, options);
+}
+
+export async function ingestTradeEvent(
+  rawBody: string,
+  options: IngestOptions = {}
+): Promise<IngestResult> {
+  return ingestTradeSystemWebhook(rawBody, options);
+}
+
+export default ingestTradeSystemWebhook;
