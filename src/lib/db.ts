@@ -1,26 +1,81 @@
 import postgres from "postgres";
 
-const databaseUrl = process.env.DATABASE_URL;
+type SqlClient = ReturnType<typeof postgres>;
 
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is missing");
+let client: SqlClient | null = null;
+
+export function hasDatabase(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim());
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __tradeOptimizerSql: ReturnType<typeof postgres> | undefined;
+export function getDatabaseUrl(): string | null {
+  const url = process.env.DATABASE_URL?.trim();
+  return url || null;
 }
 
-export const sql =
-  globalThis.__tradeOptimizerSql ??
-  postgres(databaseUrl, {
+export function getSql(): SqlClient | null {
+  const databaseUrl = getDatabaseUrl();
+
+  if (!databaseUrl) {
+    return null;
+  }
+
+  if (client) {
+    return client;
+  }
+
+  const isLocal =
+    databaseUrl.includes("localhost") ||
+    databaseUrl.includes("127.0.0.1");
+
+  client = postgres(databaseUrl, {
     max: 5,
+    prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,
-    prepare: false,
-    ssl: databaseUrl.includes("sslmode=require") ? "require" : undefined
+    ssl: isLocal ? false : ("require" as any)
   });
 
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__tradeOptimizerSql = sql;
+  return client;
+}
+
+export function requireSql(): SqlClient {
+  const sql = getSql();
+
+  if (!sql) {
+    throw new Error("DATABASE_URL is missing");
+  }
+
+  return sql;
+}
+
+export async function pingDatabase(): Promise<{
+  ok: boolean;
+  mode: "POSTGRES" | "NO_DATABASE";
+  error?: string;
+}> {
+  const sql = getSql();
+
+  if (!sql) {
+    return {
+      ok: false,
+      mode: "NO_DATABASE",
+      error: "DATABASE_URL is missing"
+    };
+  }
+
+  try {
+    await sql`select 1 as ok`;
+
+    return {
+      ok: true,
+      mode: "POSTGRES"
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "POSTGRES",
+      error: error instanceof Error ? error.message : "UNKNOWN_DATABASE_ERROR"
+    };
+  }
 }
