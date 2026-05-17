@@ -1,39 +1,11 @@
-type TradeEvent = {
-  eventId: string;
-  eventType: "ENTRY" | "EXIT";
-  symbol: string;
-  side: "LONG" | "SHORT";
-  cohortKey: string;
-  createdAt: string;
-
-  entryPrice: number | null;
-  exitPrice: number | null;
-  tpPrice: number | null;
-  slPrice: number | null;
-
-  reason: string | null;
-  grade: string | null;
-  setupClass: string | null;
-
-  pnlPct: number | null;
-  exitR: number | null;
-  mfer: number | null;
-  maer: number | null;
-
-  raw: Record<string, any>;
-};
-
-const globalForStore = globalThis as unknown as {
-  tradeEvents?: TradeEvent[];
-  tradeEventIds?: Set<string>;
-};
+const globalForStore = globalThis;
 
 if (!globalForStore.tradeEvents) globalForStore.tradeEvents = [];
-if (!globalForStore.tradeEventIds) globalForStore.tradeEventIds = new Set<string>();
+if (!globalForStore.tradeEventIds) globalForStore.tradeEventIds = new Set();
 
-export async function saveTradeEvent(event: TradeEvent) {
-  const events = globalForStore.tradeEvents!;
-  const ids = globalForStore.tradeEventIds!;
+export async function saveTradeEvent(event) {
+  const events = globalForStore.tradeEvents;
+  const ids = globalForStore.tradeEventIds;
 
   if (ids.has(event.eventId)) {
     return {
@@ -47,6 +19,7 @@ export async function saveTradeEvent(event: TradeEvent) {
 
   if (events.length > 5000) {
     const removed = events.splice(5000);
+
     for (const item of removed) {
       ids.delete(item.eventId);
     }
@@ -64,7 +37,7 @@ export async function getTradeEvents() {
 
 export async function clearTradeEvents() {
   globalForStore.tradeEvents = [];
-  globalForStore.tradeEventIds = new Set<string>();
+  globalForStore.tradeEventIds = new Set();
 
   return {
     ok: true,
