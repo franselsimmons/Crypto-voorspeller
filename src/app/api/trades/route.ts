@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { getTradeEvents, clearTradeEvents } from "@/lib/store";
+
 import { buildAnalytics } from "@/lib/analytics";
+import { clearTradeEvents, getTradeEvents } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +12,6 @@ export async function GET() {
 
   return NextResponse.json({
     ok: true,
-    count: events.length,
     events,
     analytics
   });
