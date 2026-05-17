@@ -509,19 +509,17 @@ export function normalizeWebhookBody(rawBody: string): NormalizedWebhookEvent {
   const cohortKey = entry?.cohortKey || reject?.cohortKey || toText(payload.cohortKey, "") || null;
 
   return {
-    eventId,
-    eventType,
-    source,
-    strategyVersion,
-    runId,
-    tradeId,
-    symbol,
-    side,
-    cohortKey,
-    payload,
-    payloadHash,
-    entry,
-    exit,
-    reject
-  };
+  ok: true,
+  eventId,
+  eventType,
+  receivedAt,
+  source,
+  symbol,
+  side,
+  payload,
+  payloadHash,
+  entry: entry ?? undefined,
+  exit: exit ?? undefined,
+  reject: reject ?? undefined
+};
 }
