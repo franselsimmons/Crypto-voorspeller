@@ -97,6 +97,10 @@ export const sql: SqlTag = Object.assign(
   }
 );
 
+export function getSql(): SqlTag {
+  return sql;
+}
+
 export async function dbQuery<T = any>(
   strings: TemplateStringsArray,
   ...values: unknown[]
