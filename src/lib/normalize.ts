@@ -180,12 +180,38 @@ function get(obj: AnyRecord, paths: string[], fallback: any = null): any {
   return fallback;
 }
 
-function normalizeEventType(value: unknown, payload: AnyRecord): NormalizedType {
-  const text = toUpperText(value || payload.eventType || payload.type || payload.action || payload.reason, "");
+function upperOrNull(value: unknown): string | null {
+  const text = toUpperText(value, "");
+  return text ? text : null;
+}
 
-  if (text.includes("EXIT") || text.includes("TP") || text.includes("SL") || text.includes("STOP")) return "EXIT";
-  if (text.includes("REJECT") || text.includes("WAIT") || text.includes("SKIP")) return "REJECT";
-  if (text.includes("SNAPSHOT")) return "SNAPSHOT";
+function textOrNull(value: unknown): string | null {
+  const text = toText(value, "");
+  return text ? text : null;
+}
+
+function normalizeEventType(value: unknown, payload: AnyRecord): NormalizedType {
+  const text = toUpperText(
+    value || payload.eventType || payload.type || payload.action || payload.reason,
+    ""
+  );
+
+  if (
+    text.includes("EXIT") ||
+    text.includes("TP") ||
+    text.includes("SL") ||
+    text.includes("STOP")
+  ) {
+    return "EXIT";
+  }
+
+  if (text.includes("REJECT") || text.includes("WAIT") || text.includes("SKIP")) {
+    return "REJECT";
+  }
+
+  if (text.includes("SNAPSHOT")) {
+    return "SNAPSHOT";
+  }
 
   return "ENTRY";
 }
@@ -206,7 +232,11 @@ function sideToken(side: string | null): string {
   return "unknown";
 }
 
-function bucket(value: number | null, ranges: Array<[number, number, string]>, fallback = "NA"): string {
+function bucket(
+  value: number | null,
+  ranges: Array<[number, number, string]>,
+  fallback = "NA"
+): string {
   if (value === null) return fallback;
 
   for (const [min, max, label] of ranges) {
@@ -287,7 +317,12 @@ function buildCohortKeyFromEntry(entry: Partial<NormalizedEntry>): string {
   return parts.join("|");
 }
 
-function stableTradeId(payload: AnyRecord, symbol: string, side: string, entryPrice: number | null): string {
+function stableTradeId(
+  payload: AnyRecord,
+  symbol: string,
+  side: string,
+  entryPrice: number | null
+): string {
   const raw = [
     get(payload, ["tradeId", "id", "signalId"]),
     symbol,
@@ -302,32 +337,41 @@ function stableTradeId(payload: AnyRecord, symbol: string, side: string, entryPr
   return sha256(raw).slice(0, 32);
 }
 
-function normalizeEntry(payload: AnyRecord, fallbackTradeId: string | null): NormalizedEntry | null {
+function normalizeEntry(
+  payload: AnyRecord,
+  fallbackTradeId: string | null
+): NormalizedEntry | undefined {
   const symbol = toUpperText(get(payload, ["symbol", "ticker", "pair"]), "");
   const side = normalizeSide(get(payload, ["side", "direction"]));
 
-  if (!symbol || !side) return null;
+  if (!symbol || !side) return undefined;
 
-  const spreadPct = toNumber(get(payload, ["spreadPct", "ob.spreadPct", "orderbook.spreadPct"]));
+  const spreadPct = toNumber(
+    get(payload, ["spreadPct", "ob.spreadPct", "orderbook.spreadPct"])
+  );
+
   const spreadBps =
     toNumber(get(payload, ["spreadBps", "ob.spreadBps", "orderbook.spreadBps"])) ??
     (spreadPct !== null ? spreadPct * 10000 : null);
 
-  const depthUsd1p = toNumber(get(payload, ["depthMinUsd1p", "depthUsd1p", "ob.depthMinUsd1p", "orderbook.depthMinUsd1p"]));
-
-  const setupClass = toUpperText(get(payload, ["setupClass", "setup.setupClass", "class", "liveGrade"]), null as any);
-  const entryReason = toUpperText(get(payload, ["entryReason", "setup.entryReason", "reason"]), null as any);
-  const grade = toUpperText(get(payload, ["grade", "setup.grade", "liveGrade"]), null as any);
+  const depthUsd1p = toNumber(
+    get(payload, [
+      "depthMinUsd1p",
+      "depthUsd1p",
+      "ob.depthMinUsd1p",
+      "orderbook.depthMinUsd1p"
+    ])
+  );
 
   const entry: NormalizedEntry = {
     tradeId: toText(get(payload, ["tradeId", "id", "signalId"], fallbackTradeId), ""),
     symbol,
     side,
-    cohortKey: toText(get(payload, ["cohortKey", "analytics.cohortKey"]), "") || null,
+    cohortKey: textOrNull(get(payload, ["cohortKey", "analytics.cohortKey"])),
 
-    setupClass,
-    entryReason,
-    grade,
+    setupClass: upperOrNull(get(payload, ["setupClass", "setup.setupClass", "class", "liveGrade"])),
+    entryReason: upperOrNull(get(payload, ["entryReason", "setup.entryReason", "reason"])),
+    grade: upperOrNull(get(payload, ["grade", "setup.grade", "liveGrade"])),
     gradePoints: toNumber(get(payload, ["gradePoints", "setup.gradePoints", "points"])),
 
     entryPrice: toNumber(get(payload, ["entry", "price.entry", "liveMetrics.entry", "entryPrice"])),
@@ -345,39 +389,43 @@ function normalizeEntry(payload: AnyRecord, fallbackTradeId: string | null): Nor
     rawConfluence: toNumber(get(payload, ["rawConfluence", "scores.rawConfluence"])),
     sniperScore: toNumber(get(payload, ["sniperScore", "scores.sniperScore"])),
     rawSniperScore: toNumber(get(payload, ["rawSniperScore", "scores.rawSniperScore"])),
-    fallbackSniperScore: toNumber(get(payload, ["fallbackSniperScore", "scores.fallbackSniperScore"])),
+    fallbackSniperScore: toNumber(
+      get(payload, ["fallbackSniperScore", "scores.fallbackSniperScore"])
+    ),
 
     rsi: toNumber(get(payload, ["rsi", "rsi.rsi"])),
     rsiHTF: toNumber(get(payload, ["rsiHTF", "rsi.rsiHTF"])),
-    rsiZone: toUpperText(get(payload, ["rsiZone", "rsi.rsiZone"]), null as any),
-    rsiEdge: toUpperText(get(payload, ["rsiEdge", "rsi.rsiEdge"]), null as any),
+    rsiZone: upperOrNull(get(payload, ["rsiZone", "rsi.rsiZone"])),
+    rsiEdge: upperOrNull(get(payload, ["rsiEdge", "rsi.rsiEdge"])),
     continuationOk: toBool(get(payload, ["continuationOk", "rsi.continuationOk"])),
 
-    btcState: toUpperText(get(payload, ["btcState", "market.btcState"]), null as any),
-    regime: toUpperText(get(payload, ["regime", "market.regime"]), null as any),
-    flow: toUpperText(get(payload, ["flow", "market.flow"]), null as any),
+    btcState: upperOrNull(get(payload, ["btcState", "market.btcState"])),
+    regime: upperOrNull(get(payload, ["regime", "market.regime"])),
+    flow: upperOrNull(get(payload, ["flow", "market.flow"])),
     tfStrength: toNumber(get(payload, ["tfStrength", "market.tfStrength"])),
-    tfAlignment: toUpperText(get(payload, ["tfAlignment", "market.tfAlignment"]), null as any),
+    tfAlignment: upperOrNull(get(payload, ["tfAlignment", "market.tfAlignment"])),
 
-    obBias: toUpperText(get(payload, ["obBias", "ob.bias", "orderbook.bias"]), null as any),
-    obRelation: toUpperText(get(payload, ["obRelation", "ob.relation", "orderbook.relation"]), null as any),
+    obBias: upperOrNull(get(payload, ["obBias", "ob.bias", "orderbook.bias"])),
+    obRelation: upperOrNull(get(payload, ["obRelation", "ob.relation", "orderbook.relation"])),
     spreadPct,
     spreadBps,
-    spreadBucket: toUpperText(get(payload, ["spreadBucket", "ob.spreadBucket", "orderbook.spreadBucket"]), null as any),
+    spreadBucket: upperOrNull(get(payload, ["spreadBucket", "ob.spreadBucket", "orderbook.spreadBucket"])),
     depthUsd1p,
-    depthBucket: toUpperText(get(payload, ["depthBucket", "ob.depthBucket", "orderbook.depthBucket"]), null as any),
+    depthBucket: upperOrNull(get(payload, ["depthBucket", "ob.depthBucket", "orderbook.depthBucket"])),
     spoof: toBool(get(payload, ["spoof", "ob.spoof", "orderbook.spoof"])),
 
     funding: toNumber(get(payload, ["funding", "market.funding"])),
-    fundingBucket: toUpperText(get(payload, ["fundingBucket", "market.fundingBucket"]), null as any),
+    fundingBucket: upperOrNull(get(payload, ["fundingBucket", "market.fundingBucket"])),
 
     pullbackConfirmed: toBool(get(payload, ["pullbackConfirmed", "structure.pullbackConfirmed"])),
     sweepConfirmed: toBool(get(payload, ["sweepConfirmed", "structure.sweepConfirmed"])),
     retestConfirmed: toBool(get(payload, ["retestConfirmed", "structure.retestConfirmed"])),
-    distanceFromLocalHighPct: toNumber(get(payload, ["distanceFromLocalHighPct", "structure.distanceFromLocalHighPct"])),
+    distanceFromLocalHighPct: toNumber(
+      get(payload, ["distanceFromLocalHighPct", "structure.distanceFromLocalHighPct"])
+    ),
 
-    qualityGateReason: toUpperText(get(payload, ["qualityGateReason", "gates.qualityGateReason"]), null as any),
-    finalDepthReason: toUpperText(get(payload, ["finalDepthReason", "gates.finalDepthReason"]), null as any),
+    qualityGateReason: upperOrNull(get(payload, ["qualityGateReason", "gates.qualityGateReason"])),
+    finalDepthReason: upperOrNull(get(payload, ["finalDepthReason", "gates.finalDepthReason"])),
     confirmationRequired: toBool(get(payload, ["confirmationRequired", "gates.confirmationRequired"])),
     confirmationSeen: toBool(get(payload, ["confirmationSeen", "gates.confirmationSeen"]))
   };
@@ -386,25 +434,33 @@ function normalizeEntry(payload: AnyRecord, fallbackTradeId: string | null): Nor
     entry.tradeId = stableTradeId(payload, symbol, side, entry.entryPrice);
   }
 
-  if (!entry.spreadBucket) entry.spreadBucket = spreadBucket(entry.spreadBps);
-  if (!entry.depthBucket) entry.depthBucket = depthBucket(entry.depthUsd1p);
-  if (!entry.cohortKey) entry.cohortKey = buildCohortKeyFromEntry(entry);
+  if (!entry.spreadBucket) {
+    entry.spreadBucket = spreadBucket(entry.spreadBps);
+  }
+
+  if (!entry.depthBucket) {
+    entry.depthBucket = depthBucket(entry.depthUsd1p);
+  }
+
+  if (!entry.cohortKey) {
+    entry.cohortKey = buildCohortKeyFromEntry(entry);
+  }
 
   return entry;
 }
 
-function normalizeExit(payload: AnyRecord): NormalizedExit | null {
+function normalizeExit(payload: AnyRecord): NormalizedExit | undefined {
   const symbol = toUpperText(get(payload, ["symbol", "ticker", "pair"]), "");
   const side = normalizeSide(get(payload, ["side", "direction"]));
 
-  if (!symbol || !side) return null;
+  if (!symbol || !side) return undefined;
 
   return {
-    tradeId: toText(get(payload, ["tradeId", "id", "signalId"]), "") || null,
+    tradeId: textOrNull(get(payload, ["tradeId", "id", "signalId"])),
     symbol,
     side,
 
-    exitReason: toUpperText(get(payload, ["exitReason", "reason", "outcome.exitReason"]), null as any),
+    exitReason: upperOrNull(get(payload, ["exitReason", "reason", "outcome.exitReason"])),
     exitR: toNumber(get(payload, ["exitR", "outcome.exitR"])),
     pnlPct: toNumber(get(payload, ["pnlPct", "pnl", "outcome.pnlPct"])),
     triggerR: toNumber(get(payload, ["triggerR", "outcome.triggerR"])),
@@ -436,19 +492,26 @@ function normalizeExit(payload: AnyRecord): NormalizedExit | null {
   };
 }
 
-function normalizeReject(payload: AnyRecord): NormalizedReject | null {
+function normalizeReject(payload: AnyRecord): NormalizedReject | undefined {
   const symbol = toUpperText(get(payload, ["symbol", "ticker", "pair"]), "");
-  if (!symbol) return null;
+
+  if (!symbol) return undefined;
 
   const side = normalizeSide(get(payload, ["side", "direction"]));
-  const spreadPct = toNumber(get(payload, ["spreadPct", "ob.spreadPct", "orderbook.spreadPct"]));
+  const spreadPct = toNumber(
+    get(payload, ["spreadPct", "ob.spreadPct", "orderbook.spreadPct"])
+  );
+
+  const spreadBps =
+    toNumber(get(payload, ["spreadBps", "ob.spreadBps", "orderbook.spreadBps"])) ??
+    (spreadPct !== null ? spreadPct * 10000 : null);
 
   return {
     symbol,
     side,
-    rejectReason: toUpperText(get(payload, ["rejectReason", "reason", "waitReason"]), null as any),
-    action: toUpperText(get(payload, ["action", "type", "eventType"]), null as any),
-    cohortKey: toText(get(payload, ["cohortKey", "analytics.cohortKey"]), "") || null,
+    rejectReason: upperOrNull(get(payload, ["rejectReason", "reason", "waitReason"])),
+    action: upperOrNull(get(payload, ["action", "type", "eventType"])),
+    cohortKey: textOrNull(get(payload, ["cohortKey", "analytics.cohortKey"])),
 
     scannerScore: toNumber(get(payload, ["score", "scannerScore", "scores.score"])),
     confluence: toNumber(get(payload, ["confluence", "scores.confluence"])),
@@ -457,18 +520,25 @@ function normalizeReject(payload: AnyRecord): NormalizedReject | null {
     finalRR: toNumber(get(payload, ["finalRr", "finalRR", "plannedRR", "rr.finalRr"])),
 
     rsi: toNumber(get(payload, ["rsi", "rsi.rsi"])),
-    rsiZone: toUpperText(get(payload, ["rsiZone", "rsi.rsiZone"]), null as any),
-    rsiEdge: toUpperText(get(payload, ["rsiEdge", "rsi.rsiEdge"]), null as any),
+    rsiZone: upperOrNull(get(payload, ["rsiZone", "rsi.rsiZone"])),
+    rsiEdge: upperOrNull(get(payload, ["rsiEdge", "rsi.rsiEdge"])),
 
-    btcState: toUpperText(get(payload, ["btcState", "market.btcState"]), null as any),
-    regime: toUpperText(get(payload, ["regime", "market.regime"]), null as any),
-    flow: toUpperText(get(payload, ["flow", "market.flow"]), null as any),
+    btcState: upperOrNull(get(payload, ["btcState", "market.btcState"])),
+    regime: upperOrNull(get(payload, ["regime", "market.regime"])),
+    flow: upperOrNull(get(payload, ["flow", "market.flow"])),
 
-    obBias: toUpperText(get(payload, ["obBias", "ob.bias", "orderbook.bias"]), null as any),
-    obRelation: toUpperText(get(payload, ["obRelation", "ob.relation", "orderbook.relation"]), null as any),
-    spreadBps: toNumber(get(payload, ["spreadBps", "ob.spreadBps", "orderbook.spreadBps"])) ?? (spreadPct !== null ? spreadPct * 10000 : null),
-    depthUsd1p: toNumber(get(payload, ["depthMinUsd1p", "depthUsd1p", "ob.depthMinUsd1p", "orderbook.depthMinUsd1p"])),
-    depthBucket: toUpperText(get(payload, ["depthBucket", "ob.depthBucket", "orderbook.depthBucket"]), null as any),
+    obBias: upperOrNull(get(payload, ["obBias", "ob.bias", "orderbook.bias"])),
+    obRelation: upperOrNull(get(payload, ["obRelation", "ob.relation", "orderbook.relation"])),
+    spreadBps,
+    depthUsd1p: toNumber(
+      get(payload, [
+        "depthMinUsd1p",
+        "depthUsd1p",
+        "ob.depthMinUsd1p",
+        "orderbook.depthMinUsd1p"
+      ])
+    ),
+    depthBucket: upperOrNull(get(payload, ["depthBucket", "ob.depthBucket", "orderbook.depthBucket"])),
 
     wouldEntry: toNumber(get(payload, ["entry", "wouldEntry", "price.entry"])),
     wouldTp: toNumber(get(payload, ["tp", "wouldTp", "price.tp"])),
@@ -489,37 +559,60 @@ export function normalizeWebhookBody(rawBody: string): NormalizedWebhookEvent {
   const eventType = normalizeEventType(parsed.eventType || parsed.type || parsed.action, payload);
 
   const source = toUpperText(parsed.source || payload.source || "TRADE_SYSTEM", "TRADE_SYSTEM");
-  const strategyVersion = toText(parsed.strategyVersion || payload.strategyVersion || payload.version, "") || null;
-  const runId = toText(parsed.runId || payload.runId, "") || null;
+  const strategyVersion = textOrNull(parsed.strategyVersion || payload.strategyVersion || payload.version);
+  const runId = textOrNull(parsed.runId || payload.runId);
 
   const payloadHash = sha256(JSON.stringify(payload));
+
   const eventId =
     toText(parsed.eventId || payload.eventId || payload.uuid, "") ||
     sha256(`${eventType}.${source}.${payloadHash}`);
 
-  const fallbackTradeId = toText(parsed.tradeId || payload.tradeId || payload.id, "") || null;
+  const fallbackTradeId = textOrNull(parsed.tradeId || payload.tradeId || payload.id);
 
   const entry = eventType === "ENTRY" ? normalizeEntry(payload, fallbackTradeId) : undefined;
   const exit = eventType === "EXIT" ? normalizeExit(payload) : undefined;
   const reject = eventType === "REJECT" ? normalizeReject(payload) : undefined;
 
-  const symbol = entry?.symbol || exit?.symbol || reject?.symbol || toUpperText(payload.symbol, "") || null;
-  const side = entry?.side || exit?.side || reject?.side || normalizeSide(payload.side);
-  const tradeId = entry?.tradeId || exit?.tradeId || fallbackTradeId;
-  const cohortKey = entry?.cohortKey || reject?.cohortKey || toText(payload.cohortKey, "") || null;
+  const symbol =
+    entry?.symbol ||
+    exit?.symbol ||
+    reject?.symbol ||
+    upperOrNull(payload.symbol) ||
+    null;
+
+  const side =
+    entry?.side ||
+    exit?.side ||
+    reject?.side ||
+    normalizeSide(payload.side);
+
+  const tradeId =
+    entry?.tradeId ||
+    exit?.tradeId ||
+    fallbackTradeId ||
+    null;
+
+  const cohortKey =
+    entry?.cohortKey ||
+    reject?.cohortKey ||
+    textOrNull(payload.cohortKey) ||
+    null;
 
   return {
-  ok: true,
-  eventId,
-  eventType,
-  receivedAt,
-  source,
-  symbol,
-  side,
-  payload,
-  payloadHash,
-  entry: entry ?? undefined,
-  exit: exit ?? undefined,
-  reject: reject ?? undefined
-};
+    eventId,
+    eventType,
+    source,
+    strategyVersion,
+    runId,
+    tradeId,
+    symbol,
+    side,
+    cohortKey,
+    payload,
+    payloadHash,
+    entry,
+    exit,
+    reject
+  };
 }
