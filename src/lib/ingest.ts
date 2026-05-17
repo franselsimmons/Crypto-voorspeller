@@ -90,6 +90,20 @@ export async function ingestTradeSystemWebhook(
   return buildResult(normalized, saved);
 }
 
+/**
+ * Backward-compatible alias.
+ * Je route.ts gebruikt deze naam.
+ */
+export async function ingestTradeSystemEvent(
+  rawBody: string,
+  options: IngestOptions = {}
+): Promise<IngestResult> {
+  return ingestTradeSystemWebhook(rawBody, options);
+}
+
+/**
+ * Extra aliases zodat oude imports niet breken.
+ */
 export async function ingestWebhook(
   rawBody: string,
   options: IngestOptions = {}
