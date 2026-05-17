@@ -40,7 +40,7 @@ type SqlTag = {
   ) => Promise<T>;
 
   begin: <T>(
-    fn: (tx: SqlClient) => Promise<T>
+    fn: (tx: any) => Promise<T>
   ) => Promise<T>;
 
   end: () => Promise<void>;
@@ -76,7 +76,7 @@ export const sql: SqlTag = Object.assign(
     },
 
     begin: async <T>(
-      fn: (tx: SqlClient) => Promise<T>
+      fn: (tx: any) => Promise<T>
     ): Promise<T> => {
       const db = createClient();
 
@@ -84,7 +84,8 @@ export const sql: SqlTag = Object.assign(
         throw new Error("DATABASE_URL is missing. Cannot start transaction.");
       }
 
-      return db.begin(fn);
+      const result = await (db as any).begin(fn);
+      return result as unknown as T;
     },
 
     end: async (): Promise<void> => {
