@@ -2,21 +2,14 @@ import postgres from "postgres";
 
 type SqlClient = ReturnType<typeof postgres>;
 
+const DATABASE_URL = process.env.DATABASE_URL || "";
+
 let client: SqlClient | null = null;
 
-export function hasDatabase(): boolean {
-  return Boolean(process.env.DATABASE_URL?.trim());
-}
+export const hasDatabase = Boolean(DATABASE_URL);
 
-export function getDatabaseUrl(): string | null {
-  const url = process.env.DATABASE_URL?.trim();
-  return url || null;
-}
-
-export function getSql(): SqlClient | null {
-  const databaseUrl = getDatabaseUrl();
-
-  if (!databaseUrl) {
+function createClient(): SqlClient | null {
+  if (!DATABASE_URL) {
     return null;
   }
 
@@ -24,58 +17,81 @@ export function getSql(): SqlClient | null {
     return client;
   }
 
-  const isLocal =
-    databaseUrl.includes("localhost") ||
-    databaseUrl.includes("127.0.0.1");
-
-  client = postgres(databaseUrl, {
+  client = postgres(DATABASE_URL, {
     max: 5,
-    prepare: false,
     idle_timeout: 20,
     connect_timeout: 10,
-    ssl: isLocal ? false : ("require" as any)
+    prepare: false,
+    ssl: DATABASE_URL.includes("sslmode=require")
+      ? "require"
+      : undefined
   });
 
   return client;
 }
 
-export function requireSql(): SqlClient {
-  const sql = getSql();
-
-  if (!sql) {
-    throw new Error("DATABASE_URL is missing");
-  }
-
-  return sql;
+async function emptySqlResult() {
+  console.warn("DATABASE_URL missing. Returning empty SQL result.");
+  return [];
 }
 
-export async function pingDatabase(): Promise<{
-  ok: boolean;
-  mode: "POSTGRES" | "NO_DATABASE";
-  error?: string;
-}> {
-  const sql = getSql();
+type SqlTag = {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<any[]>;
+  unsafe: (query: string, values?: unknown[]) => Promise<any[]>;
+  begin: <T>(fn: (tx: SqlClient) => Promise<T>) => Promise<T>;
+  end: () => Promise<void>;
+};
 
-  if (!sql) {
-    return {
-      ok: false,
-      mode: "NO_DATABASE",
-      error: "DATABASE_URL is missing"
-    };
+export const sql: SqlTag = Object.assign(
+  async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const db = createClient();
+
+    if (!db) {
+      return emptySqlResult();
+    }
+
+    return db(strings, ...values);
+  },
+  {
+    unsafe: async (query: string, values: unknown[] = []) => {
+      const db = createClient();
+
+      if (!db) {
+        return emptySqlResult();
+      }
+
+      return db.unsafe(query, values);
+    },
+
+    begin: async <T>(fn: (tx: SqlClient) => Promise<T>) => {
+      const db = createClient();
+
+      if (!db) {
+        throw new Error("DATABASE_URL is missing. Cannot start transaction.");
+      }
+
+      return db.begin(fn);
+    },
+
+    end: async () => {
+      if (!client) return;
+
+      await client.end();
+      client = null;
+    }
   }
+);
 
-  try {
-    await sql`select 1 as ok`;
-
-    return {
-      ok: true,
-      mode: "POSTGRES"
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      mode: "POSTGRES",
-      error: error instanceof Error ? error.message : "UNKNOWN_DATABASE_ERROR"
-    };
-  }
+export async function dbQuery<T = any>(
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+): Promise<T[]> {
+  const rows = await sql(strings, ...values);
+  return rows as T[];
 }
+
+export async function closeDb() {
+  await sql.end();
+}
+
+export default sql;
