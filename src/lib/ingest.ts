@@ -1,6 +1,6 @@
+import crypto from "crypto";
 import { normalizeWebhookBody, type NormalizedWebhookEvent } from "./normalize";
 import { saveTradeEvent } from "./store";
-import { verifyWebhookSignature } from "./security";
 
 type IngestResult = {
   ok: boolean;
@@ -36,6 +36,64 @@ function assertValidBody(rawBody: string): void {
   }
 }
 
+function timingSafeEqualHex(a: string, b: string): boolean {
+  try {
+    const left = Buffer.from(a, "hex");
+    const right = Buffer.from(b, "hex");
+
+    if (left.length !== right.length) return false;
+
+    return crypto.timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+function extractSignature(signatureHeader: string): string {
+  const header = String(signatureHeader || "").trim();
+
+  if (!header) return "";
+
+  // Stripe-style: t=123,v1=abcdef
+  const v1 = header
+    .split(",")
+    .map(part => part.trim())
+    .find(part => part.startsWith("v1="));
+
+  if (v1) return v1.slice(3).trim();
+
+  // Direct hex signature
+  return header.replace(/^sha256=/i, "").trim();
+}
+
+function signPayload(rawBody: string, secret: string, timestamp?: string | null): string {
+  const payloadToSign = timestamp ? `${timestamp}.${rawBody}` : rawBody;
+
+  return crypto
+    .createHmac("sha256", secret)
+    .update(payloadToSign, "utf8")
+    .digest("hex");
+}
+
+function verifyLocalWebhookSignature(
+  rawBody: string,
+  signatureHeader: string,
+  secret: string,
+  timestamp?: string | null
+): boolean {
+  const received = extractSignature(signatureHeader);
+
+  if (!received) return false;
+
+  const expectedWithTimestamp = signPayload(rawBody, secret, timestamp);
+  const expectedRaw = signPayload(rawBody, secret);
+
+  return (
+    timingSafeEqualHex(received, expectedWithTimestamp) ||
+    timingSafeEqualHex(received, expectedRaw)
+  );
+}
+
 function assertSignature(rawBody: string, options?: IngestOptions): void {
   const requireSignature = shouldRequireSignature(options);
 
@@ -43,6 +101,7 @@ function assertSignature(rawBody: string, options?: IngestOptions): void {
 
   const secret = options?.secret || process.env.WEBHOOK_SECRET || "";
   const signature = options?.signature || "";
+  const timestamp = options?.timestamp || null;
 
   if (!secret) {
     throw new Error("WEBHOOK_SECRET_MISSING");
@@ -52,7 +111,7 @@ function assertSignature(rawBody: string, options?: IngestOptions): void {
     throw new Error("WEBHOOK_SIGNATURE_MISSING");
   }
 
-  const valid = verifyWebhookSignature(rawBody, signature, secret);
+  const valid = verifyLocalWebhookSignature(rawBody, signature, secret, timestamp);
 
   if (!valid) {
     throw new Error("WEBHOOK_SIGNATURE_INVALID");
@@ -90,10 +149,6 @@ export async function ingestTradeSystemWebhook(
   return buildResult(normalized, saved);
 }
 
-/**
- * Backward-compatible alias.
- * Je route.ts gebruikt deze naam.
- */
 export async function ingestTradeSystemEvent(
   rawBody: string,
   options: IngestOptions = {}
@@ -101,9 +156,6 @@ export async function ingestTradeSystemEvent(
   return ingestTradeSystemWebhook(rawBody, options);
 }
 
-/**
- * Extra aliases zodat oude imports niet breken.
- */
 export async function ingestWebhook(
   rawBody: string,
   options: IngestOptions = {}
