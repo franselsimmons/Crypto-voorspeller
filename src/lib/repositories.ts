@@ -1,11 +1,26 @@
 import { sql } from "./db";
-import type { NormalizedWebhookEvent, NormalizedEntry, NormalizedExit, NormalizedReject } from "./normalize";
+import type {
+  NormalizedWebhookEvent,
+  NormalizedEntry,
+  NormalizedExit,
+  NormalizedReject
+} from "./normalize";
 
-export async function insertRawEvent(event: NormalizedWebhookEvent): Promise<{
-  inserted: boolean;
-}> {
+type AnyRecord = Record<string, any>;
+
+function jsonb(value: unknown): string {
+  return JSON.stringify(value ?? {});
+}
+
+function toDateIso(value?: string | Date | null): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value.trim()) return new Date(value).toISOString();
+  return new Date().toISOString();
+}
+
+export async function insertWebhookEvent(event: NormalizedWebhookEvent) {
   const rows = await sql`
-    INSERT INTO raw_events (
+    INSERT INTO webhook_events (
       event_id,
       event_type,
       source,
@@ -28,25 +43,31 @@ export async function insertRawEvent(event: NormalizedWebhookEvent): Promise<{
       ${event.symbol},
       ${event.side},
       ${event.cohortKey},
-      ${sql.json(event.payload)},
+      ${jsonb(event.payload)}::jsonb,
       ${event.payloadHash}
     )
     ON CONFLICT (event_id) DO NOTHING
-    RETURNING id
+    RETURNING event_id
   `;
 
-  return { inserted: rows.length > 0 };
+  return {
+    inserted: Array.isArray(rows) && rows.length > 0,
+    deduped: Array.isArray(rows) && rows.length === 0
+  };
 }
 
-export async function insertEntry(event: NormalizedWebhookEvent, entry: NormalizedEntry): Promise<void> {
+export async function insertTradeEntry(
+  event: NormalizedWebhookEvent,
+  entry: NormalizedEntry
+) {
   await sql`
     INSERT INTO trade_entries (
-      trade_id,
       event_id,
+      trade_id,
+      created_at,
       source,
       strategy_version,
       run_id,
-
       symbol,
       side,
       cohort_key,
@@ -110,12 +131,12 @@ export async function insertEntry(event: NormalizedWebhookEvent, entry: Normaliz
       raw_payload
     )
     VALUES (
-      ${entry.tradeId},
       ${event.eventId},
+      ${entry.tradeId},
+      ${toDateIso()},
       ${event.source},
       ${event.strategyVersion},
       ${event.runId},
-
       ${entry.symbol},
       ${entry.side},
       ${entry.cohortKey},
@@ -176,63 +197,27 @@ export async function insertEntry(event: NormalizedWebhookEvent, entry: Normaliz
       ${entry.confirmationRequired},
       ${entry.confirmationSeen},
 
-      ${sql.json(event.payload)}
+      ${jsonb(event.payload)}::jsonb
     )
-    ON CONFLICT (trade_id) DO UPDATE SET
-      event_id = COALESCE(trade_entries.event_id, EXCLUDED.event_id),
-      cohort_key = EXCLUDED.cohort_key,
-      raw_payload = EXCLUDED.raw_payload
+    ON CONFLICT (event_id) DO NOTHING
   `;
 }
 
-async function resolveExitTradeId(exit: NormalizedExit): Promise<string | null> {
-  if (exit.tradeId) return exit.tradeId;
-
-  if (exit.entryPrice !== null) {
-    const exact = await sql<{ trade_id: string }[]>`
-      SELECT trade_id
-      FROM trade_entries
-      WHERE symbol = ${exit.symbol}
-        AND side = ${exit.side}
-        AND status = 'OPEN'
-        AND entry_price = ${exit.entryPrice}
-      ORDER BY opened_at DESC
-      LIMIT 1
-    `;
-
-    if (exact[0]?.trade_id) return exact[0].trade_id;
-  }
-
-  const latest = await sql<{ trade_id: string }[]>`
-    SELECT trade_id
-    FROM trade_entries
-    WHERE symbol = ${exit.symbol}
-      AND side = ${exit.side}
-      AND status = 'OPEN'
-    ORDER BY opened_at DESC
-    LIMIT 1
-  `;
-
-  return latest[0]?.trade_id ?? null;
-}
-
-export async function insertExit(event: NormalizedWebhookEvent, exit: NormalizedExit): Promise<{
-  tradeId: string | null;
-  linked: boolean;
-}> {
-  const tradeId = await resolveExitTradeId(exit);
-
-  if (!tradeId) {
-    return { tradeId: null, linked: false };
-  }
-
+export async function insertTradeExit(
+  event: NormalizedWebhookEvent,
+  exit: NormalizedExit
+) {
   await sql`
     INSERT INTO trade_exits (
-      trade_id,
       event_id,
-
+      trade_id,
+      created_at,
+      source,
+      strategy_version,
+      run_id,
       symbol,
       side,
+      cohort_key,
 
       exit_reason,
       exit_r,
@@ -267,11 +252,15 @@ export async function insertExit(event: NormalizedWebhookEvent, exit: Normalized
       raw_payload
     )
     VALUES (
-      ${tradeId},
       ${event.eventId},
-
+      ${exit.tradeId || event.tradeId},
+      ${toDateIso()},
+      ${event.source},
+      ${event.strategyVersion},
+      ${event.runId},
       ${exit.symbol},
       ${exit.side},
+      ${event.cohortKey},
 
       ${exit.exitReason},
       ${exit.exitR},
@@ -303,34 +292,29 @@ export async function insertExit(event: NormalizedWebhookEvent, exit: Normalized
       ${exit.breakEvenActivated},
       ${exit.breakEvenStop},
 
-      ${sql.json(event.payload)}
+      ${jsonb(event.payload)}::jsonb
     )
     ON CONFLICT (event_id) DO NOTHING
   `;
-
-  await sql`
-    UPDATE trade_entries
-    SET status = 'CLOSED',
-        closed_at = now()
-    WHERE trade_id = ${tradeId}
-  `;
-
-  return { tradeId, linked: true };
 }
 
-export async function insertReject(event: NormalizedWebhookEvent, reject: NormalizedReject): Promise<void> {
+export async function insertTradeReject(
+  event: NormalizedWebhookEvent,
+  reject: NormalizedReject
+) {
   await sql`
     INSERT INTO trade_rejects (
       event_id,
+      created_at,
       source,
       strategy_version,
       run_id,
-
       symbol,
       side,
+      cohort_key,
+
       reject_reason,
       action,
-      cohort_key,
 
       scanner_score,
       confluence,
@@ -355,21 +339,22 @@ export async function insertReject(event: NormalizedWebhookEvent, reject: Normal
       would_entry,
       would_tp,
       would_sl,
-
       shadow_eligible,
+
       raw_payload
     )
     VALUES (
       ${event.eventId},
+      ${toDateIso()},
       ${event.source},
       ${event.strategyVersion},
       ${event.runId},
-
       ${reject.symbol},
       ${reject.side},
+      ${reject.cohortKey},
+
       ${reject.rejectReason},
       ${reject.action},
-      ${reject.cohortKey},
 
       ${reject.scannerScore},
       ${reject.confluence},
@@ -394,90 +379,144 @@ export async function insertReject(event: NormalizedWebhookEvent, reject: Normal
       ${reject.wouldEntry},
       ${reject.wouldTp},
       ${reject.wouldSl},
-
       ${reject.shadowEligible},
-      ${sql.json(event.payload)}
+
+      ${jsonb(event.payload)}::jsonb
     )
     ON CONFLICT (event_id) DO NOTHING
   `;
 }
 
-export async function insertSnapshot(event: NormalizedWebhookEvent): Promise<void> {
-  await sql`
-    INSERT INTO filter_snapshots (
-      event_id,
-      strategy_version,
-      run_id,
-      snapshot
-    )
-    VALUES (
-      ${event.eventId},
-      ${event.strategyVersion},
-      ${event.runId},
-      ${sql.json(event.payload)}
-    )
-    ON CONFLICT (event_id) DO NOTHING
-  `;
-}
+export async function saveNormalizedEvent(event: NormalizedWebhookEvent) {
+  const webhookResult = await insertWebhookEvent(event);
 
-export async function saveNormalizedEvent(event: NormalizedWebhookEvent): Promise<{
-  ok: boolean;
-  deduped?: boolean;
-  eventType: string;
-  tradeId: string | null;
-  linkedExit?: boolean;
-}> {
-  const raw = await insertRawEvent(event);
-
-  if (!raw.inserted) {
+  if (webhookResult.deduped) {
     return {
       ok: true,
       deduped: true,
-      eventType: event.eventType,
-      tradeId: event.tradeId
+      eventId: event.eventId,
+      eventType: event.eventType
     };
   }
 
   if (event.eventType === "ENTRY" && event.entry) {
-    await insertEntry(event, event.entry);
-    return {
-      ok: true,
-      eventType: event.eventType,
-      tradeId: event.entry.tradeId
-    };
+    await insertTradeEntry(event, event.entry);
   }
 
   if (event.eventType === "EXIT" && event.exit) {
-    const result = await insertExit(event, event.exit);
-    return {
-      ok: true,
-      eventType: event.eventType,
-      tradeId: result.tradeId,
-      linkedExit: result.linked
-    };
+    await insertTradeExit(event, event.exit);
   }
 
   if (event.eventType === "REJECT" && event.reject) {
-    await insertReject(event, event.reject);
-    return {
-      ok: true,
-      eventType: event.eventType,
-      tradeId: null
-    };
-  }
-
-  if (event.eventType === "SNAPSHOT") {
-    await insertSnapshot(event);
-    return {
-      ok: true,
-      eventType: event.eventType,
-      tradeId: event.tradeId
-    };
+    await insertTradeReject(event, event.reject);
   }
 
   return {
     ok: true,
-    eventType: event.eventType,
-    tradeId: event.tradeId
+    deduped: false,
+    eventId: event.eventId,
+    eventType: event.eventType
   };
+}
+
+export async function getRecentTradeRows(limit = 250) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 250, 1000));
+
+  const rows = await sql`
+    SELECT
+      'ENTRY' AS event_type,
+      event_id,
+      trade_id,
+      created_at,
+      symbol,
+      side,
+      cohort_key,
+      entry_price,
+      NULL::numeric AS exit_price,
+      tp_price,
+      sl_price,
+      NULL::numeric AS pnl_pct,
+      NULL::numeric AS exit_r,
+      NULL::text AS exit_reason,
+      final_rr,
+      confluence,
+      sniper_score,
+      rsi,
+      regime,
+      flow,
+      spread_bps,
+      depth_usd_1p
+    FROM trade_entries
+
+    UNION ALL
+
+    SELECT
+      'EXIT' AS event_type,
+      event_id,
+      trade_id,
+      created_at,
+      symbol,
+      side,
+      cohort_key,
+      entry_price,
+      exit_price,
+      tp_price,
+      sl_price,
+      pnl_pct,
+      exit_r,
+      exit_reason,
+      NULL::numeric AS final_rr,
+      NULL::numeric AS confluence,
+      NULL::numeric AS sniper_score,
+      NULL::numeric AS rsi,
+      NULL::text AS regime,
+      NULL::text AS flow,
+      NULL::numeric AS spread_bps,
+      NULL::numeric AS depth_usd_1p
+    FROM trade_exits
+
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getEntryRows(limit = 5000) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 5000, 50000));
+
+  const rows = await sql`
+    SELECT *
+    FROM trade_entries
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getExitRows(limit = 5000) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 5000, 50000));
+
+  const rows = await sql`
+    SELECT *
+    FROM trade_exits
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getRejectRows(limit = 5000) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 5000, 50000));
+
+  const rows = await sql`
+    SELECT *
+    FROM trade_rejects
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `;
+
+  return Array.isArray(rows) ? rows : [];
 }
