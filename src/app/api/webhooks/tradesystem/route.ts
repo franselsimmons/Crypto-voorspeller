@@ -62,11 +62,11 @@ function safeJsonParseObject(value: unknown): WebhookRecord | null {
 }
 
 function getEnvWebhookSecret(): string {
-  return (
+  return safeTrim(
     process.env.ANALYSIS_WEBHOOK_SECRET ||
-    process.env.WEBHOOK_SECRET ||
-    process.env.TRADE_WEBHOOK_SECRET ||
-    ""
+      process.env.WEBHOOK_SECRET ||
+      process.env.TRADE_WEBHOOK_SECRET ||
+      ""
   );
 }
 
@@ -95,7 +95,8 @@ function getIncomingSignature(req: NextRequest, body: WebhookRecord): string {
     safeTrim(body.xAnalysisWebhookSignature) ||
     safeTrim(body.xTradeWebhookSignature);
 
-  return safeTrim(fromHeader || fromBody || getEnvWebhookSecret());
+  // Belangrijk: NIET fallbacken naar eigen env-secret.
+  return safeTrim(fromHeader || fromBody || "");
 }
 
 function normalizeTradeSystemWebhookBody(
@@ -181,19 +182,17 @@ function normalizeTradeSystemWebhookBody(
 
   normalized.ts = safeTrim(normalized.ts || now, now);
 
-  // Cruciaal: ingest verwacht signature als string.
+  // Compat: dashboards/normalizer mogen deze velden gebruiken.
   normalized.signature = signature;
   normalized.webhookSignature = signature;
   normalized.webhookSecret = signature;
 
-  // Compat voor ingest/dashboard.
   normalized.payloadJson = safeString(
     normalized.payloadJson || JSON.stringify(merged)
   );
 
   normalized.rawJson = safeString(JSON.stringify(merged));
 
-  // Extra hardening: garandeer dat alles string is.
   for (const [key, value] of Object.entries(normalized)) {
     normalized[key] = safeString(value);
   }
@@ -201,31 +200,79 @@ function normalizeTradeSystemWebhookBody(
   return normalized;
 }
 
+function verifySharedSecret(req: NextRequest, rawPayload: WebhookRecord): {
+  ok: boolean;
+  signature: string;
+  error?: string;
+} {
+  const expectedSecret = getEnvWebhookSecret();
+  const incomingSignature = getIncomingSignature(req, rawPayload);
+
+  if (!expectedSecret) {
+    return {
+      ok: false,
+      signature: "",
+      error: "WEBHOOK_SECRET_ENV_MISSING"
+    };
+  }
+
+  if (!incomingSignature) {
+    return {
+      ok: false,
+      signature: "",
+      error: "WEBHOOK_SIGNATURE_MISSING_ROUTE"
+    };
+  }
+
+  if (incomingSignature !== expectedSecret) {
+    return {
+      ok: false,
+      signature: incomingSignature,
+      error: "WEBHOOK_SIGNATURE_INVALID_ROUTE"
+    };
+  }
+
+  return {
+    ok: true,
+    signature: incomingSignature
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawText = await req.text();
     const rawPayload = parseJsonObject(rawText);
 
-    const signature = getIncomingSignature(req, rawPayload);
+    const signatureCheck = verifySharedSecret(req, rawPayload);
 
-    if (!signature) {
+    if (!signatureCheck.ok) {
       return NextResponse.json(
         {
           ok: false,
-          error: "WEBHOOK_SIGNATURE_MISSING_ROUTE",
-          hint: "Set ANALYSIS_WEBHOOK_SECRET or send x-webhook-signature."
+          error: signatureCheck.error,
+          hint: "TradeSystem moet dezelfde ANALYSIS_WEBHOOK_SECRET sturen als deze analyse-app verwacht."
         },
         { status: 400 }
       );
     }
 
-    const payload = normalizeTradeSystemWebhookBody(rawPayload, signature);
+    const payload = normalizeTradeSystemWebhookBody(
+      rawPayload,
+      signatureCheck.signature
+    );
+
+    const normalizedRawBody = JSON.stringify(payload);
 
     /**
-     * Je ingestTradeSystemEvent verwacht volgens je build-error een string.
-     * Daarom geven we JSON.stringify(payload), niet het object zelf.
+     * Belangrijk:
+     * Deze route doet zelf shared-secret validatie.
+     * ingest.ts verwacht HMAC-signatures via options.signature.
+     * Jouw notifier stuurt shared-secret, geen HMAC.
+     * Daarom hier requireSignature:false.
      */
-    const result = await ingestTradeSystemEvent(JSON.stringify(payload));
+    const result = await ingestTradeSystemEvent(normalizedRawBody, {
+      requireSignature: false
+    });
 
     return NextResponse.json(result, {
       status: result?.deduped ? 200 : 202
