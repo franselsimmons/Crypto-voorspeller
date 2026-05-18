@@ -38,23 +38,7 @@ export type DashboardOptions = {
   setupClasses: string[];
 };
 
-export type CohortRow = {
-  cohortKey: string;
-  label: string;
-  sample: number;
-  count: number;
-  trades: number;
-
-  setupClass: string;
-  side: string;
-  rsiZone: string;
-  obBias: string;
-  reason: string;
-
-  avgScore: number;
-  avgConfluence: number;
-  avgSniper: number;
-
+export type ExitSummary = {
   exits: number;
   closed: number;
   wins: number;
@@ -69,11 +53,28 @@ export type CohortRow = {
   nearTpPct: number;
 };
 
-export type BreakdownRow = {
+export type CohortRow = ExitSummary & {
+  cohortKey: string;
+  label: string;
+  score: number;
+  sample: number;
+  count: number;
+  trades: number;
+
+  setupClass: string;
+  side: string;
+  rsiZone: string;
+  obBias: string;
+  reason: string;
+
+  avgScore: number;
+  avgConfluence: number;
+  avgSniper: number;
+};
+
+export type BreakdownRow = ExitSummary & {
   dimension: string;
   value: string;
-  label: string;
-
   reason: string;
   count: number;
   pct: number;
@@ -83,20 +84,9 @@ export type BreakdownRow = {
   exits: number;
   rejects: number;
   holds: number;
+  snapshots: number;
 
   examples: string;
-
-  closed: number;
-  wins: number;
-  losses: number;
-  winrate: number;
-  wilson: number;
-  totalR: number;
-  avgR: number;
-  pnlPct: number;
-  profitFactor: number | null;
-  directSlPct: number;
-  nearTpPct: number;
 };
 
 export type RecentTradeRow = {
@@ -165,21 +155,6 @@ export type DashboardData = {
   breakdown: BreakdownRow[];
   recentTrades: RecentTradeRow[];
   rawEvents: NormalizedWebhookEvent[];
-};
-
-type ExitSummary = {
-  exits: number;
-  closed: number;
-  wins: number;
-  losses: number;
-  winrate: number;
-  wilson: number;
-  totalR: number;
-  avgR: number;
-  pnlPct: number;
-  profitFactor: number | null;
-  directSlPct: number;
-  nearTpPct: number;
 };
 
 function one(value: string | string[] | undefined): string {
@@ -410,6 +385,22 @@ function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
   };
 }
 
+function scoreCohort(stats: ExitSummary, sample: number): number {
+  const sampleWeight = Math.min(1, sample / 30);
+  const profitFactor = stats.profitFactor === null ? 0 : Math.min(stats.profitFactor, 5);
+
+  const rawScore =
+    stats.winrate * 35 +
+    stats.wilson * 25 +
+    stats.avgR * 18 +
+    stats.totalR * 2 +
+    profitFactor * 4 -
+    stats.directSlPct * 18 +
+    stats.nearTpPct * 4;
+
+  return round(rawScore * sampleWeight, 2);
+}
+
 function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
   const exits = events.filter(event => event.eventType === "EXIT");
   const map = new Map<string, NormalizedWebhookEvent[]>();
@@ -432,6 +423,8 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
       return {
         cohortKey,
         label: cohortKey,
+        score: scoreCohort(stats, rows.length),
+
         sample: rows.length,
         count: rows.length,
         trades: rows.length,
@@ -459,84 +452,85 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
       };
     })
     .sort((a, b) => {
-      const totalRDiff = b.totalR - a.totalR;
+      const scoreDiff = n(b.score, 0) - n(a.score, 0);
+      if (scoreDiff !== 0) return scoreDiff;
+
+      const totalRDiff = n(b.totalR, 0) - n(a.totalR, 0);
       if (totalRDiff !== 0) return totalRDiff;
 
-      return b.trades - a.trades;
+      return n(b.trades, 0) - n(a.trades, 0);
     })
     .slice(0, 100);
 }
 
-function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
+function makeBreakdownRows(
+  events: NormalizedWebhookEvent[],
+  dimension: string,
+  getValue: (event: NormalizedWebhookEvent) => string | null | undefined
+): BreakdownRow[] {
   const total = events.length || 1;
-  const output: BreakdownRow[] = [];
+  const map = new Map<string, NormalizedWebhookEvent[]>();
 
-  function addDimension(
-    dimension: string,
-    getValue: (event: NormalizedWebhookEvent) => string
-  ): void {
-    const map = new Map<string, NormalizedWebhookEvent[]>();
+  for (const event of events) {
+    const value = String(getValue(event) || "UNKNOWN").trim() || "UNKNOWN";
 
-    for (const event of events) {
-      const value = getValue(event) || "UNKNOWN";
-
-      if (!map.has(value)) {
-        map.set(value, []);
-      }
-
-      map.get(value)!.push(event);
+    if (!map.has(value)) {
+      map.set(value, []);
     }
 
-    for (const [value, rows] of map.entries()) {
-      const entries = rows.filter(row => row.eventType === "ENTRY").length;
-      const exits = rows.filter(row => row.eventType === "EXIT").length;
-      const rejects = rows.filter(row => row.eventType === "REJECT").length;
-      const holds = rows.filter(row => row.eventType === "HOLD").length;
-
-      const stats = summarizeExitEvents(rows);
-
-      output.push({
-        dimension,
-        value,
-        label: `${dimension}: ${value}`,
-
-        reason: value,
-        count: rows.length,
-        pct: rows.length / total,
-        trades: stats.closed,
-
-        entries,
-        exits,
-        rejects,
-        holds,
-
-        examples: rows
-          .slice(-8)
-          .map(row => `${row.symbol}_${row.side}_${row.eventType}`)
-          .join(", "),
-
-        ...stats
-      });
-    }
+    map.get(value)!.push(event);
   }
 
-  addDimension("reason", event => event.reason || "UNKNOWN");
-  addDimension("eventType", event => event.eventType || "UNKNOWN");
-  addDimension("setupClass", event => event.setupClass || "UNKNOWN");
-  addDimension("side", event => event.side || "unknown");
-  addDimension("symbol", event => event.symbol || "UNKNOWN");
-  addDimension("rsiZone", event => event.rsiZone || "UNKNOWN");
-  addDimension("obBias", event => event.obBias || "UNKNOWN");
-  addDimension("strategyVersion", event => event.strategyVersion || "UNKNOWN");
+  return Array.from(map.entries()).map(([value, rows]) => {
+    const entries = rows.filter(row => row.eventType === "ENTRY").length;
+    const exits = rows.filter(row => row.eventType === "EXIT").length;
+    const rejects = rows.filter(row => row.eventType === "REJECT").length;
+    const holds = rows.filter(row => row.eventType === "HOLD").length;
+    const snapshots = rows.filter(row => row.eventType === "SNAPSHOT").length;
 
-  return output
+    const stats = summarizeExitEvents(rows);
+
+    return {
+      dimension,
+      value,
+      reason: value,
+      count: rows.length,
+      pct: rows.length / total,
+      trades: exits,
+
+      entries,
+      exits,
+      rejects,
+      holds,
+      snapshots,
+
+      examples: rows
+        .slice(-8)
+        .map(row => `${row.symbol}_${row.side}_${row.eventType}`)
+        .join(", "),
+
+      ...stats
+    };
+  });
+}
+
+function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
+  return [
+    ...makeBreakdownRows(events, "reason", event => event.reason),
+    ...makeBreakdownRows(events, "eventType", event => event.eventType),
+    ...makeBreakdownRows(events, "setupClass", event => event.setupClass),
+    ...makeBreakdownRows(events, "side", event => event.side),
+    ...makeBreakdownRows(events, "rsiZone", event => event.rsiZone),
+    ...makeBreakdownRows(events, "obBias", event => event.obBias),
+    ...makeBreakdownRows(events, "symbol", event => event.symbol)
+  ]
     .sort((a, b) => {
-      const countDiff = b.count - a.count;
+      const countDiff = n(b.count, 0) - n(a.count, 0);
       if (countDiff !== 0) return countDiff;
 
-      return b.totalR - a.totalR;
+      return n(b.totalR, 0) - n(a.totalR, 0);
     })
-    .slice(0, 100);
+    .slice(0, 150);
 }
 
 function buildRecentTrades(events: NormalizedWebhookEvent[]): RecentTradeRow[] {
