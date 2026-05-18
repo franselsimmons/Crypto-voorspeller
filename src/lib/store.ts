@@ -1,10 +1,10 @@
 import type { NormalizedWebhookEvent } from "./normalize";
 
-export type TradeEvent = NormalizedWebhookEvent;
+export type TradeEvent = NormalizedWebhookEvent & Record<string, unknown>;
 
 type RedisCommand = Array<string | number>;
 
-type SaveTradeEventResult = {
+export type SaveTradeEventResult = {
   ok: boolean;
   stored: boolean;
   deduped: boolean;
@@ -27,8 +27,8 @@ const TRADE_EVENTS_MAX_ROWS = Math.max(
 
 const memoryKey = "__TRADESYSTEM_ANALYSIS_EVENTS__";
 
-const memoryStore: NormalizedWebhookEvent[] =
-  ((globalThis as unknown as Record<string, NormalizedWebhookEvent[]>)[memoryKey] ||= []);
+const memoryStore: TradeEvent[] =
+  ((globalThis as unknown as Record<string, TradeEvent[]>)[memoryKey] ||= []);
 
 function getRedisUrl(): string {
   return (
@@ -85,11 +85,11 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   return json?.result as T;
 }
 
-function parseStoredEvent(value: unknown): NormalizedWebhookEvent | null {
+function parseStoredEvent(value: unknown): TradeEvent | null {
   if (!value) return null;
 
   if (typeof value === "object" && !Array.isArray(value)) {
-    return value as NormalizedWebhookEvent;
+    return value as TradeEvent;
   }
 
   if (typeof value !== "string") return null;
@@ -101,13 +101,13 @@ function parseStoredEvent(value: unknown): NormalizedWebhookEvent | null {
       return null;
     }
 
-    return parsed as NormalizedWebhookEvent;
+    return parsed as TradeEvent;
   } catch {
     return null;
   }
 }
 
-function sortEventsAsc(events: NormalizedWebhookEvent[]): NormalizedWebhookEvent[] {
+function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
   return [...events].sort((a, b) => {
     const tsDiff = Number(a.ts || 0) - Number(b.ts || 0);
     if (tsDiff !== 0) return tsDiff;
@@ -116,7 +116,7 @@ function sortEventsAsc(events: NormalizedWebhookEvent[]): NormalizedWebhookEvent
   });
 }
 
-function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
+function saveMemoryEvent(event: TradeEvent): SaveTradeEventResult {
   const exists = memoryStore.some(row => row.eventId === event.eventId);
 
   if (exists) {
@@ -155,13 +155,18 @@ export async function saveTradeEvent(
     throw new Error("TRADE_EVENT_EVENT_ID_MISSING");
   }
 
+  const storedEvent: TradeEvent = {
+    ...event,
+    storedAt: Date.now()
+  } as TradeEvent;
+
   if (!hasRedis()) {
     console.warn("TRADE_EVENT_STORE_USING_MEMORY_FALLBACK:", {
       reason: "Redis env missing",
       eventId: event.eventId
     });
 
-    return saveMemoryEvent(event);
+    return saveMemoryEvent(storedEvent);
   }
 
   const existing = await redisCommand<string | null>([
@@ -182,11 +187,6 @@ export async function saveTradeEvent(
     };
   }
 
-  const storedEvent = {
-    ...event,
-    storedAt: Date.now()
-  };
-
   await redisCommand([
     "HSET",
     TRADE_DEDUPE_KEY,
@@ -194,7 +194,7 @@ export async function saveTradeEvent(
     String(Date.now())
   ]);
 
-  const count = await redisCommand<number>([
+  const countRaw = await redisCommand<number | string>([
     "RPUSH",
     TRADE_EVENTS_KEY,
     JSON.stringify(storedEvent)
@@ -214,11 +214,11 @@ export async function saveTradeEvent(
     persistent: true,
     key: TRADE_EVENTS_KEY,
     eventId: event.eventId,
-    count
+    count: Number(countRaw || 0)
   };
 }
 
-export async function listTradeEvents(): Promise<NormalizedWebhookEvent[]> {
+export async function listTradeEvents(): Promise<TradeEvent[]> {
   if (!hasRedis()) {
     return sortEventsAsc(memoryStore);
   }
@@ -233,18 +233,14 @@ export async function listTradeEvents(): Promise<NormalizedWebhookEvent[]> {
   return sortEventsAsc(
     (Array.isArray(rows) ? rows : [])
       .map(parseStoredEvent)
-      .filter(Boolean) as NormalizedWebhookEvent[]
+      .filter(Boolean) as TradeEvent[]
   );
-}
-
-export async function getTradeEvents(): Promise<TradeEvent[]> {
-  return listTradeEvents();
 }
 
 export async function getTradeEventCount(): Promise<number> {
   if (!hasRedis()) return memoryStore.length;
 
-  const count = await redisCommand<number>([
+  const count = await redisCommand<number | string>([
     "LLEN",
     TRADE_EVENTS_KEY
   ]);
@@ -274,9 +270,31 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
   };
 }
 
+export async function getTradeEvents(): Promise<TradeEvent[]> {
+  return listTradeEvents();
+}
+
 export async function clearTradeEvents(): Promise<{
   ok: boolean;
   persistent: boolean;
 }> {
   return clearTradeEventsForDebugOnly();
+}
+
+export function isPersistentTradeStoreConfigured(): boolean {
+  return hasRedis();
+}
+
+export function getTradeStoreInfo(): {
+  persistent: boolean;
+  key: string;
+  dedupeKey: string;
+  maxRows: number;
+} {
+  return {
+    persistent: hasRedis(),
+    key: hasRedis() ? TRADE_EVENTS_KEY : "memory",
+    dedupeKey: TRADE_DEDUPE_KEY,
+    maxRows: TRADE_EVENTS_MAX_ROWS
+  };
 }
