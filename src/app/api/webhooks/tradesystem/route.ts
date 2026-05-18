@@ -5,11 +5,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type WebhookRecord = Record<string, unknown>;
-type FlatWebhookRecord = Record<string, string>;
 
 function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
-
   if (typeof value === "string") return value;
 
   if (typeof value === "number") {
@@ -45,29 +43,41 @@ function parseJsonObject(text: string): WebhookRecord {
   }
 }
 
-function safeJsonParseObject(value: unknown): WebhookRecord | null {
-  if (!value || typeof value !== "string") return null;
+function parseJsonField(value: unknown): WebhookRecord {
+  if (!value || typeof value !== "string") return {};
 
   try {
     const parsed = JSON.parse(value);
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
+      return {};
     }
 
     return parsed as WebhookRecord;
   } catch {
-    return null;
+    return {};
   }
 }
 
 function getEnvWebhookSecret(): string {
-  return safeTrim(
+  return (
     process.env.ANALYSIS_WEBHOOK_SECRET ||
-      process.env.WEBHOOK_SECRET ||
-      process.env.TRADE_WEBHOOK_SECRET ||
-      ""
+    process.env.WEBHOOK_SECRET ||
+    process.env.TRADE_WEBHOOK_SECRET ||
+    ""
   );
+}
+
+function shouldRequireWebhookSignature(): boolean {
+  const explicit =
+    process.env.REQUIRE_WEBHOOK_SIGNATURE ??
+    process.env.REQUIRE_ANALYSIS_WEBHOOK_SECRET;
+
+  if (explicit !== undefined) {
+    return String(explicit).toLowerCase() === "true";
+  }
+
+  return Boolean(getEnvWebhookSecret());
 }
 
 function getAuthorizationBearer(req: NextRequest): string {
@@ -77,7 +87,27 @@ function getAuthorizationBearer(req: NextRequest): string {
   return match?.[1]?.trim() || "";
 }
 
+function getIncomingTimestamp(req: NextRequest, body: WebhookRecord): string {
+  return safeTrim(
+    req.headers.get("x-webhook-timestamp") ||
+      req.headers.get("x-analysis-webhook-timestamp") ||
+      req.headers.get("x-trade-webhook-timestamp") ||
+      body.timestamp ||
+      body.ts ||
+      ""
+  );
+}
+
 function getIncomingSignature(req: NextRequest, body: WebhookRecord): string {
+  const payloadJson = parseJsonField(body.payloadJson);
+  const rawJson = parseJsonField(body.rawJson);
+
+  const merged: WebhookRecord = {
+    ...payloadJson,
+    ...rawJson,
+    ...body
+  };
+
   const fromHeader =
     req.headers.get("x-webhook-signature") ||
     req.headers.get("x-analysis-webhook-signature") ||
@@ -88,154 +118,14 @@ function getIncomingSignature(req: NextRequest, body: WebhookRecord): string {
     getAuthorizationBearer(req);
 
   const fromBody =
-    safeTrim(body.signature) ||
-    safeTrim(body.webhookSignature) ||
-    safeTrim(body.webhookSecret) ||
-    safeTrim(body.xWebhookSignature) ||
-    safeTrim(body.xAnalysisWebhookSignature) ||
-    safeTrim(body.xTradeWebhookSignature);
+    safeTrim(merged.signature) ||
+    safeTrim(merged.webhookSignature) ||
+    safeTrim(merged.webhookSecret) ||
+    safeTrim(merged.xWebhookSignature) ||
+    safeTrim(merged.xAnalysisWebhookSignature) ||
+    safeTrim(merged.xTradeWebhookSignature);
 
-  // Belangrijk: NIET fallbacken naar eigen env-secret.
-  return safeTrim(fromHeader || fromBody || "");
-}
-
-function normalizeTradeSystemWebhookBody(
-  rawBody: WebhookRecord,
-  signature: string
-): FlatWebhookRecord {
-  const payloadFromJson = safeJsonParseObject(rawBody.payloadJson);
-
-  const merged: WebhookRecord = {
-    ...(payloadFromJson || {}),
-    ...rawBody
-  };
-
-  const normalized: FlatWebhookRecord = {};
-
-  for (const [key, value] of Object.entries(merged)) {
-    normalized[key] = safeString(value);
-  }
-
-  const now = String(Date.now());
-
-  const fallbackEventId = `ts_${now}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-
-  normalized.eventId = safeTrim(
-    normalized.eventId || fallbackEventId,
-    fallbackEventId
-  );
-
-  normalized.eventType = safeTrim(
-    normalized.eventType || normalized.action || "SNAPSHOT",
-    "SNAPSHOT"
-  ).toUpperCase();
-
-  normalized.source = safeTrim(
-    normalized.source || "TRADE_SYSTEM",
-    "TRADE_SYSTEM"
-  );
-
-  normalized.strategyVersion = safeTrim(
-    normalized.strategyVersion || "UNKNOWN",
-    "UNKNOWN"
-  );
-
-  normalized.runId = safeTrim(
-    normalized.runId || "UNKNOWN",
-    "UNKNOWN"
-  );
-
-  normalized.tradeId = safeTrim(
-    normalized.tradeId || normalized.eventId,
-    normalized.eventId
-  );
-
-  normalized.symbol = safeTrim(
-    normalized.symbol || "UNKNOWN",
-    "UNKNOWN"
-  ).toUpperCase();
-
-  normalized.side = safeTrim(
-    normalized.side || "unknown",
-    "unknown"
-  ).toLowerCase();
-
-  normalized.action = safeTrim(
-    normalized.action || normalized.eventType || "SNAPSHOT",
-    "SNAPSHOT"
-  ).toUpperCase();
-
-  normalized.rejectReason = safeTrim(normalized.rejectReason || "");
-  normalized.exitReason = safeTrim(normalized.exitReason || "");
-  normalized.entryReason = safeTrim(normalized.entryReason || "");
-
-  normalized.reason = safeTrim(
-    normalized.reason ||
-      normalized.rejectReason ||
-      normalized.exitReason ||
-      normalized.entryReason ||
-      "UNKNOWN",
-    "UNKNOWN"
-  );
-
-  normalized.ts = safeTrim(normalized.ts || now, now);
-
-  // Compat: dashboards/normalizer mogen deze velden gebruiken.
-  normalized.signature = signature;
-  normalized.webhookSignature = signature;
-  normalized.webhookSecret = signature;
-
-  normalized.payloadJson = safeString(
-    normalized.payloadJson || JSON.stringify(merged)
-  );
-
-  normalized.rawJson = safeString(JSON.stringify(merged));
-
-  for (const [key, value] of Object.entries(normalized)) {
-    normalized[key] = safeString(value);
-  }
-
-  return normalized;
-}
-
-function verifySharedSecret(req: NextRequest, rawPayload: WebhookRecord): {
-  ok: boolean;
-  signature: string;
-  error?: string;
-} {
-  const expectedSecret = getEnvWebhookSecret();
-  const incomingSignature = getIncomingSignature(req, rawPayload);
-
-  if (!expectedSecret) {
-    return {
-      ok: false,
-      signature: "",
-      error: "WEBHOOK_SECRET_ENV_MISSING"
-    };
-  }
-
-  if (!incomingSignature) {
-    return {
-      ok: false,
-      signature: "",
-      error: "WEBHOOK_SIGNATURE_MISSING_ROUTE"
-    };
-  }
-
-  if (incomingSignature !== expectedSecret) {
-    return {
-      ok: false,
-      signature: incomingSignature,
-      error: "WEBHOOK_SIGNATURE_INVALID_ROUTE"
-    };
-  }
-
-  return {
-    ok: true,
-    signature: incomingSignature
-  };
+  return safeTrim(fromHeader || fromBody);
 }
 
 export async function POST(req: NextRequest) {
@@ -243,35 +133,27 @@ export async function POST(req: NextRequest) {
     const rawText = await req.text();
     const rawPayload = parseJsonObject(rawText);
 
-    const signatureCheck = verifySharedSecret(req, rawPayload);
+    const secret = getEnvWebhookSecret();
+    const signature = getIncomingSignature(req, rawPayload);
+    const timestamp = getIncomingTimestamp(req, rawPayload);
+    const requireSignature = shouldRequireWebhookSignature();
 
-    if (!signatureCheck.ok) {
+    if (requireSignature && !signature) {
       return NextResponse.json(
         {
           ok: false,
-          error: signatureCheck.error,
-          hint: "TradeSystem moet dezelfde ANALYSIS_WEBHOOK_SECRET sturen als deze analyse-app verwacht."
+          error: "WEBHOOK_SIGNATURE_MISSING_ROUTE",
+          hint: "Send x-webhook-signature / x-webhook-secret / Authorization Bearer."
         },
         { status: 400 }
       );
     }
 
-    const payload = normalizeTradeSystemWebhookBody(
-      rawPayload,
-      signatureCheck.signature
-    );
-
-    const normalizedRawBody = JSON.stringify(payload);
-
-    /**
-     * Belangrijk:
-     * Deze route doet zelf shared-secret validatie.
-     * ingest.ts verwacht HMAC-signatures via options.signature.
-     * Jouw notifier stuurt shared-secret, geen HMAC.
-     * Daarom hier requireSignature:false.
-     */
-    const result = await ingestTradeSystemEvent(normalizedRawBody, {
-      requireSignature: false
+    const result = await ingestTradeSystemEvent(rawText, {
+      signature,
+      timestamp,
+      secret,
+      requireSignature
     });
 
     return NextResponse.json(result, {
@@ -301,11 +183,12 @@ export async function GET() {
     ok: true,
     route: "tradesystem-webhook",
     methods: ["POST"],
-    usage: "Send TradeSystem ENTRY / EXIT / REJECT / SNAPSHOT payloads to this endpoint.",
+    usage: "Send TradeSystem ENTRY / EXIT / REJECT / WAIT / SNAPSHOT payloads to this endpoint.",
     env: {
       hasAnalysisWebhookSecret: Boolean(process.env.ANALYSIS_WEBHOOK_SECRET),
       hasWebhookSecret: Boolean(process.env.WEBHOOK_SECRET),
-      hasTradeWebhookSecret: Boolean(process.env.TRADE_WEBHOOK_SECRET)
+      hasTradeWebhookSecret: Boolean(process.env.TRADE_WEBHOOK_SECRET),
+      requireSignature: shouldRequireWebhookSignature()
     }
   });
 }
