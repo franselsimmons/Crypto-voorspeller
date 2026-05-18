@@ -1,11 +1,10 @@
 import type { NormalizedWebhookEvent } from "./normalize";
 
-export type TradeEvent = NormalizedWebhookEvent;
+export type TradeEvent = NormalizedWebhookEvent & Record<string, unknown>;
 
 type RedisCommand = Array<string | number>;
-type AnyRecord = Record<string, unknown>;
 
-type SaveTradeEventResult = {
+export type SaveTradeEventResult = {
   ok: boolean;
   stored: boolean;
   deduped: boolean;
@@ -26,20 +25,15 @@ const TRADE_EVENTS_MAX_ROWS = Math.max(
   Number(process.env.TRADE_EVENTS_MAX_ROWS || 50000)
 );
 
-const TRADE_EVENTS_READ_ROWS = Math.max(
-  50,
-  Number(process.env.TRADE_EVENTS_READ_ROWS || 1500)
-);
-
-const TRADE_EVENTS_READ_CHUNK = Math.max(
-  5,
-  Math.min(80, Number(process.env.TRADE_EVENTS_READ_CHUNK || 40))
+const TRADE_EVENTS_READ_LIMIT = Math.max(
+  100,
+  Number(process.env.TRADE_EVENTS_READ_LIMIT || 1000)
 );
 
 const memoryKey = "__TRADESYSTEM_ANALYSIS_EVENTS__";
 
-const memoryStore: NormalizedWebhookEvent[] =
-  ((globalThis as unknown as Record<string, NormalizedWebhookEvent[]>)[memoryKey] ||= []);
+const memoryStore: TradeEvent[] =
+  ((globalThis as unknown as Record<string, TradeEvent[]>)[memoryKey] ||= []);
 
 function getRedisUrl(): string {
   return (
@@ -59,179 +53,6 @@ function getRedisToken(): string {
 
 function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
-}
-
-function isRecord(value: unknown): value is AnyRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function safeString(value: unknown, fallback = ""): string {
-  if (value === null || value === undefined) return fallback;
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? String(value) : fallback;
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return fallback;
-  }
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "{}";
-  }
-}
-
-function truncateText(value: unknown, maxLength = 1200): string | null {
-  const text = safeString(value, "");
-
-  if (!text) return null;
-  if (text.length <= maxLength) return text;
-
-  return `${text.slice(0, maxLength)}…`;
-}
-
-function compactNested(value: unknown, maxJsonLength = 2500): unknown {
-  if (value === null || value === undefined) return null;
-
-  if (!isRecord(value) && !Array.isArray(value)) {
-    return value;
-  }
-
-  const json = safeJson(value);
-
-  if (json.length <= maxJsonLength) {
-    return value;
-  }
-
-  return {
-    truncated: true,
-    originalBytesApprox: json.length,
-    preview: json.slice(0, maxJsonLength)
-  };
-}
-
-function compactPayloadFromEvent(event: NormalizedWebhookEvent): AnyRecord {
-  const payload = isRecord(event.payload) ? event.payload : {};
-
-  return {
-    eventId: event.eventId,
-    eventType: event.eventType,
-    action: event.action,
-    source: event.source,
-    strategyVersion: event.strategyVersion,
-    runId: event.runId,
-    tradeId: event.tradeId,
-
-    symbol: event.symbol,
-    side: event.side,
-    reason: event.reason,
-    cohortKey: event.cohortKey,
-
-    setupClass: event.setupClass,
-    grade: event.grade,
-
-    ts: event.ts,
-    receivedAt: event.receivedAt,
-
-    score: event.score,
-    confluence: event.confluence,
-    sniperScore: event.sniperScore,
-
-    rsi: event.rsi,
-    rsiHTF: event.rsiHTF,
-    rsiZone: event.rsiZone,
-
-    obBias: event.obBias,
-    spreadPct: event.spreadPct,
-    depthMinUsd1p: event.depthMinUsd1p,
-
-    entry: event.entry,
-    sl: event.sl,
-    initialSl: event.initialSl,
-    tp: event.tp,
-    exit: event.exit,
-
-    rr: event.rr,
-    plannedRR: event.plannedRR,
-    baseRR: event.baseRR,
-    finalRr: event.finalRr,
-    exitR: event.exitR,
-    pnlPct: event.pnlPct,
-
-    mfeR: event.mfeR,
-    maeR: event.maeR,
-    currentR: event.currentR,
-
-    directToSL: event.directToSL,
-    nearTpSeen: event.nearTpSeen,
-    reachedHalfR: event.reachedHalfR,
-    reachedOneR: event.reachedOneR,
-    breakEvenActivated: event.breakEvenActivated,
-    breakEvenStop: event.breakEvenStop,
-
-    entryReason: payload.entryReason ?? payload.entryType ?? null,
-    exitReason: payload.exitReason ?? null,
-    flow: payload.flow ?? null,
-    regime: payload.regime ?? null,
-    btcState: payload.btcState ?? null,
-    rsiEdge: payload.rsiEdge ?? payload.rsiEntryEdge ?? null,
-    obRelation: payload.obRelation ?? null,
-    spreadBucket: payload.spreadBucket ?? null,
-    depthBucket: payload.depthBucket ?? null,
-
-    stage: payload.stage ?? null,
-    scannerStage: payload.scannerStage ?? null,
-    stageSource: payload.stageSource ?? null,
-
-    filterValues: compactNested(payload.filterValues),
-    filterChecks: compactNested(payload.filterChecks),
-    filterDiagnostics: compactNested(payload.filterDiagnostics),
-    liveFilterMetrics: compactNested(payload.liveFilterMetrics),
-    specialFilterChecks: compactNested(payload.specialFilterChecks),
-
-    rawPreview: truncateText(event.rawJson, 1200)
-  };
-}
-
-function compactTradeEvent(event: NormalizedWebhookEvent): NormalizedWebhookEvent {
-  const compactPayload = compactPayloadFromEvent(event);
-  const compactJson = safeJson(compactPayload);
-
-  return {
-    ...event,
-    payload: compactPayload,
-    rawJson: compactJson,
-    payloadJson: compactJson
-  };
-}
-
-function isMaxRequestSizeError(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : safeString(error, "");
-
-  const text = message.toLowerCase();
-
-  return (
-    text.includes("max request size") ||
-    text.includes("request size exceeded") ||
-    text.includes("max_request_size_exceeded")
-  );
 }
 
 async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
@@ -269,11 +90,11 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   return json?.result as T;
 }
 
-function parseStoredEvent(value: unknown): NormalizedWebhookEvent | null {
+function parseStoredEvent(value: unknown): TradeEvent | null {
   if (!value) return null;
 
-  if (isRecord(value)) {
-    return compactTradeEvent(value as NormalizedWebhookEvent);
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as TradeEvent;
   }
 
   if (typeof value !== "string") return null;
@@ -281,17 +102,17 @@ function parseStoredEvent(value: unknown): NormalizedWebhookEvent | null {
   try {
     const parsed = JSON.parse(value);
 
-    if (!isRecord(parsed)) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
 
-    return compactTradeEvent(parsed as NormalizedWebhookEvent);
+    return parsed as TradeEvent;
   } catch {
     return null;
   }
 }
 
-function sortEventsAsc(events: NormalizedWebhookEvent[]): NormalizedWebhookEvent[] {
+function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
   return [...events].sort((a, b) => {
     const tsDiff = Number(a.ts || 0) - Number(b.ts || 0);
     if (tsDiff !== 0) return tsDiff;
@@ -300,9 +121,107 @@ function sortEventsAsc(events: NormalizedWebhookEvent[]): NormalizedWebhookEvent
   });
 }
 
-function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
-  const compactEvent = compactTradeEvent(event);
-  const exists = memoryStore.some(row => row.eventId === compactEvent.eventId);
+function trimText(value: unknown, max = 2000): string {
+  if (value === null || value === undefined) return "";
+
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+
+  if (text.length <= max) return text;
+
+  return text.slice(0, max);
+}
+
+function compactPayload(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+
+  const row = payload as Record<string, unknown>;
+
+  return {
+    eventType: row.eventType,
+    action: row.action,
+    source: row.source,
+    strategyVersion: row.strategyVersion,
+    runId: row.runId,
+    tradeId: row.tradeId,
+
+    symbol: row.symbol,
+    side: row.side,
+    reason: row.reason,
+    entryReason: row.entryReason,
+    exitReason: row.exitReason,
+
+    setupClass: row.setupClass,
+    grade: row.grade,
+    gradePoints: row.gradePoints,
+
+    entry: row.entry,
+    price: row.price,
+    sl: row.sl,
+    initialSl: row.initialSl,
+    tp: row.tp,
+    exit: row.exit,
+
+    rr: row.rr,
+    plannedRR: row.plannedRR,
+    baseRR: row.baseRR,
+    finalRr: row.finalRr,
+    effectiveRR: row.effectiveRR,
+
+    exitR: row.exitR,
+    pnlPct: row.pnlPct,
+
+    score: row.score,
+    confluence: row.confluence,
+    rawConfluence: row.rawConfluence,
+    sniperScore: row.sniperScore,
+    rawSniperScore: row.rawSniperScore,
+    fallbackSniperScore: row.fallbackSniperScore,
+
+    rsi: row.rsi,
+    rsiHTF: row.rsiHTF,
+    rsiZone: row.rsiZone,
+    rsiEdge: row.rsiEdge,
+
+    obBias: row.obBias,
+    obRelation: row.obRelation,
+    spreadPct: row.spreadPct,
+    spreadBps: row.spreadBps,
+    depthMinUsd1p: row.depthMinUsd1p,
+
+    flow: row.flow,
+    regime: row.regime,
+    btcState: row.btcState,
+
+    mfeR: row.mfeR,
+    maeR: row.maeR,
+    currentR: row.currentR,
+
+    directToSL: row.directToSL,
+    nearTpSeen: row.nearTpSeen,
+    reachedHalfR: row.reachedHalfR,
+    reachedOneR: row.reachedOneR,
+    breakEvenActivated: row.breakEvenActivated,
+    breakEvenStop: row.breakEvenStop,
+
+    createdAt: row.createdAt,
+    ts: row.ts
+  };
+}
+
+function compactTradeEvent(event: NormalizedWebhookEvent): TradeEvent {
+  return {
+    ...event,
+
+    payload: compactPayload(event.payload),
+    rawJson: trimText(event.rawJson, 2000),
+    payloadJson: trimText(event.payloadJson, 2000)
+  };
+}
+
+function saveMemoryEvent(event: TradeEvent): SaveTradeEventResult {
+  const exists = memoryStore.some(row => row.eventId === event.eventId);
 
   if (exists) {
     return {
@@ -311,12 +230,12 @@ function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
       deduped: true,
       persistent: false,
       key: "memory",
-      eventId: compactEvent.eventId,
+      eventId: event.eventId,
       count: memoryStore.length
     };
   }
 
-  memoryStore.push(compactEvent);
+  memoryStore.push(event);
 
   if (memoryStore.length > TRADE_EVENTS_MAX_ROWS) {
     memoryStore.splice(0, memoryStore.length - TRADE_EVENTS_MAX_ROWS);
@@ -328,90 +247,9 @@ function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
     deduped: false,
     persistent: false,
     key: "memory",
-    eventId: compactEvent.eventId,
+    eventId: event.eventId,
     count: memoryStore.length
   };
-}
-
-async function readRedisEventsTail(): Promise<NormalizedWebhookEvent[]> {
-  const totalRaw = await redisCommand<number>([
-    "LLEN",
-    TRADE_EVENTS_KEY
-  ]);
-
-  const total = Number(totalRaw || 0);
-
-  if (!total) {
-    return [];
-  }
-
-  const wanted = Math.min(total, TRADE_EVENTS_READ_ROWS);
-  const batches: string[][] = [];
-
-  let end = total - 1;
-  let loaded = 0;
-  let chunkSize = Math.min(TRADE_EVENTS_READ_CHUNK, wanted);
-
-  while (end >= 0 && loaded < wanted) {
-    const remaining = wanted - loaded;
-    const take = Math.min(chunkSize, remaining, end + 1);
-    const start = Math.max(0, end - take + 1);
-
-    try {
-      const rows = await redisCommand<string[]>([
-        "LRANGE",
-        TRADE_EVENTS_KEY,
-        start,
-        end
-      ]);
-
-      const safeRows = Array.isArray(rows) ? rows : [];
-
-      batches.unshift(safeRows);
-
-      loaded += safeRows.length;
-      end = start - 1;
-
-      if (chunkSize < TRADE_EVENTS_READ_CHUNK) {
-        chunkSize = Math.min(TRADE_EVENTS_READ_CHUNK, chunkSize * 2);
-      }
-
-      continue;
-    } catch (error) {
-      if (isMaxRequestSizeError(error) && take > 1) {
-        chunkSize = Math.max(1, Math.floor(take / 2));
-
-        console.warn("TRADE_EVENT_READ_CHUNK_TOO_LARGE_RETRYING:", {
-          start,
-          end,
-          take,
-          nextChunkSize: chunkSize
-        });
-
-        continue;
-      }
-
-      if (isMaxRequestSizeError(error) && take <= 1) {
-        console.warn("TRADE_EVENT_SINGLE_ROW_TOO_LARGE_SKIPPED:", {
-          index: end,
-          error: error instanceof Error ? error.message : safeString(error)
-        });
-
-        end = start - 1;
-        loaded += 1;
-        continue;
-      }
-
-      throw error;
-    }
-  }
-
-  return sortEventsAsc(
-    batches
-      .flat()
-      .map(parseStoredEvent)
-      .filter(Boolean) as NormalizedWebhookEvent[]
-  );
 }
 
 export async function saveTradeEvent(
@@ -450,7 +288,7 @@ export async function saveTradeEvent(
     };
   }
 
-  const storedEvent = {
+  const storedEvent: TradeEvent = {
     ...compactEvent,
     storedAt: Date.now()
   };
@@ -465,7 +303,7 @@ export async function saveTradeEvent(
   const count = await redisCommand<number>([
     "RPUSH",
     TRADE_EVENTS_KEY,
-    safeJson(storedEvent)
+    JSON.stringify(storedEvent)
   ]);
 
   await redisCommand([
@@ -486,16 +324,29 @@ export async function saveTradeEvent(
   };
 }
 
-export async function listTradeEvents(): Promise<NormalizedWebhookEvent[]> {
+export async function listTradeEvents(limit = TRADE_EVENTS_READ_LIMIT): Promise<TradeEvent[]> {
+  const safeLimit = Math.max(100, Math.min(Number(limit || TRADE_EVENTS_READ_LIMIT), 2000));
+
   if (!hasRedis()) {
-    return sortEventsAsc(memoryStore.map(compactTradeEvent));
+    return sortEventsAsc(memoryStore.slice(-safeLimit));
   }
 
-  return readRedisEventsTail();
+  const rows = await redisCommand<string[]>([
+    "LRANGE",
+    TRADE_EVENTS_KEY,
+    -safeLimit,
+    -1
+  ]);
+
+  return sortEventsAsc(
+    (Array.isArray(rows) ? rows : [])
+      .map(parseStoredEvent)
+      .filter(Boolean) as TradeEvent[]
+  );
 }
 
-export async function getTradeEvents(): Promise<NormalizedWebhookEvent[]> {
-  return listTradeEvents();
+export async function getTradeEvents(limit = TRADE_EVENTS_READ_LIMIT): Promise<TradeEvent[]> {
+  return listTradeEvents(limit);
 }
 
 export async function getTradeEventCount(): Promise<number> {
