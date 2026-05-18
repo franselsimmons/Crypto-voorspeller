@@ -6,14 +6,14 @@ type FilterFormProps = {
 };
 
 type SelectFieldProps = {
-  name: keyof DashboardFilters | string;
+  name: keyof DashboardFilters;
   label: string;
   value: string;
   options: string[];
 };
 
 type NumberFieldProps = {
-  name: keyof DashboardFilters | string;
+  name: keyof DashboardFilters;
   label: string;
   value: string | number;
   step?: string;
@@ -23,7 +23,7 @@ function SelectField({ name, label, value, options }: SelectFieldProps) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select name={name} defaultValue={value || ""}>
+      <select name={String(name)} defaultValue={value}>
         <option value="">Alles</option>
         {options.map(option => (
           <option key={option} value={option}>
@@ -35,13 +35,13 @@ function SelectField({ name, label, value, options }: SelectFieldProps) {
   );
 }
 
-function NumberField({ name, label, value, step = "any" }: NumberFieldProps) {
+function NumberField({ name, label, value, step = "0.01" }: NumberFieldProps) {
   return (
     <label className="field">
       <span>{label}</span>
       <input
+        name={String(name)}
         type="number"
-        name={name}
         step={step}
         defaultValue={String(value ?? "")}
       />
@@ -49,28 +49,9 @@ function NumberField({ name, label, value, step = "any" }: NumberFieldProps) {
   );
 }
 
-function TextField({
-  name,
-  label,
-  value,
-  type = "text"
-}: {
-  name: keyof DashboardFilters | string;
-  label: string;
-  value: string;
-  type?: string;
-}) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      <input type={type} name={name} defaultValue={value || ""} />
-    </label>
-  );
-}
-
 export function FilterForm({ filters, options }: FilterFormProps) {
   return (
-    <form className="filter-panel" method="get">
+    <form className="filter-form" method="GET">
       <div className="filter-grid">
         <SelectField
           name="strategyVersion"
@@ -91,13 +72,6 @@ export function FilterForm({ filters, options }: FilterFormProps) {
           label="Event"
           value={filters.eventType}
           options={options.eventTypes}
-        />
-
-        <SelectField
-          name="reason"
-          label="Reason"
-          value={filters.reason}
-          options={options.reasons}
         />
 
         <SelectField
@@ -184,6 +158,13 @@ export function FilterForm({ filters, options }: FilterFormProps) {
           options={options.depthBuckets}
         />
 
+        <SelectField
+          name="reason"
+          label="Reason"
+          value={filters.reason}
+          options={options.reasons}
+        />
+
         <label className="field">
           <span>Outcome</span>
           <select name="outcome" defaultValue={filters.outcome}>
@@ -194,8 +175,15 @@ export function FilterForm({ filters, options }: FilterFormProps) {
           </select>
         </label>
 
-        <TextField name="from" label="Vanaf" value={filters.from} type="datetime-local" />
-        <TextField name="to" label="Tot" value={filters.to} type="datetime-local" />
+        <label className="field">
+          <span>From</span>
+          <input name="from" type="datetime-local" defaultValue={filters.from} />
+        </label>
+
+        <label className="field">
+          <span>To</span>
+          <input name="to" type="datetime-local" defaultValue={filters.to} />
+        </label>
       </div>
 
       <div className="filter-grid optimizer-grid">
@@ -203,17 +191,20 @@ export function FilterForm({ filters, options }: FilterFormProps) {
         <NumberField name="winrateWeight" label="Winrate gewicht" value={filters.winrateWeight} />
         <NumberField name="pnlWeight" label="PnL gewicht" value={filters.pnlWeight} />
         <NumberField name="avgRWeight" label="Avg R gewicht" value={filters.avgRWeight} />
-        <NumberField name="totalRWeight" label="Total R gewicht" value={filters.totalRWeight} />
-        <NumberField name="directSlPenalty" label="Direct SL penalty" value={filters.directSlPenalty} />
+        <NumberField name="wilsonWeight" label="Wilson gewicht" value={filters.wilsonWeight} />
+        <NumberField name="profitFactorWeight" label="PF gewicht" value={filters.profitFactorWeight} />
         <NumberField name="nearTpWeight" label="Near TP gewicht" value={filters.nearTpWeight} />
+        <NumberField name="directSlPenalty" label="Direct SL penalty" value={filters.directSlPenalty} />
+        <NumberField name="minWilson" label="Min Wilson %" value={filters.minWilson} />
+        <NumberField name="minWinrate" label="Min winrate %" value={filters.minWinrate} />
       </div>
 
       <div className="filter-actions">
-        <button type="submit">Filter toepassen</button>
-        <a href="/" className="button-secondary">
-          Reset
-        </a>
+        <button type="submit">Toepassen</button>
+        <a href="/">Reset</a>
       </div>
     </form>
   );
 }
+
+export default FilterForm;
