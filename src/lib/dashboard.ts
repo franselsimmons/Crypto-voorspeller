@@ -12,6 +12,16 @@ export type DashboardFilters = {
   eventType: string;
   reason: string;
   setupClass: string;
+  grade: string;
+  regime: string;
+  flow: string;
+  btcState: string;
+  rsiZone: string;
+  rsiEdge: string;
+  obBias: string;
+  obRelation: string;
+  spreadBucket: string;
+  depthBucket: string;
   from: string;
   to: string;
 };
@@ -38,6 +48,16 @@ export type DashboardOptions = {
   eventTypes: string[];
   reasons: string[];
   setupClasses: string[];
+  grades: string[];
+  regimes: string[];
+  flows: string[];
+  btcStates: string[];
+  rsiZones: string[];
+  rsiEdges: string[];
+  obBiases: string[];
+  obRelations: string[];
+  spreadBuckets: string[];
+  depthBuckets: string[];
 };
 
 export type ExitSummary = {
@@ -67,6 +87,7 @@ export type CohortRow = ExitSummary & {
   setupClass: string;
   side: string;
   reason: string;
+  grade: string;
 
   rsiZone: string;
   rsiEdge: string;
@@ -256,171 +277,18 @@ export function parseDashboardFilters(params: SearchParams = {}): DashboardFilte
     eventType: upper(one(params.eventType || params.type)),
     reason: upper(one(params.reason)),
     setupClass: upper(one(params.setupClass || params.setup)),
+    grade: upper(one(params.grade)),
+    regime: upper(one(params.regime)),
+    flow: upper(one(params.flow)),
+    btcState: upper(one(params.btcState)),
+    rsiZone: upper(one(params.rsiZone)),
+    rsiEdge: upper(one(params.rsiEdge)),
+    obBias: upper(one(params.obBias)),
+    obRelation: upper(one(params.obRelation)),
+    spreadBucket: upper(one(params.spreadBucket)),
+    depthBucket: upper(one(params.depthBucket)),
     from: one(params.from),
     to: one(params.to)
-  };
-}
-
-function eventPassesFilters(
-  event: NormalizedWebhookEvent,
-  filters: DashboardFilters
-): boolean {
-  if (filters.strategyVersion && event.strategyVersion !== filters.strategyVersion) {
-    return false;
-  }
-
-  if (filters.symbol && upper(event.symbol) !== upper(filters.symbol)) {
-    return false;
-  }
-
-  if (filters.side && lower(event.side) !== filters.side) {
-    return false;
-  }
-
-  if (filters.eventType && upper(event.eventType) !== filters.eventType) {
-    return false;
-  }
-
-  if (filters.reason && upper(event.reason) !== filters.reason) {
-    return false;
-  }
-
-  if (filters.setupClass && upper(event.setupClass) !== filters.setupClass) {
-    return false;
-  }
-
-  const fromMs = parseDateMs(filters.from);
-  const toMs = parseDateMs(filters.to);
-
-  if (fromMs !== null && Number(event.ts || 0) < fromMs) {
-    return false;
-  }
-
-  if (toMs !== null && Number(event.ts || 0) > toMs) {
-    return false;
-  }
-
-  return true;
-}
-
-function wilsonLowerBound(wins: number, total: number): number {
-  if (!total) return 0;
-
-  const z = 1.96;
-  const p = wins / total;
-  const denom = 1 + (z * z) / total;
-  const center = p + (z * z) / (2 * total);
-  const margin =
-    z *
-    Math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total);
-
-  return Math.max(0, (center - margin) / denom);
-}
-
-function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null {
-  const exits = events.filter(event => event.eventType === "EXIT");
-
-  const rValues = exits
-    .map(event => n(event.exitR, 0))
-    .filter(Number.isFinite);
-
-  const grossWin = rValues
-    .filter(value => value > 0)
-    .reduce((sum, value) => sum + value, 0);
-
-  const grossLoss = Math.abs(
-    rValues
-      .filter(value => value < 0)
-      .reduce((sum, value) => sum + value, 0)
-  );
-
-  if (!grossWin && !grossLoss) return null;
-  if (!grossLoss) return 999;
-
-  return round(grossWin / grossLoss, 3);
-}
-
-function buildOverview(events: NormalizedWebhookEvent[]): Overview {
-  const entries = events.filter(event => event.eventType === "ENTRY");
-  const exits = events.filter(event => event.eventType === "EXIT");
-
-  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
-  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
-  const completed = wins + losses;
-
-  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
-  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
-
-  const directSlCount = exits.filter(event => event.directToSL).length;
-  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
-
-  const openByTradeId = new Map<string, NormalizedWebhookEvent>();
-
-  for (const entry of entries) {
-    if (!entry.tradeId) continue;
-    openByTradeId.set(entry.tradeId, entry);
-  }
-
-  for (const exit of exits) {
-    if (!exit.tradeId) continue;
-    openByTradeId.delete(exit.tradeId);
-  }
-
-  return {
-    entries: entries.length,
-    closed: exits.length,
-    open: openByTradeId.size,
-    winrate: completed ? wins / completed : 0,
-    wilson: wilsonLowerBound(wins, completed),
-    totalR: round(totalR, 3),
-    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
-    pnlPct: round(pnlPct, 3),
-    profitFactor: profitFactorFromEvents(events),
-    directSlPct: exits.length ? directSlCount / exits.length : 0,
-    nearTpPct: exits.length ? nearTpCount / exits.length : 0
-  };
-}
-
-function buildOptions(events: NormalizedWebhookEvent[]): DashboardOptions {
-  const strategies = uniqueSorted(events.map(event => event.strategyVersion));
-
-  return {
-    strategies,
-    strategyVersions: strategies,
-    symbols: uniqueSorted(events.map(event => event.symbol)),
-    sides: uniqueSorted(events.map(event => event.side)),
-    eventTypes: uniqueSorted(events.map(event => event.eventType)),
-    reasons: uniqueSorted(events.map(event => event.reason)),
-    setupClasses: uniqueSorted(events.map(event => event.setupClass))
-  };
-}
-
-function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
-  const exits = events.filter(event => event.eventType === "EXIT");
-
-  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
-  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
-  const completed = wins + losses;
-
-  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
-  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
-
-  const directSlCount = exits.filter(event => event.directToSL).length;
-  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
-
-  return {
-    exits: exits.length,
-    closed: exits.length,
-    wins,
-    losses,
-    winrate: completed ? wins / completed : 0,
-    wilson: wilsonLowerBound(wins, completed),
-    totalR: round(totalR, 3),
-    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
-    pnlPct: round(pnlPct, 3),
-    profitFactor: profitFactorFromEvents(exits),
-    directSlPct: exits.length ? directSlCount / exits.length : 0,
-    nearTpPct: exits.length ? nearTpCount / exits.length : 0
   };
 }
 
@@ -430,6 +298,10 @@ function eventText(
   fallback = "UNKNOWN"
 ): string {
   return upper(getValue(event, paths, fallback)) || fallback;
+}
+
+function eventGrade(event: NormalizedWebhookEvent): string {
+  return upper(event.grade || getValue(event, ["payload.grade"], "UNKNOWN")) || "UNKNOWN";
 }
 
 function eventFlow(event: NormalizedWebhookEvent): string {
@@ -555,15 +427,235 @@ function eventDepthBucket(event: NormalizedWebhookEvent): string {
   return "DEPTH_GTE_1M";
 }
 
+function eventPassesFilters(
+  event: NormalizedWebhookEvent,
+  filters: DashboardFilters
+): boolean {
+  if (filters.strategyVersion && event.strategyVersion !== filters.strategyVersion) {
+    return false;
+  }
+
+  if (filters.symbol && upper(event.symbol) !== upper(filters.symbol)) {
+    return false;
+  }
+
+  if (filters.side && lower(event.side) !== filters.side) {
+    return false;
+  }
+
+  if (filters.eventType && upper(event.eventType) !== filters.eventType) {
+    return false;
+  }
+
+  if (filters.reason && upper(event.reason) !== filters.reason) {
+    return false;
+  }
+
+  if (filters.setupClass && upper(event.setupClass) !== filters.setupClass) {
+    return false;
+  }
+
+  if (filters.grade && eventGrade(event) !== filters.grade) {
+    return false;
+  }
+
+  if (filters.regime && eventRegime(event) !== filters.regime) {
+    return false;
+  }
+
+  if (filters.flow && eventFlow(event) !== filters.flow) {
+    return false;
+  }
+
+  if (filters.btcState && eventBtcState(event) !== filters.btcState) {
+    return false;
+  }
+
+  if (filters.rsiZone && upper(event.rsiZone) !== filters.rsiZone) {
+    return false;
+  }
+
+  if (filters.rsiEdge && eventRsiEdge(event) !== filters.rsiEdge) {
+    return false;
+  }
+
+  if (filters.obBias && eventObBias(event) !== filters.obBias) {
+    return false;
+  }
+
+  if (filters.obRelation && eventObRelation(event) !== filters.obRelation) {
+    return false;
+  }
+
+  if (filters.spreadBucket && eventSpreadBucket(event) !== filters.spreadBucket) {
+    return false;
+  }
+
+  if (filters.depthBucket && eventDepthBucket(event) !== filters.depthBucket) {
+    return false;
+  }
+
+  const fromMs = parseDateMs(filters.from);
+  const toMs = parseDateMs(filters.to);
+
+  if (fromMs !== null && Number(event.ts || 0) < fromMs) {
+    return false;
+  }
+
+  if (toMs !== null && Number(event.ts || 0) > toMs) {
+    return false;
+  }
+
+  return true;
+}
+
+function wilsonLowerBound(wins: number, total: number): number {
+  if (!total) return 0;
+
+  const z = 1.96;
+  const p = wins / total;
+  const denom = 1 + (z * z) / total;
+  const center = p + (z * z) / (2 * total);
+  const margin =
+    z *
+    Math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total);
+
+  return Math.max(0, (center - margin) / denom);
+}
+
+function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null {
+  const exits = events.filter(event => event.eventType === "EXIT");
+
+  const rValues = exits
+    .map(event => n(event.exitR, 0))
+    .filter(Number.isFinite);
+
+  const grossWin = rValues
+    .filter(value => value > 0)
+    .reduce((sum, value) => sum + value, 0);
+
+  const grossLoss = Math.abs(
+    rValues
+      .filter(value => value < 0)
+      .reduce((sum, value) => sum + value, 0)
+  );
+
+  if (!grossWin && !grossLoss) return null;
+  if (!grossLoss) return 999;
+
+  return round(grossWin / grossLoss, 3);
+}
+
+function buildOverview(events: NormalizedWebhookEvent[]): Overview {
+  const entries = events.filter(event => event.eventType === "ENTRY");
+  const exits = events.filter(event => event.eventType === "EXIT");
+
+  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
+  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
+  const completed = wins + losses;
+
+  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
+  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
+
+  const directSlCount = exits.filter(event => event.directToSL).length;
+  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
+
+  const openByTradeId = new Map<string, NormalizedWebhookEvent>();
+
+  for (const entry of entries) {
+    if (!entry.tradeId) continue;
+    openByTradeId.set(entry.tradeId, entry);
+  }
+
+  for (const exit of exits) {
+    if (!exit.tradeId) continue;
+    openByTradeId.delete(exit.tradeId);
+  }
+
+  return {
+    entries: entries.length,
+    closed: exits.length,
+    open: openByTradeId.size,
+    winrate: completed ? wins / completed : 0,
+    wilson: wilsonLowerBound(wins, completed),
+    totalR: round(totalR, 3),
+    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
+    pnlPct: round(pnlPct, 3),
+    profitFactor: profitFactorFromEvents(events),
+    directSlPct: exits.length ? directSlCount / exits.length : 0,
+    nearTpPct: exits.length ? nearTpCount / exits.length : 0
+  };
+}
+
+function buildOptions(events: NormalizedWebhookEvent[]): DashboardOptions {
+  const strategies = uniqueSorted(events.map(event => event.strategyVersion));
+
+  return {
+    strategies,
+    strategyVersions: strategies,
+
+    symbols: uniqueSorted(events.map(event => event.symbol)),
+    sides: uniqueSorted(events.map(event => event.side)),
+    eventTypes: uniqueSorted(events.map(event => event.eventType)),
+    reasons: uniqueSorted(events.map(event => event.reason)),
+    setupClasses: uniqueSorted(events.map(event => event.setupClass)),
+
+    grades: uniqueSorted(events.map(event => eventGrade(event))),
+    regimes: uniqueSorted(events.map(event => eventRegime(event))),
+    flows: uniqueSorted(events.map(event => eventFlow(event))),
+    btcStates: uniqueSorted(events.map(event => eventBtcState(event))),
+
+    rsiZones: uniqueSorted(events.map(event => event.rsiZone)),
+    rsiEdges: uniqueSorted(events.map(event => eventRsiEdge(event))),
+
+    obBiases: uniqueSorted(events.map(event => eventObBias(event))),
+    obRelations: uniqueSorted(events.map(event => eventObRelation(event))),
+
+    spreadBuckets: uniqueSorted(events.map(event => eventSpreadBucket(event))),
+    depthBuckets: uniqueSorted(events.map(event => eventDepthBucket(event)))
+  };
+}
+
+function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
+  const exits = events.filter(event => event.eventType === "EXIT");
+
+  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
+  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
+  const completed = wins + losses;
+
+  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
+  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
+
+  const directSlCount = exits.filter(event => event.directToSL).length;
+  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
+
+  return {
+    exits: exits.length,
+    closed: exits.length,
+    wins,
+    losses,
+    winrate: completed ? wins / completed : 0,
+    wilson: wilsonLowerBound(wins, completed),
+    totalR: round(totalR, 3),
+    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
+    pnlPct: round(pnlPct, 3),
+    profitFactor: profitFactorFromEvents(exits),
+    directSlPct: exits.length ? directSlCount / exits.length : 0,
+    nearTpPct: exits.length ? nearTpCount / exits.length : 0
+  };
+}
+
 function getCohortKey(event: NormalizedWebhookEvent): string {
   return [
     `SETUP=${event.setupClass || "UNKNOWN"}`,
+    `GRADE=${eventGrade(event)}`,
     `SIDE=${event.side || "unknown"}`,
     `REASON=${event.reason || "UNKNOWN"}`,
     `RSI=${event.rsiZone || "UNKNOWN"}`,
     `EDGE=${eventRsiEdge(event)}`,
     `FLOW=${eventFlow(event)}`,
     `BTC=${eventBtcState(event)}`,
+    `REGIME=${eventRegime(event)}`,
     `OB=${eventObRelation(event)}`,
     eventSpreadBucket(event),
     eventDepthBucket(event)
@@ -617,6 +709,7 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
         setupClass: first?.setupClass || "UNKNOWN",
         side: first?.side || "unknown",
         reason: first?.reason || "UNKNOWN",
+        grade: first ? eventGrade(first) : "UNKNOWN",
 
         rsiZone: first?.rsiZone || "UNKNOWN",
         rsiEdge: first ? eventRsiEdge(first) : "UNKNOWN",
@@ -716,6 +809,7 @@ function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
     ...makeBreakdownRows(events, "reason", event => event.reason),
     ...makeBreakdownRows(events, "eventType", event => event.eventType),
     ...makeBreakdownRows(events, "setupClass", event => event.setupClass),
+    ...makeBreakdownRows(events, "grade", event => eventGrade(event)),
     ...makeBreakdownRows(events, "side", event => event.side),
     ...makeBreakdownRows(events, "rsiZone", event => event.rsiZone),
     ...makeBreakdownRows(events, "rsiEdge", event => eventRsiEdge(event)),
