@@ -1,103 +1,111 @@
-import type { TradeRow } from "@/lib/dashboard";
-import { compactNumber, dateTime, money, pct, r } from "@/lib/format";
+import type { RecentTradeRow } from "@/lib/dashboard";
+import { compactNumber, pct, r } from "@/lib/format";
 
 type RecentTradesTableProps = {
-  rows: TradeRow[];
+  rows: RecentTradeRow[];
 };
 
-function tone(value: number | null) {
-  if (value === null) return "";
-  if (value > 0) return "positive";
-  if (value < 0) return "negative";
+function tone(value: number | null | undefined): string {
+  const n = Number(value || 0);
+
+  if (n > 0) return "good";
+  if (n < 0) return "bad";
+
   return "";
 }
 
-function yesNo(value: boolean | null) {
-  if (value === null) return "—";
-  return value ? "YES" : "NO";
+function fmt(value: number | null | undefined, decimals = 4): string {
+  if (value === null || value === undefined) return "—";
+  return compactNumber(value, decimals);
+}
+
+function dateText(ts: number): string {
+  if (!ts) return "—";
+
+  try {
+    return new Date(ts).toLocaleString("nl-NL");
+  } catch {
+    return "—";
+  }
 }
 
 export function RecentTradesTable({ rows }: RecentTradesTableProps) {
   return (
-    <div className="panel">
-      <div className="panel-title">Alle trades</div>
-      <div className="panel-subtitle">
-        Laatste 150 entries met exit, path en filter-snapshot.
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>Recente events</h2>
+          <p>Laatste entry, exit, reject en snapshot records.</p>
+        </div>
       </div>
 
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Open</th>
-              <th>Coin</th>
+              <th>Tijd</th>
+              <th>Event</th>
+              <th>Symbol</th>
               <th>Side</th>
               <th>Setup</th>
-              <th>Grade</th>
+              <th>Reason</th>
               <th>Entry</th>
-              <th>TP</th>
               <th>SL</th>
+              <th>TP</th>
               <th>Exit</th>
-              <th>R</th>
+              <th>RR</th>
+              <th>Exit R</th>
               <th>PnL</th>
-              <th>MFE</th>
-              <th>MAE</th>
-              <th>Hold</th>
-              <th>Direct SL</th>
-              <th>Near TP</th>
+              <th>Score</th>
+              <th>Conf</th>
+              <th>Sniper</th>
               <th>RSI</th>
-              <th>RSI zone</th>
+              <th>Edge</th>
               <th>Flow</th>
-              <th>Regime</th>
               <th>BTC</th>
               <th>OB</th>
-              <th>Spread</th>
-              <th>Depth</th>
-              <th>Cohort</th>
             </tr>
           </thead>
 
           <tbody>
-            {rows.map(row => (
-              <tr key={row.tradeId}>
-                <td>{dateTime(row.openedAt)}</td>
-                <td>{row.symbol}</td>
-                <td>{row.side}</td>
-                <td>{row.setupClass}</td>
-                <td>{row.grade}</td>
-                <td>{money(row.entryPrice)}</td>
-                <td>{money(row.tpPrice)}</td>
-                <td>{money(row.slPrice)}</td>
-                <td>{row.exitReason || "OPEN"}</td>
-                <td className={tone(row.exitR)}>{row.exitR === null ? "—" : r(row.exitR)}</td>
-                <td className={tone(row.pnlPct)}>{row.pnlPct === null ? "—" : pct(row.pnlPct)}</td>
-                <td className={tone(row.mfeR)}>{row.mfeR === null ? "—" : r(row.mfeR)}</td>
-                <td className={tone(row.maeR)}>{row.maeR === null ? "—" : r(row.maeR)}</td>
-                <td>{row.holdMinutes === null ? "—" : `${compactNumber(row.holdMinutes, 0)}m`}</td>
-                <td>{yesNo(row.directToSL)}</td>
-                <td>{yesNo(row.nearTpSeen)}</td>
-                <td>{compactNumber(row.rsi, 2)}</td>
-                <td>{row.rsiZone || "—"}</td>
-                <td>{row.flow || "—"}</td>
-                <td>{row.regime || "—"}</td>
-                <td>{row.btcState || "—"}</td>
-                <td>{row.obRelation || "—"}</td>
-                <td>{row.spreadBps === null ? "—" : `${compactNumber(row.spreadBps, 2)} bps`}</td>
-                <td>{row.depthUsd1p === null ? "—" : money(row.depthUsd1p, 0)}</td>
-                <td className="mono cohort-cell">{row.cohortKey}</td>
-              </tr>
-            ))}
-
-            {!rows.length ? (
+            {rows.length === 0 ? (
               <tr>
-                <td colSpan={25} className="empty">
-                  Nog geen trades.
+                <td colSpan={21} className="empty-cell">
+                  Nog geen events ontvangen.
                 </td>
               </tr>
-            ) : null}
+            ) : (
+              rows.map(row => (
+                <tr key={row.eventId}>
+                  <td>{dateText(row.ts || row.receivedAt)}</td>
+                  <td>{row.eventType}</td>
+                  <td className="mono">{row.symbol || "—"}</td>
+                  <td>{row.side || "—"}</td>
+                  <td>{row.setupClass || "—"}</td>
+                  <td>{row.reason}</td>
+                  <td>{fmt(row.entry)}</td>
+                  <td>{fmt(row.sl)}</td>
+                  <td>{fmt(row.tp)}</td>
+                  <td>{fmt(row.exit)}</td>
+                  <td>{fmt(row.finalRr ?? row.plannedRR ?? row.rr, 2)}</td>
+                  <td className={tone(row.exitR)}>{row.exitR === null ? "—" : r(row.exitR)}</td>
+                  <td className={tone(row.pnlPct)}>
+                    {row.pnlPct === null ? "—" : pct(row.pnlPct / 100)}
+                  </td>
+                  <td>{compactNumber(row.score, 0)}</td>
+                  <td>{compactNumber(row.confluence, 0)}</td>
+                  <td>{compactNumber(row.sniperScore, 0)}</td>
+                  <td>{row.rsiZone || "—"}</td>
+                  <td>{row.rsiEdge}</td>
+                  <td>{row.flow}</td>
+                  <td>{row.btcState}</td>
+                  <td>{row.obRelation}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
