@@ -1,3 +1,5 @@
+// src/lib/normalize.ts
+
 export type WebhookRecord = Record<string, unknown>;
 
 export type NormalizedWebhookEvent = {
@@ -61,6 +63,26 @@ export type NormalizedWebhookEvent = {
   payloadJson: string;
 
   payloadHash: string;
+};
+
+export type NormalizedEntry = NormalizedWebhookEvent & {
+  eventType: "ENTRY";
+  action: "ENTRY";
+};
+
+export type NormalizedExit = NormalizedWebhookEvent & {
+  eventType: "EXIT";
+  action: "EXIT";
+};
+
+export type NormalizedReject = NormalizedWebhookEvent & {
+  eventType: "REJECT";
+  action: "REJECT";
+};
+
+export type NormalizedSnapshot = NormalizedWebhookEvent & {
+  eventType: "SNAPSHOT";
+  action: "SNAPSHOT";
 };
 
 function safeString(value: unknown, fallback = ""): string {
@@ -140,6 +162,36 @@ function parseJsonObject(value: unknown): WebhookRecord {
   }
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  const obj = value as WebhookRecord;
+  const keys = Object.keys(obj).sort();
+
+  return `{${keys
+    .map(key => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
+    .join(",")}}`;
+}
+
+function hashString(value: string): string {
+  let hash = 2166136261;
+
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 function normalizeBaseSymbol(raw: unknown): string | null {
   const symbol = safeUpper(raw)
     .replace(/_UMCBL$/, "")
@@ -160,8 +212,10 @@ function normalizeSide(raw: unknown): string | null {
   const side = safeLower(raw);
 
   if (side === "bull" || side === "bear") return side;
-  if (side === "long" || side === "buy" || side === "bullish") return "bull";
-  if (side === "short" || side === "sell" || side === "bearish") return "bear";
+  if (side === "long") return "bull";
+  if (side === "short") return "bear";
+  if (side === "buy") return "bull";
+  if (side === "sell") return "bear";
 
   return side || null;
 }
@@ -173,6 +227,7 @@ function normalizeEventType(raw: unknown, actionRaw: unknown): string {
   const value = eventType || action || "SNAPSHOT";
 
   if (value === "WAIT") return "REJECT";
+  if (value === "SKIP") return "REJECT";
   if (value === "ENTRY") return "ENTRY";
   if (value === "EXIT") return "EXIT";
   if (value === "REJECT") return "REJECT";
@@ -181,6 +236,15 @@ function normalizeEventType(raw: unknown, actionRaw: unknown): string {
   if (value === "BATCH") return "BATCH";
 
   return value;
+}
+
+function normalizeAction(raw: unknown, eventType: string): string {
+  const action = normalizeEventType(raw, eventType);
+
+  if (action === "WAIT") return "REJECT";
+  if (action === "HOLD") return "SNAPSHOT";
+
+  return eventType || action || "SNAPSHOT";
 }
 
 function getReason(body: WebhookRecord, eventType: string): string {
@@ -211,40 +275,6 @@ function getReason(body: WebhookRecord, eventType: string): string {
   );
 }
 
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) return "null";
-
-  if (typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-
-  const record = value as WebhookRecord;
-  const keys = Object.keys(record).sort();
-
-  return `{${keys
-    .map(key => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`;
-}
-
-function hashString(input: string): string {
-  let hash = 2166136261;
-
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-
-function buildPayloadHash(payload: WebhookRecord): string {
-  return hashString(stableStringify(payload));
-}
-
 function buildFallbackEventId(body: WebhookRecord): string {
   const now = Date.now();
   const symbol = normalizeBaseSymbol(body.symbol) || "UNKNOWN";
@@ -261,6 +291,7 @@ function buildFallbackEventId(body: WebhookRecord): string {
     side,
     reason,
     safeTrim(body.tradeId || ""),
+    safeTrim(body.ts || body.createdAt || ""),
     now
   ]
     .filter(Boolean)
@@ -289,6 +320,10 @@ function buildCohortKey(event: {
   ].join("|");
 }
 
+function buildPayloadHash(payload: WebhookRecord): string {
+  return hashString(stableStringify(payload));
+}
+
 export function normalizeWebhookBody(rawBody: string | WebhookRecord): NormalizedWebhookEvent {
   const parsed = parseJsonObject(rawBody);
   const payloadJsonObj = parseJsonObject(parsed.payloadJson);
@@ -301,7 +336,7 @@ export function normalizeWebhookBody(rawBody: string | WebhookRecord): Normalize
   };
 
   const eventType = normalizeEventType(merged.eventType, merged.action);
-  const action = safeUpper(merged.action || eventType, eventType);
+  const action = normalizeAction(merged.action || merged.eventType, eventType);
   const reason = getReason(merged, eventType);
 
   const eventId = safeTrim(merged.eventId) || buildFallbackEventId(merged);
@@ -321,7 +356,7 @@ export function normalizeWebhookBody(rawBody: string | WebhookRecord): Normalize
 
   const rawJson = safeString(parsed.rawJson || JSON.stringify(merged));
   const payloadJson = safeString(parsed.payloadJson || JSON.stringify(merged));
-  const payloadHash = safeTrim(merged.payloadHash) || buildPayloadHash(merged);
+  const payloadHash = buildPayloadHash(merged);
 
   const normalized: NormalizedWebhookEvent = {
     eventId,
