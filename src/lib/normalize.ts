@@ -61,6 +61,18 @@ export type NormalizedWebhookEvent = {
   payloadJson: string;
 };
 
+export type NormalizedEntry = NormalizedWebhookEvent & {
+  eventType: "ENTRY";
+};
+
+export type NormalizedExit = NormalizedWebhookEvent & {
+  eventType: "EXIT";
+};
+
+export type NormalizedReject = NormalizedWebhookEvent & {
+  eventType: "REJECT";
+};
+
 function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
   if (typeof value === "string") return value;
