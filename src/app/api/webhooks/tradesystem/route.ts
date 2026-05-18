@@ -147,7 +147,9 @@ export async function POST(req: NextRequest) {
     const rawPayload = await req.json();
     const payload = normalizeTradeSystemWebhookBody(rawPayload);
 
-    const result = await ingestTradeSystemEvent(payload);
+    // ingestTradeSystemEvent verwacht een string.
+    // Daarom hier bewust JSON.stringify(payload).
+    const result = await ingestTradeSystemEvent(JSON.stringify(payload));
 
     return NextResponse.json(result, {
       status: result?.deduped ? 200 : 202
