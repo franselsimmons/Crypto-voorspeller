@@ -14,6 +14,12 @@ export type DashboardFilters = {
   regime: string;
   flow: string;
   btcState: string;
+  rsiZone: string;
+  rsiEdge: string;
+  obBias: string;
+  obRelation: string;
+  spreadBucket: string;
+  depthBucket: string;
   outcome: string;
 
   from: string;
@@ -55,6 +61,12 @@ export type DashboardOptions = {
   regimes: string[];
   flows: string[];
   btcStates: string[];
+  rsiZones: string[];
+  rsiEdges: string[];
+  obBiases: string[];
+  obRelations: string[];
+  spreadBuckets: string[];
+  depthBuckets: string[];
   outcomes: string[];
 };
 
@@ -206,6 +218,29 @@ export type DashboardData = {
   rawEvents: NormalizedWebhookEvent[];
 };
 
+type SummaryStats = {
+  trades: number;
+  entries: number;
+  exits: number;
+  closed: number;
+  rejects: number;
+  snapshots: number;
+  holds: number;
+
+  wins: number;
+  losses: number;
+  winrate: number;
+  wilson: number;
+
+  totalR: number;
+  avgR: number;
+  pnlPct: number;
+  profitFactor: number | null;
+
+  directSlPct: number;
+  nearTpPct: number;
+};
+
 function one(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] || "";
   return value || "";
@@ -271,6 +306,12 @@ export function parseDashboardFilters(params: SearchParams = {}): DashboardFilte
     regime: upper(one(params.regime)),
     flow: upper(one(params.flow)),
     btcState: upper(one(params.btcState)),
+    rsiZone: upper(one(params.rsiZone)),
+    rsiEdge: upper(one(params.rsiEdge)),
+    obBias: upper(one(params.obBias)),
+    obRelation: upper(one(params.obRelation)),
+    spreadBucket: upper(one(params.spreadBucket)),
+    depthBucket: upper(one(params.depthBucket)),
     outcome: upper(one(params.outcome)),
 
     from: one(params.from),
@@ -293,6 +334,71 @@ function isWin(event: NormalizedWebhookEvent): boolean {
 
 function isLoss(event: NormalizedWebhookEvent): boolean {
   return n(event.exitR, 0) < 0 || n(event.pnlPct, 0) < 0;
+}
+
+function payloadText(event: NormalizedWebhookEvent, key: string, fallback = "UNKNOWN"): string {
+  const value = event.payload?.[key];
+  const text = String(value || "").trim();
+
+  return text || fallback;
+}
+
+function eventRegime(event: NormalizedWebhookEvent): string {
+  return upper(payloadText(event, "regime"));
+}
+
+function eventFlow(event: NormalizedWebhookEvent): string {
+  return upper(payloadText(event, "flow"));
+}
+
+function eventBtcState(event: NormalizedWebhookEvent): string {
+  return upper(payloadText(event, "btcState"));
+}
+
+function eventRsiEdge(event: NormalizedWebhookEvent): string {
+  return upper(payloadText(event, "rsiEdge"));
+}
+
+function eventObRelation(event: NormalizedWebhookEvent): string {
+  const explicit = upper(payloadText(event, "obRelation", ""));
+  if (explicit) return explicit;
+
+  const side = lower(event.side);
+  const obBias = upper(event.obBias);
+
+  if (["NEUTRAL", "UNKNOWN", ""].includes(obBias)) return "NEUTRAL";
+  if (side === "bull" && obBias === "BULLISH") return "WITH";
+  if (side === "bear" && obBias === "BEARISH") return "WITH";
+  if (side === "bull" && obBias === "BEARISH") return "AGAINST";
+  if (side === "bear" && obBias === "BULLISH") return "AGAINST";
+
+  return "UNKNOWN";
+}
+
+function spreadBucket(value: number | null): string {
+  if (value === null) return "SPREAD_NA";
+
+  const bps = value * 10000;
+
+  if (bps < 2) return "SPREAD_LT_2BPS";
+  if (bps < 5) return "SPREAD_2_5BPS";
+  if (bps < 8) return "SPREAD_5_8BPS";
+  if (bps < 12) return "SPREAD_8_12BPS";
+  if (bps < 25) return "SPREAD_12_25BPS";
+
+  return "SPREAD_GTE_25BPS";
+}
+
+function depthBucket(value: number | null): string {
+  if (value === null) return "DEPTH_NA";
+
+  if (value < 50_000) return "DEPTH_LT_50K";
+  if (value < 100_000) return "DEPTH_50K_100K";
+  if (value < 200_000) return "DEPTH_100K_200K";
+  if (value < 500_000) return "DEPTH_200K_500K";
+  if (value < 1_000_000) return "DEPTH_500K_1M";
+
+  return "DEPTH_GTE_1M";
 }
 
 function eventPassesFilters(
@@ -327,15 +433,39 @@ function eventPassesFilters(
     return false;
   }
 
-  if (filters.regime && upper(event.payload?.regime) !== filters.regime) {
+  if (filters.regime && eventRegime(event) !== filters.regime) {
     return false;
   }
 
-  if (filters.flow && upper(event.payload?.flow) !== filters.flow) {
+  if (filters.flow && eventFlow(event) !== filters.flow) {
     return false;
   }
 
-  if (filters.btcState && upper(event.payload?.btcState) !== filters.btcState) {
+  if (filters.btcState && eventBtcState(event) !== filters.btcState) {
+    return false;
+  }
+
+  if (filters.rsiZone && upper(event.rsiZone) !== filters.rsiZone) {
+    return false;
+  }
+
+  if (filters.rsiEdge && eventRsiEdge(event) !== filters.rsiEdge) {
+    return false;
+  }
+
+  if (filters.obBias && upper(event.obBias) !== filters.obBias) {
+    return false;
+  }
+
+  if (filters.obRelation && eventObRelation(event) !== filters.obRelation) {
+    return false;
+  }
+
+  if (filters.spreadBucket && spreadBucket(event.spreadPct) !== filters.spreadBucket) {
+    return false;
+  }
+
+  if (filters.depthBucket && depthBucket(event.depthMinUsd1p) !== filters.depthBucket) {
     return false;
   }
 
@@ -395,7 +525,7 @@ function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null
   return round(grossWin / grossLoss, 3);
 }
 
-function summarizeEvents(events: NormalizedWebhookEvent[]) {
+function summarizeEvents(events: NormalizedWebhookEvent[]): SummaryStats {
   const entries = events.filter(event => event.eventType === "ENTRY").length;
   const exits = events.filter(event => event.eventType === "EXIT").length;
   const rejects = events.filter(event => event.eventType === "REJECT").length;
@@ -479,71 +609,6 @@ function buildOverview(events: NormalizedWebhookEvent[]): Overview {
   };
 }
 
-function payloadText(event: NormalizedWebhookEvent, key: string, fallback = "UNKNOWN"): string {
-  const value = event.payload?.[key];
-
-  const text = String(value || "").trim();
-  return text || fallback;
-}
-
-function eventRegime(event: NormalizedWebhookEvent): string {
-  return upper(payloadText(event, "regime"));
-}
-
-function eventFlow(event: NormalizedWebhookEvent): string {
-  return upper(payloadText(event, "flow"));
-}
-
-function eventBtcState(event: NormalizedWebhookEvent): string {
-  return upper(payloadText(event, "btcState"));
-}
-
-function eventRsiEdge(event: NormalizedWebhookEvent): string {
-  return upper(payloadText(event, "rsiEdge"));
-}
-
-function eventObRelation(event: NormalizedWebhookEvent): string {
-  const explicit = upper(payloadText(event, "obRelation", ""));
-  if (explicit) return explicit;
-
-  const side = lower(event.side);
-  const obBias = upper(event.obBias);
-
-  if (["NEUTRAL", "UNKNOWN", ""].includes(obBias)) return "NEUTRAL";
-  if (side === "bull" && obBias === "BULLISH") return "WITH";
-  if (side === "bear" && obBias === "BEARISH") return "WITH";
-  if (side === "bull" && obBias === "BEARISH") return "AGAINST";
-  if (side === "bear" && obBias === "BULLISH") return "AGAINST";
-
-  return "UNKNOWN";
-}
-
-function spreadBucket(value: number | null): string {
-  if (value === null) return "SPREAD_NA";
-
-  const bps = value * 10000;
-
-  if (bps < 2) return "SPREAD_LT_2BPS";
-  if (bps < 5) return "SPREAD_2_5BPS";
-  if (bps < 8) return "SPREAD_5_8BPS";
-  if (bps < 12) return "SPREAD_8_12BPS";
-  if (bps < 25) return "SPREAD_12_25BPS";
-
-  return "SPREAD_GTE_25BPS";
-}
-
-function depthBucket(value: number | null): string {
-  if (value === null) return "DEPTH_NA";
-
-  if (value < 50_000) return "DEPTH_LT_50K";
-  if (value < 100_000) return "DEPTH_50K_100K";
-  if (value < 200_000) return "DEPTH_100K_200K";
-  if (value < 500_000) return "DEPTH_200K_500K";
-  if (value < 1_000_000) return "DEPTH_500K_1M";
-
-  return "DEPTH_GTE_1M";
-}
-
 function buildOptions(events: NormalizedWebhookEvent[]): DashboardOptions {
   const strategies = uniqueSorted(events.map(event => event.strategyVersion));
 
@@ -559,6 +624,12 @@ function buildOptions(events: NormalizedWebhookEvent[]): DashboardOptions {
     regimes: uniqueSorted(events.map(eventRegime)),
     flows: uniqueSorted(events.map(eventFlow)),
     btcStates: uniqueSorted(events.map(eventBtcState)),
+    rsiZones: uniqueSorted(events.map(event => event.rsiZone)),
+    rsiEdges: uniqueSorted(events.map(eventRsiEdge)),
+    obBiases: uniqueSorted(events.map(event => event.obBias)),
+    obRelations: uniqueSorted(events.map(eventObRelation)),
+    spreadBuckets: uniqueSorted(events.map(event => spreadBucket(event.spreadPct))),
+    depthBuckets: uniqueSorted(events.map(event => depthBucket(event.depthMinUsd1p))),
     outcomes: ["WIN", "LOSS", "FLAT"]
   };
 }
@@ -578,7 +649,7 @@ function getCohortKey(event: NormalizedWebhookEvent): string {
   ].join("|");
 }
 
-function scoreCohort(stats: ReturnType<typeof summarizeEvents>, filters: DashboardFilters): number {
+function scoreCohort(stats: SummaryStats, filters: DashboardFilters): number {
   const winrateScore = stats.winrate * filters.winrateWeight;
   const pnlScore = stats.pnlPct * filters.pnlWeight;
   const avgRScore = stats.avgR * filters.avgRWeight;
