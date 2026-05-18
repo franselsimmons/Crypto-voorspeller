@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { buildAnalytics } from "@/lib/analytics";
-import { getTradeEvents } from "@/lib/store";
+import { clearTradeEventsForDebugOnly, listTradeEvents } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +9,7 @@ export const revalidate = 0;
 
 export async function GET() {
   try {
-    const events = await getTradeEvents();
+    const events = await listTradeEvents();
     const analytics = buildAnalytics(events);
 
     return NextResponse.json({
@@ -32,14 +32,23 @@ export async function GET() {
 }
 
 export async function DELETE() {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "CLEAR_TRADE_EVENTS_DISABLED",
-      reason:
-        "clearTradeEvents is niet beschikbaar in '@/lib/store'. DELETE is uitgezet zodat de build niet faalt.",
+  try {
+    const result = await clearTradeEventsForDebugOnly();
+
+    return NextResponse.json({
+      ok: true,
+      cleared: true,
+      persistent: result.persistent,
       ts: Date.now()
-    },
-    { status: 501 }
-  );
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "UNKNOWN_TRADES_DELETE_ERROR",
+        ts: Date.now()
+      },
+      { status: 500 }
+    );
+  }
 }
