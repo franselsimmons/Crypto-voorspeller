@@ -21,13 +21,18 @@ const TRADE_DEDUPE_KEY =
   process.env.TRADE_DEDUPE_KEY || "tradesystem:events:dedupe:v1";
 
 const TRADE_EVENTS_MAX_ROWS = Math.max(
-  1000,
-  Number(process.env.TRADE_EVENTS_MAX_ROWS || 50000)
+  500,
+  Number(process.env.TRADE_EVENTS_MAX_ROWS || 5000)
 );
 
 const TRADE_EVENTS_READ_LIMIT = Math.max(
-  100,
-  Number(process.env.TRADE_EVENTS_READ_LIMIT || 1000)
+  10,
+  Number(process.env.TRADE_EVENTS_READ_LIMIT || 100)
+);
+
+const TRADE_EVENTS_READ_LIMIT_MAX = Math.max(
+  10,
+  Number(process.env.TRADE_EVENTS_READ_LIMIT_MAX || 250)
 );
 
 const memoryKey = "__TRADESYSTEM_ANALYSIS_EVENTS__";
@@ -53,6 +58,17 @@ function getRedisToken(): string {
 
 function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
+}
+
+function isMaxRequestSizeError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error || "");
+
+  return (
+    text.includes("max request size exceeded") ||
+    text.includes("Request Entity Too Large") ||
+    text.includes("FUNCTION_PAYLOAD_TOO_LARGE") ||
+    text.includes("PAYLOAD_TOO_LARGE")
+  );
 }
 
 async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
@@ -84,7 +100,7 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   }
 
   if (!res.ok || json?.error) {
-    throw new Error(json?.error || text.slice(0, 500) || `REDIS_ERROR_${res.status}`);
+    throw new Error(json?.error || text.slice(0, 1000) || `REDIS_ERROR_${res.status}`);
   }
 
   return json?.result as T;
@@ -121,14 +137,22 @@ function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
   });
 }
 
-function trimText(value: unknown, max = 2000): string {
+function trimString(value: unknown, max = 1000): string {
   if (value === null || value === undefined) return "";
 
-  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const text = typeof value === "string" ? value : safeJson(value);
 
   if (text.length <= max) return text;
 
   return text.slice(0, max);
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
 }
 
 function compactPayload(payload: unknown): Record<string, unknown> {
@@ -147,7 +171,12 @@ function compactPayload(payload: unknown): Record<string, unknown> {
     tradeId: row.tradeId,
 
     symbol: row.symbol,
+    rawBitgetSymbol: row.rawBitgetSymbol,
     side: row.side,
+
+    status: row.status,
+    open: row.open,
+
     reason: row.reason,
     entryReason: row.entryReason,
     exitReason: row.exitReason,
@@ -155,6 +184,7 @@ function compactPayload(payload: unknown): Record<string, unknown> {
     setupClass: row.setupClass,
     grade: row.grade,
     gradePoints: row.gradePoints,
+    recommendedRisk: row.recommendedRisk,
 
     entry: row.entry,
     price: row.price,
@@ -162,19 +192,53 @@ function compactPayload(payload: unknown): Record<string, unknown> {
     initialSl: row.initialSl,
     tp: row.tp,
     exit: row.exit,
+    executionPrice: row.executionPrice,
+    triggerPrice: row.triggerPrice,
 
     rr: row.rr,
     plannedRR: row.plannedRR,
     baseRR: row.baseRR,
     finalRr: row.finalRr,
     effectiveRR: row.effectiveRR,
+    tpRewardMultiplier: row.tpRewardMultiplier,
 
     exitR: row.exitR,
     pnlPct: row.pnlPct,
+    triggerR: row.triggerR,
+    triggerPnlPct: row.triggerPnlPct,
+
+    currentR: row.currentR,
+    mfeR: row.mfeR,
+    maeR: row.maeR,
+    maxTpProgress: row.maxTpProgress,
+    maxSlProgress: row.maxSlProgress,
+
+    reachedHalfR: row.reachedHalfR,
+    reachedOneR: row.reachedOneR,
+    nearTpSeen: row.nearTpSeen,
+    directToSL: row.directToSL,
+    slAfterHalfR: row.slAfterHalfR,
+    slAfterOneR: row.slAfterOneR,
+    slAfterNearTp: row.slAfterNearTp,
+
+    breakEvenActivated: row.breakEvenActivated,
+    breakEvenStop: row.breakEvenStop,
+    breakEvenSl: row.breakEvenSl,
+    slBeforeBreakEven: row.slBeforeBreakEven,
+
+    ticksObserved: row.ticksObserved,
+    favorableTicks: row.favorableTicks,
+    adverseTicks: row.adverseTicks,
+    neutralTicks: row.neutralTicks,
 
     score: row.score,
+    moveScore: row.moveScore,
+
     confluence: row.confluence,
     rawConfluence: row.rawConfluence,
+    effectiveConfluence: row.effectiveConfluence,
+
+    sniper: row.sniper,
     sniperScore: row.sniperScore,
     rawSniperScore: row.rawSniperScore,
     fallbackSniperScore: row.fallbackSniperScore,
@@ -191,20 +255,15 @@ function compactPayload(payload: unknown): Record<string, unknown> {
     depthMinUsd1p: row.depthMinUsd1p,
 
     flow: row.flow,
+    funding: row.funding,
     regime: row.regime,
     btcState: row.btcState,
 
-    mfeR: row.mfeR,
-    maeR: row.maeR,
-    currentR: row.currentR,
+    stage: row.stage,
+    scannerStage: row.scannerStage,
+    stageSource: row.stageSource,
 
-    directToSL: row.directToSL,
-    nearTpSeen: row.nearTpSeen,
-    reachedHalfR: row.reachedHalfR,
-    reachedOneR: row.reachedOneR,
-    breakEvenActivated: row.breakEvenActivated,
-    breakEvenStop: row.breakEvenStop,
-
+    analysisType: row.analysisType,
     createdAt: row.createdAt,
     ts: row.ts
   };
@@ -215,8 +274,10 @@ function compactTradeEvent(event: NormalizedWebhookEvent): TradeEvent {
     ...event,
 
     payload: compactPayload(event.payload),
-    rawJson: trimText(event.rawJson, 2000),
-    payloadJson: trimText(event.payloadJson, 2000)
+
+    // Belangrijk: oude variant blies Upstash op.
+    rawJson: trimString(event.rawJson, 1000),
+    payloadJson: trimString(event.payloadJson, 1000)
   };
 }
 
@@ -324,28 +385,63 @@ export async function saveTradeEvent(
   };
 }
 
-export async function listTradeEvents(limit = TRADE_EVENTS_READ_LIMIT): Promise<TradeEvent[]> {
-  const safeLimit = Math.max(100, Math.min(Number(limit || TRADE_EVENTS_READ_LIMIT), 2000));
+async function readRedisEventsWithBackoff(limit: number): Promise<TradeEvent[]> {
+  let currentLimit = Math.max(1, Math.min(limit, TRADE_EVENTS_READ_LIMIT_MAX));
+
+  while (currentLimit >= 1) {
+    try {
+      const rows = await redisCommand<string[]>([
+        "LRANGE",
+        TRADE_EVENTS_KEY,
+        -currentLimit,
+        -1
+      ]);
+
+      const parsed = (Array.isArray(rows) ? rows : [])
+        .map(parseStoredEvent)
+        .filter(Boolean) as TradeEvent[];
+
+      return sortEventsAsc(parsed);
+    } catch (error) {
+      if (!isMaxRequestSizeError(error)) {
+        throw error;
+      }
+
+      console.warn("TRADE_EVENT_READ_LIMIT_REDUCED:", {
+        reason: "UPSTASH_MAX_REQUEST_SIZE",
+        previousLimit: currentLimit,
+        nextLimit: Math.floor(currentLimit / 2)
+      });
+
+      currentLimit = Math.floor(currentLimit / 2);
+    }
+  }
+
+  console.warn("TRADE_EVENT_READ_SKIPPED:", {
+    reason: "UPSTASH_ROWS_TOO_LARGE_EVEN_AT_LIMIT_1"
+  });
+
+  return [];
+}
+
+export async function listTradeEvents(
+  limit = TRADE_EVENTS_READ_LIMIT
+): Promise<TradeEvent[]> {
+  const safeLimit = Math.max(
+    1,
+    Math.min(Number(limit || TRADE_EVENTS_READ_LIMIT), TRADE_EVENTS_READ_LIMIT_MAX)
+  );
 
   if (!hasRedis()) {
     return sortEventsAsc(memoryStore.slice(-safeLimit));
   }
 
-  const rows = await redisCommand<string[]>([
-    "LRANGE",
-    TRADE_EVENTS_KEY,
-    -safeLimit,
-    -1
-  ]);
-
-  return sortEventsAsc(
-    (Array.isArray(rows) ? rows : [])
-      .map(parseStoredEvent)
-      .filter(Boolean) as TradeEvent[]
-  );
+  return readRedisEventsWithBackoff(safeLimit);
 }
 
-export async function getTradeEvents(limit = TRADE_EVENTS_READ_LIMIT): Promise<TradeEvent[]> {
+export async function getTradeEvents(
+  limit = TRADE_EVENTS_READ_LIMIT
+): Promise<TradeEvent[]> {
   return listTradeEvents(limit);
 }
 
