@@ -70,9 +70,14 @@ export type CohortRow = {
 };
 
 export type BreakdownRow = {
+  dimension: string;
+  value: string;
+  label: string;
+
   reason: string;
   count: number;
   pct: number;
+  trades: number;
 
   entries: number;
   exits: number;
@@ -162,6 +167,21 @@ export type DashboardData = {
   rawEvents: NormalizedWebhookEvent[];
 };
 
+type ExitSummary = {
+  exits: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+  wilson: number;
+  totalR: number;
+  avgR: number;
+  pnlPct: number;
+  profitFactor: number | null;
+  directSlPct: number;
+  nearTpPct: number;
+};
+
 function one(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] || "";
   return value || "";
@@ -184,7 +204,6 @@ function round(value: number, decimals = 4): number {
   if (!Number.isFinite(value)) return 0;
 
   const factor = 10 ** decimals;
-
   return Math.round(value * factor) / factor;
 }
 
@@ -202,7 +221,6 @@ function parseDateMs(value: string): number | null {
   if (!value) return null;
 
   const ms = Date.parse(value);
-
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -277,6 +295,7 @@ function wilsonLowerBound(wins: number, total: number): number {
 
 function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null {
   const exits = events.filter(event => event.eventType === "EXIT");
+
   const rValues = exits
     .map(event => n(event.exitR, 0))
     .filter(Number.isFinite);
@@ -295,35 +314,6 @@ function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null
   if (!grossLoss) return 999;
 
   return round(grossWin / grossLoss, 3);
-}
-
-function summarizeExitEvents(events: NormalizedWebhookEvent[]) {
-  const exits = events.filter(event => event.eventType === "EXIT");
-
-  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
-  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
-  const completed = wins + losses;
-
-  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
-  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
-
-  const directSlCount = exits.filter(event => event.directToSL).length;
-  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
-
-  return {
-    exits: exits.length,
-    closed: exits.length,
-    wins,
-    losses,
-    winrate: completed ? wins / completed : 0,
-    wilson: wilsonLowerBound(wins, completed),
-    totalR: round(totalR, 3),
-    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
-    pnlPct: round(pnlPct, 3),
-    profitFactor: profitFactorFromEvents(exits),
-    directSlPct: exits.length ? directSlCount / exits.length : 0,
-    nearTpPct: exits.length ? nearTpCount / exits.length : 0
-  };
 }
 
 function buildOverview(events: NormalizedWebhookEvent[]): Overview {
@@ -391,6 +381,35 @@ function getCohortKey(event: NormalizedWebhookEvent): string {
   ].join("|");
 }
 
+function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
+  const exits = events.filter(event => event.eventType === "EXIT");
+
+  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
+  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
+  const completed = wins + losses;
+
+  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
+  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
+
+  const directSlCount = exits.filter(event => event.directToSL).length;
+  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
+
+  return {
+    exits: exits.length,
+    closed: exits.length,
+    wins,
+    losses,
+    winrate: completed ? wins / completed : 0,
+    wilson: wilsonLowerBound(wins, completed),
+    totalR: round(totalR, 3),
+    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
+    pnlPct: round(pnlPct, 3),
+    profitFactor: profitFactorFromEvents(exits),
+    directSlPct: exits.length ? directSlCount / exits.length : 0,
+    nearTpPct: exits.length ? nearTpCount / exits.length : 0
+  };
+}
+
 function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
   const exits = events.filter(event => event.eventType === "EXIT");
   const map = new Map<string, NormalizedWebhookEvent[]>();
@@ -439,26 +458,36 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
         ...stats
       };
     })
-    .sort((a, b) => b.totalR - a.totalR)
+    .sort((a, b) => {
+      const totalRDiff = b.totalR - a.totalR;
+      if (totalRDiff !== 0) return totalRDiff;
+
+      return b.trades - a.trades;
+    })
     .slice(0, 100);
 }
 
 function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
   const total = events.length || 1;
-  const map = new Map<string, NormalizedWebhookEvent[]>();
+  const output: BreakdownRow[] = [];
 
-  for (const event of events) {
-    const key = event.reason || "UNKNOWN";
+  function addDimension(
+    dimension: string,
+    getValue: (event: NormalizedWebhookEvent) => string
+  ): void {
+    const map = new Map<string, NormalizedWebhookEvent[]>();
 
-    if (!map.has(key)) {
-      map.set(key, []);
+    for (const event of events) {
+      const value = getValue(event) || "UNKNOWN";
+
+      if (!map.has(value)) {
+        map.set(value, []);
+      }
+
+      map.get(value)!.push(event);
     }
 
-    map.get(key)!.push(event);
-  }
-
-  return Array.from(map.entries())
-    .map(([reason, rows]) => {
+    for (const [value, rows] of map.entries()) {
       const entries = rows.filter(row => row.eventType === "ENTRY").length;
       const exits = rows.filter(row => row.eventType === "EXIT").length;
       const rejects = rows.filter(row => row.eventType === "REJECT").length;
@@ -466,10 +495,15 @@ function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
 
       const stats = summarizeExitEvents(rows);
 
-      return {
-        reason,
+      output.push({
+        dimension,
+        value,
+        label: `${dimension}: ${value}`,
+
+        reason: value,
         count: rows.length,
         pct: rows.length / total,
+        trades: stats.closed,
 
         entries,
         exits,
@@ -482,9 +516,26 @@ function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
           .join(", "),
 
         ...stats
-      };
+      });
+    }
+  }
+
+  addDimension("reason", event => event.reason || "UNKNOWN");
+  addDimension("eventType", event => event.eventType || "UNKNOWN");
+  addDimension("setupClass", event => event.setupClass || "UNKNOWN");
+  addDimension("side", event => event.side || "unknown");
+  addDimension("symbol", event => event.symbol || "UNKNOWN");
+  addDimension("rsiZone", event => event.rsiZone || "UNKNOWN");
+  addDimension("obBias", event => event.obBias || "UNKNOWN");
+  addDimension("strategyVersion", event => event.strategyVersion || "UNKNOWN");
+
+  return output
+    .sort((a, b) => {
+      const countDiff = b.count - a.count;
+      if (countDiff !== 0) return countDiff;
+
+      return b.totalR - a.totalR;
     })
-    .sort((a, b) => b.count - a.count)
     .slice(0, 100);
 }
 
