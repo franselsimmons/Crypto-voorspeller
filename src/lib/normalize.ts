@@ -59,18 +59,8 @@ export type NormalizedWebhookEvent = {
   payload: WebhookRecord;
   rawJson: string;
   payloadJson: string;
-};
 
-export type NormalizedEntry = NormalizedWebhookEvent & {
-  eventType: "ENTRY";
-};
-
-export type NormalizedExit = NormalizedWebhookEvent & {
-  eventType: "EXIT";
-};
-
-export type NormalizedReject = NormalizedWebhookEvent & {
-  eventType: "REJECT";
+  payloadHash: string;
 };
 
 function safeString(value: unknown, fallback = ""): string {
@@ -170,6 +160,8 @@ function normalizeSide(raw: unknown): string | null {
   const side = safeLower(raw);
 
   if (side === "bull" || side === "bear") return side;
+  if (side === "long" || side === "buy" || side === "bullish") return "bull";
+  if (side === "short" || side === "sell" || side === "bearish") return "bear";
 
   return side || null;
 }
@@ -184,8 +176,9 @@ function normalizeEventType(raw: unknown, actionRaw: unknown): string {
   if (value === "ENTRY") return "ENTRY";
   if (value === "EXIT") return "EXIT";
   if (value === "REJECT") return "REJECT";
-  if (value === "HOLD") return "HOLD";
+  if (value === "HOLD") return "SNAPSHOT";
   if (value === "SNAPSHOT") return "SNAPSHOT";
+  if (value === "BATCH") return "BATCH";
 
   return value;
 }
@@ -216,6 +209,40 @@ function getReason(body: WebhookRecord, eventType: string): string {
       "UNKNOWN",
     "UNKNOWN"
   );
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  const record = value as WebhookRecord;
+  const keys = Object.keys(record).sort();
+
+  return `{${keys
+    .map(key => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function hashString(input: string): string {
+  let hash = 2166136261;
+
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function buildPayloadHash(payload: WebhookRecord): string {
+  return hashString(stableStringify(payload));
 }
 
 function buildFallbackEventId(body: WebhookRecord): string {
@@ -292,6 +319,10 @@ export function normalizeWebhookBody(rawBody: string | WebhookRecord): Normalize
   const ts = safeNumber(merged.ts || merged.createdAt || Date.now(), Date.now());
   const receivedAt = Date.now();
 
+  const rawJson = safeString(parsed.rawJson || JSON.stringify(merged));
+  const payloadJson = safeString(parsed.payloadJson || JSON.stringify(merged));
+  const payloadHash = safeTrim(merged.payloadHash) || buildPayloadHash(merged);
+
   const normalized: NormalizedWebhookEvent = {
     eventId,
     eventType,
@@ -349,8 +380,9 @@ export function normalizeWebhookBody(rawBody: string | WebhookRecord): Normalize
     breakEvenStop: safeBoolean(merged.breakEvenStop),
 
     payload: merged,
-    rawJson: safeString(parsed.rawJson || JSON.stringify(merged)),
-    payloadJson: safeString(parsed.payloadJson || JSON.stringify(merged))
+    rawJson,
+    payloadJson,
+    payloadHash
   };
 
   normalized.cohortKey = buildCohortKey(normalized);
