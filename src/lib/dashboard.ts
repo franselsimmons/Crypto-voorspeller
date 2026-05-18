@@ -3,6 +3,8 @@ import type { NormalizedWebhookEvent } from "./normalize";
 
 export type SearchParams = Record<string, string | string[] | undefined>;
 
+type AnyRecord = Record<string, unknown>;
+
 export type DashboardFilters = {
   strategyVersion: string;
   symbol: string;
@@ -57,15 +59,27 @@ export type CohortRow = ExitSummary & {
   cohortKey: string;
   label: string;
   score: number;
+
   sample: number;
   count: number;
   trades: number;
 
   setupClass: string;
   side: string;
-  rsiZone: string;
-  obBias: string;
   reason: string;
+
+  rsiZone: string;
+  rsiEdge: string;
+
+  flow: string;
+  btcState: string;
+  regime: string;
+
+  obBias: string;
+  obRelation: string;
+
+  spreadBucket: string;
+  depthBucket: string;
 
   avgScore: number;
   avgConfluence: number;
@@ -76,6 +90,7 @@ export type BreakdownRow = ExitSummary & {
   dimension: string;
   value: string;
   reason: string;
+
   count: number;
   pct: number;
   trades: number;
@@ -180,6 +195,40 @@ function round(value: number, decimals = 4): number {
 
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+function isRecord(value: unknown): value is AnyRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readPath(obj: unknown, path: string): unknown {
+  if (!isRecord(obj)) return undefined;
+
+  const parts = path.split(".");
+  let current: unknown = obj;
+
+  for (const part of parts) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+
+  return current;
+}
+
+function getValue(
+  event: NormalizedWebhookEvent,
+  paths: string[],
+  fallback: unknown = null
+): unknown {
+  for (const path of paths) {
+    const value = readPath(event, path);
+
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return fallback;
 }
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
@@ -346,16 +395,6 @@ function buildOptions(events: NormalizedWebhookEvent[]): DashboardOptions {
   };
 }
 
-function getCohortKey(event: NormalizedWebhookEvent): string {
-  return [
-    event.setupClass || "UNKNOWN",
-    event.side || "unknown",
-    event.rsiZone || "UNKNOWN",
-    event.obBias || "UNKNOWN",
-    event.reason || "UNKNOWN"
-  ].join("|");
-}
-
 function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
   const exits = events.filter(event => event.eventType === "EXIT");
 
@@ -383,6 +422,152 @@ function summarizeExitEvents(events: NormalizedWebhookEvent[]): ExitSummary {
     directSlPct: exits.length ? directSlCount / exits.length : 0,
     nearTpPct: exits.length ? nearTpCount / exits.length : 0
   };
+}
+
+function eventText(
+  event: NormalizedWebhookEvent,
+  paths: string[],
+  fallback = "UNKNOWN"
+): string {
+  return upper(getValue(event, paths, fallback)) || fallback;
+}
+
+function eventFlow(event: NormalizedWebhookEvent): string {
+  return eventText(event, [
+    "flow",
+    "payload.flow",
+    "liveFilterMetrics.flow",
+    "payload.liveFilterMetrics.flow"
+  ]);
+}
+
+function eventBtcState(event: NormalizedWebhookEvent): string {
+  return eventText(event, [
+    "btcState",
+    "payload.btcState",
+    "liveFilterMetrics.btcState",
+    "payload.liveFilterMetrics.btcState"
+  ]);
+}
+
+function eventRegime(event: NormalizedWebhookEvent): string {
+  return eventText(event, [
+    "regime",
+    "payload.regime",
+    "liveFilterMetrics.regime",
+    "payload.liveFilterMetrics.regime"
+  ]);
+}
+
+function eventRsiEdge(event: NormalizedWebhookEvent): string {
+  return eventText(event, [
+    "rsiEdge",
+    "payload.rsiEdge",
+    "rsiEntryEdge",
+    "payload.rsiEntryEdge"
+  ]);
+}
+
+function eventObBias(event: NormalizedWebhookEvent): string {
+  return eventText(event, [
+    "obBias",
+    "payload.obBias",
+    "liveFilterMetrics.obBias",
+    "payload.liveFilterMetrics.obBias"
+  ]);
+}
+
+function eventObRelation(event: NormalizedWebhookEvent): string {
+  const explicit = eventText(event, [
+    "obRelation",
+    "payload.obRelation",
+    "obSideRelation",
+    "payload.obSideRelation"
+  ], "");
+
+  if (explicit) return explicit;
+
+  const side = lower(event.side);
+  const obBias = eventObBias(event);
+
+  if (["NEUTRAL", "UNKNOWN", ""].includes(obBias)) return "NEUTRAL";
+
+  if (side === "bull" && obBias === "BULLISH") return "WITH";
+  if (side === "bear" && obBias === "BEARISH") return "WITH";
+
+  if (side === "bull" && obBias === "BEARISH") return "AGAINST";
+  if (side === "bear" && obBias === "BULLISH") return "AGAINST";
+
+  return "UNKNOWN";
+}
+
+function eventSpreadBucket(event: NormalizedWebhookEvent): string {
+  const explicit = eventText(event, [
+    "spreadBucket",
+    "payload.spreadBucket"
+  ], "");
+
+  if (explicit) return explicit;
+
+  const spreadPct = n(getValue(event, [
+    "spreadPct",
+    "payload.spreadPct",
+    "liveFilterMetrics.spreadPct",
+    "payload.liveFilterMetrics.spreadPct"
+  ]), NaN);
+
+  if (!Number.isFinite(spreadPct)) return "SPREAD_NA";
+
+  const bps = spreadPct * 10000;
+
+  if (bps < 2) return "SPREAD_LT_2BPS";
+  if (bps < 5) return "SPREAD_2_5BPS";
+  if (bps < 8) return "SPREAD_5_8BPS";
+  if (bps < 12) return "SPREAD_8_12BPS";
+  if (bps < 25) return "SPREAD_12_25BPS";
+
+  return "SPREAD_GTE_25BPS";
+}
+
+function eventDepthBucket(event: NormalizedWebhookEvent): string {
+  const explicit = eventText(event, [
+    "depthBucket",
+    "payload.depthBucket"
+  ], "");
+
+  if (explicit) return explicit;
+
+  const depth = n(getValue(event, [
+    "depthMinUsd1p",
+    "payload.depthMinUsd1p",
+    "liveFilterMetrics.depthMinUsd1p",
+    "payload.liveFilterMetrics.depthMinUsd1p"
+  ]), NaN);
+
+  if (!Number.isFinite(depth)) return "DEPTH_NA";
+
+  if (depth < 50_000) return "DEPTH_LT_50K";
+  if (depth < 100_000) return "DEPTH_50K_100K";
+  if (depth < 200_000) return "DEPTH_100K_200K";
+  if (depth < 500_000) return "DEPTH_200K_500K";
+  if (depth < 1_000_000) return "DEPTH_500K_1M";
+
+  return "DEPTH_GTE_1M";
+}
+
+function getCohortKey(event: NormalizedWebhookEvent): string {
+  return [
+    `SETUP=${event.setupClass || "UNKNOWN"}`,
+    `SIDE=${event.side || "unknown"}`,
+    `REASON=${event.reason || "UNKNOWN"}`,
+    `RSI=${event.rsiZone || "UNKNOWN"}`,
+    `EDGE=${eventRsiEdge(event)}`,
+    `FLOW=${eventFlow(event)}`,
+    `BTC=${eventBtcState(event)}`,
+    `OB=${eventObRelation(event)}`,
+    eventSpreadBucket(event),
+    eventDepthBucket(event)
+  ].join("|");
 }
 
 function scoreCohort(stats: ExitSummary, sample: number): number {
@@ -431,9 +616,20 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
 
         setupClass: first?.setupClass || "UNKNOWN",
         side: first?.side || "unknown",
-        rsiZone: first?.rsiZone || "UNKNOWN",
-        obBias: first?.obBias || "UNKNOWN",
         reason: first?.reason || "UNKNOWN",
+
+        rsiZone: first?.rsiZone || "UNKNOWN",
+        rsiEdge: first ? eventRsiEdge(first) : "UNKNOWN",
+
+        flow: first ? eventFlow(first) : "UNKNOWN",
+        btcState: first ? eventBtcState(first) : "UNKNOWN",
+        regime: first ? eventRegime(first) : "UNKNOWN",
+
+        obBias: first ? eventObBias(first) : "UNKNOWN",
+        obRelation: first ? eventObRelation(first) : "UNKNOWN",
+
+        spreadBucket: first ? eventSpreadBucket(first) : "SPREAD_NA",
+        depthBucket: first ? eventDepthBucket(first) : "DEPTH_NA",
 
         avgScore: round(
           rows.reduce((sum, row) => sum + n(row.score, 0), 0) / Math.max(1, rows.length),
@@ -466,13 +662,13 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
 function makeBreakdownRows(
   events: NormalizedWebhookEvent[],
   dimension: string,
-  getValue: (event: NormalizedWebhookEvent) => string | null | undefined
+  getRowValue: (event: NormalizedWebhookEvent) => string | null | undefined
 ): BreakdownRow[] {
   const total = events.length || 1;
   const map = new Map<string, NormalizedWebhookEvent[]>();
 
   for (const event of events) {
-    const value = String(getValue(event) || "UNKNOWN").trim() || "UNKNOWN";
+    const value = String(getRowValue(event) || "UNKNOWN").trim() || "UNKNOWN";
 
     if (!map.has(value)) {
       map.set(value, []);
@@ -494,6 +690,7 @@ function makeBreakdownRows(
       dimension,
       value,
       reason: value,
+
       count: rows.length,
       pct: rows.length / total,
       trades: exits,
@@ -521,7 +718,14 @@ function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
     ...makeBreakdownRows(events, "setupClass", event => event.setupClass),
     ...makeBreakdownRows(events, "side", event => event.side),
     ...makeBreakdownRows(events, "rsiZone", event => event.rsiZone),
-    ...makeBreakdownRows(events, "obBias", event => event.obBias),
+    ...makeBreakdownRows(events, "rsiEdge", event => eventRsiEdge(event)),
+    ...makeBreakdownRows(events, "flow", event => eventFlow(event)),
+    ...makeBreakdownRows(events, "btcState", event => eventBtcState(event)),
+    ...makeBreakdownRows(events, "regime", event => eventRegime(event)),
+    ...makeBreakdownRows(events, "obBias", event => eventObBias(event)),
+    ...makeBreakdownRows(events, "obRelation", event => eventObRelation(event)),
+    ...makeBreakdownRows(events, "spreadBucket", event => eventSpreadBucket(event)),
+    ...makeBreakdownRows(events, "depthBucket", event => eventDepthBucket(event)),
     ...makeBreakdownRows(events, "symbol", event => event.symbol)
   ]
     .sort((a, b) => {
