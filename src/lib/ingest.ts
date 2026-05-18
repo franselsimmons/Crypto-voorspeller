@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { normalizeWebhookBody, type NormalizedWebhookEvent } from "./normalize";
 import { saveTradeEvent } from "./store";
 
-type IngestResult = {
+export type IngestResult = {
   ok: boolean;
   accepted: boolean;
   deduped: boolean;
@@ -15,25 +15,51 @@ type IngestResult = {
   saved?: unknown;
 };
 
-type IngestOptions = {
+export type IngestOptions = {
   signature?: string | null;
   timestamp?: string | null;
   secret?: string | null;
   requireSignature?: boolean;
 };
 
+function getDefaultWebhookSecret(): string {
+  return (
+    process.env.WEBHOOK_SECRET ||
+    process.env.ANALYSIS_WEBHOOK_SECRET ||
+    process.env.TRADE_WEBHOOK_SECRET ||
+    ""
+  );
+}
+
 function shouldRequireSignature(options?: IngestOptions): boolean {
   if (typeof options?.requireSignature === "boolean") {
     return options.requireSignature;
   }
 
-  return Boolean(process.env.WEBHOOK_SECRET);
+  const explicit =
+    process.env.REQUIRE_WEBHOOK_SIGNATURE ??
+    process.env.REQUIRE_ANALYSIS_WEBHOOK_SECRET;
+
+  if (explicit !== undefined) {
+    return String(explicit).toLowerCase() === "true";
+  }
+
+  return Boolean(getDefaultWebhookSecret());
 }
 
 function assertValidBody(rawBody: string): void {
   if (!rawBody || !rawBody.trim()) {
     throw new Error("EMPTY_WEBHOOK_BODY");
   }
+}
+
+function timingSafeEqualString(a: string, b: string): boolean {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+
+  if (left.length !== right.length) return false;
+
+  return crypto.timingSafeEqual(left, right);
 }
 
 function timingSafeEqualHex(a: string, b: string): boolean {
@@ -54,7 +80,6 @@ function extractSignature(signatureHeader: string): string {
 
   if (!header) return "";
 
-  // Stripe-style: t=123,v1=abcdef
   const v1 = header
     .split(",")
     .map(part => part.trim())
@@ -62,7 +87,6 @@ function extractSignature(signatureHeader: string): string {
 
   if (v1) return v1.slice(3).trim();
 
-  // Direct hex signature
   return header.replace(/^sha256=/i, "").trim();
 }
 
@@ -75,12 +99,17 @@ function signPayload(rawBody: string, secret: string, timestamp?: string | null)
     .digest("hex");
 }
 
-function verifyLocalWebhookSignature(
-  rawBody: string,
-  signatureHeader: string,
-  secret: string,
-  timestamp?: string | null
-): boolean {
+function verifyHmacWebhookSignature({
+  rawBody,
+  signatureHeader,
+  secret,
+  timestamp
+}: {
+  rawBody: string;
+  signatureHeader: string;
+  secret: string;
+  timestamp?: string | null;
+}): boolean {
   const received = extractSignature(signatureHeader);
 
   if (!received) return false;
@@ -94,12 +123,20 @@ function verifyLocalWebhookSignature(
   );
 }
 
+function verifySharedSecretSignature(signatureHeader: string, secret: string): boolean {
+  const received = extractSignature(signatureHeader);
+
+  if (!received || !secret) return false;
+
+  return timingSafeEqualString(received, secret);
+}
+
 function assertSignature(rawBody: string, options?: IngestOptions): void {
   const requireSignature = shouldRequireSignature(options);
 
   if (!requireSignature) return;
 
-  const secret = options?.secret || process.env.WEBHOOK_SECRET || "";
+  const secret = options?.secret || getDefaultWebhookSecret();
   const signature = options?.signature || "";
   const timestamp = options?.timestamp || null;
 
@@ -111,21 +148,36 @@ function assertSignature(rawBody: string, options?: IngestOptions): void {
     throw new Error("WEBHOOK_SIGNATURE_MISSING");
   }
 
-  const valid = verifyLocalWebhookSignature(rawBody, signature, secret, timestamp);
+  const validSharedSecret = verifySharedSecretSignature(signature, secret);
 
-  if (!valid) {
-    throw new Error("WEBHOOK_SIGNATURE_INVALID");
-  }
+  if (validSharedSecret) return;
+
+  const validHmac = verifyHmacWebhookSignature({
+    rawBody,
+    signatureHeader: signature,
+    secret,
+    timestamp
+  });
+
+  if (validHmac) return;
+
+  throw new Error("WEBHOOK_SIGNATURE_INVALID");
 }
 
 function buildResult(
   normalized: NormalizedWebhookEvent,
-  saved: any
+  saved: unknown
 ): IngestResult {
+  const deduped =
+    typeof saved === "object" &&
+    saved !== null &&
+    "deduped" in saved &&
+    Boolean((saved as { deduped?: boolean }).deduped);
+
   return {
     ok: true,
     accepted: true,
-    deduped: Boolean(saved?.deduped),
+    deduped,
     eventId: normalized.eventId,
     eventType: normalized.eventType,
     symbol: normalized.symbol,
