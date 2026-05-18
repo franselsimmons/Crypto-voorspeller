@@ -1,194 +1,294 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ingestTradeSystemEvent } from "@/lib/ingest";
+
+import {
+  normalizeWebhookBody,
+  type WebhookRecord,
+  type NormalizedWebhookEvent
+} from "@/lib/normalize";
+
+import { saveTradeEvent } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type WebhookRecord = Record<string, unknown>;
+type AnyRecord = Record<string, unknown>;
+
+const WEBHOOK_SECRET =
+  process.env.ANALYSIS_WEBHOOK_SECRET ||
+  process.env.WEBHOOK_SECRET ||
+  process.env.TRADE_WEBHOOK_SECRET ||
+  "";
+
+function isRecord(value: unknown): value is AnyRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
-  if (typeof value === "string") return value;
-
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? String(value) : fallback;
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return fallback;
-  }
+  return String(value).trim() || fallback;
 }
 
-function safeTrim(value: unknown, fallback = ""): string {
-  return safeString(value, fallback).trim();
+function safeUpper(value: unknown, fallback = ""): string {
+  return safeString(value, fallback).toUpperCase();
 }
 
-function parseJsonObject(text: string): WebhookRecord {
+function parseJson(text: string): unknown {
+  if (!text) return {};
+
   try {
-    const parsed = JSON.parse(text);
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return parsed as WebhookRecord;
+    return JSON.parse(text);
   } catch {
     return {};
   }
 }
 
-function parseJsonField(value: unknown): WebhookRecord {
-  if (!value || typeof value !== "string") return {};
+function parseNestedJsonObject(value: unknown): AnyRecord | null {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return null;
 
   try {
     const parsed = JSON.parse(value);
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return parsed as WebhookRecord;
+    return isRecord(parsed) ? parsed : null;
   } catch {
-    return {};
+    return null;
   }
 }
 
-function getEnvWebhookSecret(): string {
+function readAuthSecret(req: NextRequest): string {
+  const bearer = req.headers.get("authorization") || "";
+
+  if (bearer.toLowerCase().startsWith("bearer ")) {
+    return bearer.slice(7).trim();
+  }
+
   return (
-    process.env.ANALYSIS_WEBHOOK_SECRET ||
-    process.env.WEBHOOK_SECRET ||
-    process.env.TRADE_WEBHOOK_SECRET ||
+    req.headers.get("x-analysis-webhook-secret") ||
+    req.headers.get("x-webhook-secret") ||
+    req.headers.get("x-trade-webhook-secret") ||
     ""
-  );
+  ).trim();
 }
 
-function shouldRequireWebhookSignature(): boolean {
-  const explicit =
-    process.env.REQUIRE_WEBHOOK_SIGNATURE ??
-    process.env.REQUIRE_ANALYSIS_WEBHOOK_SECRET;
+function isAuthorized(req: NextRequest): boolean {
+  if (!WEBHOOK_SECRET) return true;
+  return readAuthSecret(req) === WEBHOOK_SECRET;
+}
 
-  if (explicit !== undefined) {
-    return String(explicit).toLowerCase() === "true";
+function getFirstArray(body: AnyRecord): unknown[] | null {
+  const candidates = [
+    body.rows,
+    body.actions,
+    body.data,
+    body.events,
+    body.items
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length) {
+      return candidate;
+    }
   }
 
-  return Boolean(getEnvWebhookSecret());
+  return null;
 }
 
-function getAuthorizationBearer(req: NextRequest): string {
-  const auth = req.headers.get("authorization") || "";
-  const match = auth.match(/^Bearer\s+(.+)$/i);
+function getNestedBatchRows(body: AnyRecord): unknown[] | null {
+  const payloadJson = parseNestedJsonObject(body.payloadJson);
+  const rawJson = parseNestedJsonObject(body.rawJson);
+  const payload = parseNestedJsonObject(body.payload);
 
-  return match?.[1]?.trim() || "";
+  const nestedObjects = [payloadJson, rawJson, payload].filter(Boolean) as AnyRecord[];
+
+  for (const nested of nestedObjects) {
+    const rows = getFirstArray(nested);
+    if (rows?.length) return rows;
+  }
+
+  return null;
 }
 
-function getIncomingTimestamp(req: NextRequest, body: WebhookRecord): string {
-  return safeTrim(
-    req.headers.get("x-webhook-timestamp") ||
-      req.headers.get("x-analysis-webhook-timestamp") ||
-      req.headers.get("x-trade-webhook-timestamp") ||
-      body.timestamp ||
-      body.ts ||
-      ""
+function isBatchPayload(body: AnyRecord): boolean {
+  const eventType = safeUpper(body.eventType || body.type || body.action);
+
+  if (eventType === "BATCH") return true;
+
+  return Boolean(
+    Array.isArray(body.rows) ||
+      Array.isArray(body.actions) ||
+      Array.isArray(body.data) ||
+      Array.isArray(body.events) ||
+      Array.isArray(body.items)
   );
 }
 
-function getIncomingSignature(req: NextRequest, body: WebhookRecord): string {
-  const payloadJson = parseJsonField(body.payloadJson);
-  const rawJson = parseJsonField(body.rawJson);
+function getRowsFromRequestBody(parsed: unknown): AnyRecord[] {
+  if (Array.isArray(parsed)) {
+    return parsed.filter(isRecord);
+  }
 
-  const merged: WebhookRecord = {
-    ...payloadJson,
-    ...rawJson,
-    ...body
+  if (!isRecord(parsed)) {
+    return [];
+  }
+
+  if (!isBatchPayload(parsed)) {
+    return [parsed];
+  }
+
+  const rows = getFirstArray(parsed) || getNestedBatchRows(parsed) || [];
+
+  return rows.filter(isRecord);
+}
+
+function enrichRowWithBatchMeta(row: AnyRecord, batch: unknown): WebhookRecord {
+  if (!isRecord(batch)) return row as WebhookRecord;
+
+  const eventType = safeUpper(row.eventType || row.type || row.action);
+
+  return {
+    source: row.source || batch.source || "tradesystem",
+    runId: row.runId || batch.runId || null,
+    strategyVersion: row.strategyVersion || batch.strategyVersion || "UNKNOWN",
+    btcState: row.btcState || batch.btcState || "UNKNOWN",
+    discoveryMode: row.discoveryMode ?? batch.discoveryMode ?? false,
+
+    ...row,
+
+    eventType: eventType || safeUpper(row.action || "SNAPSHOT", "SNAPSHOT"),
+    action: safeUpper(row.action || row.eventType || eventType || "SNAPSHOT", "SNAPSHOT")
   };
+}
 
-  const fromHeader =
-    req.headers.get("x-webhook-signature") ||
-    req.headers.get("x-analysis-webhook-signature") ||
-    req.headers.get("x-trade-webhook-signature") ||
-    req.headers.get("x-webhook-secret") ||
-    req.headers.get("x-analysis-webhook-secret") ||
-    req.headers.get("x-trade-webhook-secret") ||
-    getAuthorizationBearer(req);
+function countByEventType(events: NormalizedWebhookEvent[]) {
+  return events.reduce(
+    (acc, event) => {
+      const type = safeUpper(event.eventType, "UNKNOWN");
 
-  const fromBody =
-    safeTrim(merged.signature) ||
-    safeTrim(merged.webhookSignature) ||
-    safeTrim(merged.webhookSecret) ||
-    safeTrim(merged.xWebhookSignature) ||
-    safeTrim(merged.xAnalysisWebhookSignature) ||
-    safeTrim(merged.xTradeWebhookSignature);
+      if (type === "ENTRY") acc.entries += 1;
+      else if (type === "EXIT") acc.exits += 1;
+      else if (type === "REJECT") acc.rejects += 1;
+      else if (type === "SNAPSHOT") acc.snapshots += 1;
+      else if (type === "HOLD") acc.holds += 1;
+      else acc.unknown += 1;
 
-  return safeTrim(fromHeader || fromBody);
+      return acc;
+    },
+    {
+      entries: 0,
+      exits: 0,
+      rejects: 0,
+      snapshots: 0,
+      holds: 0,
+      unknown: 0
+    }
+  );
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const rawText = await req.text();
-    const rawPayload = parseJsonObject(rawText);
-
-    const secret = getEnvWebhookSecret();
-    const signature = getIncomingSignature(req, rawPayload);
-    const timestamp = getIncomingTimestamp(req, rawPayload);
-    const requireSignature = shouldRequireWebhookSignature();
-
-    if (requireSignature && !signature) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "WEBHOOK_SIGNATURE_MISSING_ROUTE",
-          hint: "Send x-webhook-signature / x-webhook-secret / Authorization Bearer."
-        },
-        { status: 400 }
-      );
-    }
-
-    const result = await ingestTradeSystemEvent(rawText, {
-      signature,
-      timestamp,
-      secret,
-      requireSignature
-    });
-
-    return NextResponse.json(result, {
-      status: result?.deduped ? 200 : 202
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown webhook error";
-
-    console.error("TRADESYSTEM_WEBHOOK_ERROR:", {
-      message,
-      stack: error instanceof Error ? error.stack : null
-    });
-
+  if (!isAuthorized(req)) {
     return NextResponse.json(
       {
         ok: false,
-        error: message
+        error: "UNAUTHORIZED"
+      },
+      { status: 401 }
+    );
+  }
+
+  const rawText = await req.text();
+  const parsed = parseJson(rawText);
+
+  const incomingRows = getRowsFromRequestBody(parsed);
+
+  if (!incomingRows.length) {
+    return NextResponse.json(
+      {
+        ok: false,
+        stored: 0,
+        failed: 0,
+        error: "NO_ROWS_FOUND"
       },
       { status: 400 }
     );
   }
+
+  const normalizedEvents: NormalizedWebhookEvent[] = [];
+  const errors: Array<{ index: number; error: string }> = [];
+
+  for (let i = 0; i < incomingRows.length; i += 1) {
+    const row = incomingRows[i];
+
+    try {
+      const enriched = enrichRowWithBatchMeta(row, parsed);
+      const normalized = normalizeWebhookBody(enriched);
+
+      // Cruciaal: nooit de BATCH-wrapper opslaan.
+      if (safeUpper(normalized.eventType) === "BATCH") {
+        errors.push({
+          index: i,
+          error: "BATCH_ROW_SKIPPED"
+        });
+
+        continue;
+      }
+
+      normalizedEvents.push(normalized);
+    } catch (error) {
+      errors.push({
+        index: i,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  let stored = 0;
+  let deduped = 0;
+  let failed = errors.length;
+  let persistent = false;
+
+  for (let i = 0; i < normalizedEvents.length; i += 1) {
+    const event = normalizedEvents[i];
+
+    try {
+      const result = await saveTradeEvent(event);
+
+      if (result.stored) stored += 1;
+      if (result.deduped) deduped += 1;
+      if (result.persistent) persistent = true;
+    } catch (error) {
+      failed += 1;
+
+      errors.push({
+        index: i,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  const counts = countByEventType(normalizedEvents);
+
+  const status = normalizedEvents.length > 0 && failed < incomingRows.length ? 200 : 500;
+
+  return NextResponse.json(
+    {
+      ok: status === 200,
+      received: incomingRows.length,
+      normalized: normalizedEvents.length,
+      stored,
+      deduped,
+      failed,
+      persistent,
+      counts,
+      errors: errors.slice(0, 20)
+    },
+    { status }
+  );
 }
 
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    route: "tradesystem-webhook",
-    methods: ["POST"],
-    usage: "Send TradeSystem ENTRY / EXIT / REJECT / WAIT / SNAPSHOT payloads to this endpoint.",
-    env: {
-      hasAnalysisWebhookSecret: Boolean(process.env.ANALYSIS_WEBHOOK_SECRET),
-      hasWebhookSecret: Boolean(process.env.WEBHOOK_SECRET),
-      hasTradeWebhookSecret: Boolean(process.env.TRADE_WEBHOOK_SECRET),
-      requireSignature: shouldRequireWebhookSignature()
-    }
+    route: "/api/webhooks/tradesystem",
+    accepts: ["single event", "BATCH.rows", "BATCH.actions", "BATCH.data"],
+    stores: "individual normalized events only"
   });
 }
