@@ -696,7 +696,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   const receivedAt =
     asNumber(firstValue(merged, ["receivedAt", "payload.receivedAt"])) ?? Date.now();
 
-  const compact: TradeEvent = {
+    const compact = {
     eventId,
     eventType,
     action,
@@ -823,7 +823,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   compact.rawJson = minimalJson;
   compact.payloadJson = minimalJson;
 
-  return compact;
+    return compact as unknown as TradeEvent;
 }
 
 function parseStoredEvent(value: unknown): TradeEvent | null {
