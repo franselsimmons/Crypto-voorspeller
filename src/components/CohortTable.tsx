@@ -5,21 +5,29 @@ type CohortTableProps = {
   rows: CohortRow[];
 };
 
-function tone(value: number) {
-  if (value > 0) return "positive";
-  if (value < 0) return "negative";
+function tone(value: number | null | undefined): string {
+  const n = Number(value || 0);
+
+  if (n > 0) return "good";
+  if (n < 0) return "bad";
+
   return "";
+}
+
+function profitFactor(value: number | null): string {
+  if (value === null || value === undefined) return "—";
+  if (value >= 999) return "∞";
+
+  return compactNumber(value, 2);
 }
 
 export function CohortTable({ rows }: CohortTableProps) {
   return (
-    <div className="panel">
+    <section className="panel">
       <div className="panel-header">
         <div>
-          <div className="panel-title">Filter-combinaties</div>
-          <div className="panel-subtitle">
-            Gerankt op optimizer score. Wilson gebruikt voor winrate-confidence.
-          </div>
+          <h2>Beste cohorts</h2>
+          <p>Gerangschikt op optimizer-score, winrate, R en PnL.</p>
         </div>
       </div>
 
@@ -32,6 +40,7 @@ export function CohortTable({ rows }: CohortTableProps) {
               <th>Cohort</th>
               <th>Setup</th>
               <th>Side</th>
+              <th>Reason</th>
               <th>Trades</th>
               <th>Closed</th>
               <th>WR</th>
@@ -43,6 +52,7 @@ export function CohortTable({ rows }: CohortTableProps) {
               <th>Direct SL</th>
               <th>Near TP</th>
               <th>RSI</th>
+              <th>Edge</th>
               <th>Flow</th>
               <th>BTC</th>
               <th>OB</th>
@@ -52,42 +62,44 @@ export function CohortTable({ rows }: CohortTableProps) {
           </thead>
 
           <tbody>
-            {rows.map((row, index) => (
-              <tr key={`${row.cohortKey}-${index}`}>
-                <td>{index + 1}</td>
-                <td className={tone(row.score)}>{compactNumber(row.score, 2)}</td>
-                <td className="mono cohort-cell">{row.cohortKey}</td>
-                <td>{row.setupClass}</td>
-                <td>{row.side}</td>
-                <td>{row.trades}</td>
-                <td>{row.closed}</td>
-                <td>{pct(row.winrate)}</td>
-                <td>{pct(row.wilson)}</td>
-                <td className={tone(row.totalR)}>{r(row.totalR)}</td>
-                <td className={tone(row.avgR)}>{r(row.avgR)}</td>
-                <td className={tone(row.pnlPct)}>{pct(row.pnlPct)}</td>
-                <td>{row.profitFactor === null ? "—" : compactNumber(row.profitFactor, 2)}</td>
-                <td>{pct(row.directSlPct)}</td>
-                <td>{pct(row.nearTpPct)}</td>
-                <td>{row.rsiZone}</td>
-                <td>{row.flow}</td>
-                <td>{row.btcState}</td>
-                <td>{row.obRelation}</td>
-                <td>{row.spreadBucket}</td>
-                <td>{row.depthBucket}</td>
-              </tr>
-            ))}
-
-            {!rows.length ? (
+            {rows.length === 0 ? (
               <tr>
-                <td colSpan={21} className="empty">
-                  Nog geen cohorts.
+                <td colSpan={23} className="empty-cell">
+                  Nog geen gesloten trades voor cohorts.
                 </td>
               </tr>
-            ) : null}
+            ) : (
+              rows.map((row, index) => (
+                <tr key={`${row.cohortKey}-${index}`}>
+                  <td>{index + 1}</td>
+                  <td className={tone(row.score)}>{compactNumber(row.score, 2)}</td>
+                  <td className="mono cohort-cell">{row.cohortKey}</td>
+                  <td>{row.setupClass}</td>
+                  <td>{row.side}</td>
+                  <td>{row.reason}</td>
+                  <td>{row.trades}</td>
+                  <td>{row.closed}</td>
+                  <td>{pct(row.winrate)}</td>
+                  <td>{pct(row.wilson)}</td>
+                  <td className={tone(row.totalR)}>{r(row.totalR)}</td>
+                  <td className={tone(row.avgR)}>{r(row.avgR)}</td>
+                  <td className={tone(row.pnlPct)}>{pct(row.pnlPct / 100)}</td>
+                  <td>{profitFactor(row.profitFactor)}</td>
+                  <td>{pct(row.directSlPct)}</td>
+                  <td>{pct(row.nearTpPct)}</td>
+                  <td>{row.rsiZone}</td>
+                  <td>{row.rsiEdge}</td>
+                  <td>{row.flow}</td>
+                  <td>{row.btcState}</td>
+                  <td>{row.obRelation}</td>
+                  <td>{row.spreadBucket}</td>
+                  <td>{row.depthBucket}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
