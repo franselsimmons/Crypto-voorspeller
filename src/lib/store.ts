@@ -237,6 +237,10 @@ export async function listTradeEvents(): Promise<NormalizedWebhookEvent[]> {
   );
 }
 
+export async function getTradeEvents(): Promise<TradeEvent[]> {
+  return listTradeEvents();
+}
+
 export async function getTradeEventCount(): Promise<number> {
   if (!hasRedis()) return memoryStore.length;
 
@@ -268,4 +272,11 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
     ok: true,
     persistent: true
   };
+}
+
+export async function clearTradeEvents(): Promise<{
+  ok: boolean;
+  persistent: boolean;
+}> {
+  return clearTradeEventsForDebugOnly();
 }
