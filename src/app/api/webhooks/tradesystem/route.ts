@@ -5,6 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type WebhookRecord = Record<string, unknown>;
+type FlatWebhookRecord = Record<string, string>;
 
 function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
@@ -30,7 +31,21 @@ function safeTrim(value: unknown, fallback = ""): string {
   return safeString(value, fallback).trim();
 }
 
-function safeJsonParse(value: unknown): WebhookRecord | null {
+function parseJsonObject(text: string): WebhookRecord {
+  try {
+    const parsed = JSON.parse(text);
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return parsed as WebhookRecord;
+  } catch {
+    return {};
+  }
+}
+
+function safeJsonParseObject(value: unknown): WebhookRecord | null {
   if (!value || typeof value !== "string") return null;
 
   try {
@@ -46,26 +61,63 @@ function safeJsonParse(value: unknown): WebhookRecord | null {
   }
 }
 
-function normalizeTradeSystemWebhookBody(rawBody: unknown): Record<string, string> {
-  const body: WebhookRecord =
-    rawBody && typeof rawBody === "object" && !Array.isArray(rawBody)
-      ? (rawBody as WebhookRecord)
-      : {};
+function getEnvWebhookSecret(): string {
+  return (
+    process.env.ANALYSIS_WEBHOOK_SECRET ||
+    process.env.WEBHOOK_SECRET ||
+    process.env.TRADE_WEBHOOK_SECRET ||
+    ""
+  );
+}
 
-  const payloadFromJson = safeJsonParse(body.payloadJson);
+function getAuthorizationBearer(req: NextRequest): string {
+  const auth = req.headers.get("authorization") || "";
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+
+  return match?.[1]?.trim() || "";
+}
+
+function getIncomingSignature(req: NextRequest, body: WebhookRecord): string {
+  const fromHeader =
+    req.headers.get("x-webhook-signature") ||
+    req.headers.get("x-analysis-webhook-signature") ||
+    req.headers.get("x-trade-webhook-signature") ||
+    req.headers.get("x-webhook-secret") ||
+    req.headers.get("x-analysis-webhook-secret") ||
+    req.headers.get("x-trade-webhook-secret") ||
+    getAuthorizationBearer(req);
+
+  const fromBody =
+    safeTrim(body.signature) ||
+    safeTrim(body.webhookSignature) ||
+    safeTrim(body.webhookSecret) ||
+    safeTrim(body.xWebhookSignature) ||
+    safeTrim(body.xAnalysisWebhookSignature) ||
+    safeTrim(body.xTradeWebhookSignature);
+
+  return safeTrim(fromHeader || fromBody || getEnvWebhookSecret());
+}
+
+function normalizeTradeSystemWebhookBody(
+  rawBody: WebhookRecord,
+  signature: string
+): FlatWebhookRecord {
+  const payloadFromJson = safeJsonParseObject(rawBody.payloadJson);
 
   const merged: WebhookRecord = {
     ...(payloadFromJson || {}),
-    ...body
+    ...rawBody
   };
 
-  const normalized: Record<string, string> = {};
+  const normalized: FlatWebhookRecord = {};
 
   for (const [key, value] of Object.entries(merged)) {
     normalized[key] = safeString(value);
   }
 
-  const fallbackEventId = `ts_${Date.now()}_${Math.random()
+  const now = String(Date.now());
+
+  const fallbackEventId = `ts_${now}_${Math.random()
     .toString(36)
     .slice(2, 8)}`;
 
@@ -127,28 +179,52 @@ function normalizeTradeSystemWebhookBody(rawBody: unknown): Record<string, strin
     "UNKNOWN"
   );
 
-  normalized.ts = safeTrim(
-    normalized.ts || Date.now(),
-    String(Date.now())
-  );
+  normalized.ts = safeTrim(normalized.ts || now, now);
 
-  // Compat velden voor dashboards / ingest die oude namen gebruiken.
+  // Cruciaal: ingest verwacht signature als string.
+  normalized.signature = signature;
+  normalized.webhookSignature = signature;
+  normalized.webhookSecret = signature;
+
+  // Compat voor ingest/dashboard.
   normalized.payloadJson = safeString(
     normalized.payloadJson || JSON.stringify(merged)
   );
 
   normalized.rawJson = safeString(JSON.stringify(merged));
 
+  // Extra hardening: garandeer dat alles string is.
+  for (const [key, value] of Object.entries(normalized)) {
+    normalized[key] = safeString(value);
+  }
+
   return normalized;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const rawPayload = await req.json();
-    const payload = normalizeTradeSystemWebhookBody(rawPayload);
+    const rawText = await req.text();
+    const rawPayload = parseJsonObject(rawText);
 
-    // ingestTradeSystemEvent verwacht een string.
-    // Daarom hier bewust JSON.stringify(payload).
+    const signature = getIncomingSignature(req, rawPayload);
+
+    if (!signature) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "WEBHOOK_SIGNATURE_MISSING_ROUTE",
+          hint: "Set ANALYSIS_WEBHOOK_SECRET or send x-webhook-signature."
+        },
+        { status: 400 }
+      );
+    }
+
+    const payload = normalizeTradeSystemWebhookBody(rawPayload, signature);
+
+    /**
+     * Je ingestTradeSystemEvent verwacht volgens je build-error een string.
+     * Daarom geven we JSON.stringify(payload), niet het object zelf.
+     */
     const result = await ingestTradeSystemEvent(JSON.stringify(payload));
 
     return NextResponse.json(result, {
@@ -178,6 +254,11 @@ export async function GET() {
     ok: true,
     route: "tradesystem-webhook",
     methods: ["POST"],
-    usage: "Send TradeSystem ENTRY / EXIT / REJECT / SNAPSHOT payloads to this endpoint."
+    usage: "Send TradeSystem ENTRY / EXIT / REJECT / SNAPSHOT payloads to this endpoint.",
+    env: {
+      hasAnalysisWebhookSecret: Boolean(process.env.ANALYSIS_WEBHOOK_SECRET),
+      hasWebhookSecret: Boolean(process.env.WEBHOOK_SECRET),
+      hasTradeWebhookSecret: Boolean(process.env.TRADE_WEBHOOK_SECRET)
+    }
   });
 }
