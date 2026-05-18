@@ -1,5 +1,7 @@
 import type { NormalizedWebhookEvent } from "./normalize";
 
+export type TradeEvent = NormalizedWebhookEvent;
+
 type RedisCommand = Array<string | number>;
 
 type SaveTradeEventResult = {
