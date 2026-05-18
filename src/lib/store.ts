@@ -116,6 +116,7 @@ function asNumber(value: unknown): number | null {
     .trim();
 
   const n = Number(cleaned);
+
   return Number.isFinite(n) ? n : null;
 }
 
@@ -132,26 +133,6 @@ function safeJson(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return "{}";
-  }
-}
-
-function parseStoredEvent(value: unknown): TradeEvent | null {
-  if (!value) return null;
-
-  if (isRecord(value)) {
-    return compactTradeEvent(value);
-  }
-
-  if (typeof value !== "string") return null;
-
-  try {
-    const parsed = JSON.parse(value);
-
-    if (!isRecord(parsed)) return null;
-
-    return compactTradeEvent(parsed);
-  } catch {
-    return null;
   }
 }
 
@@ -188,13 +169,8 @@ function normalizeBaseSymbol(raw: unknown): string | null {
 function normalizeSide(raw: unknown): string | null {
   const side = asLower(raw, "");
 
-  if (side === "long" || side === "buy" || side === "bull" || side === "bullish") {
-    return "bull";
-  }
-
-  if (side === "short" || side === "sell" || side === "bear" || side === "bearish") {
-    return "bear";
-  }
+  if (["long", "buy", "bull", "bullish"].includes(side)) return "bull";
+  if (["short", "sell", "bear", "bearish"].includes(side)) return "bear";
 
   return side || null;
 }
@@ -387,42 +363,30 @@ function depthBucketFromEvent(event: AnyRecord): string {
   return "DEPTH_GTE_1M";
 }
 
-function buildCohortKey(event: {
-  setupClass: string | null;
-  side: string | null;
-  reason: string;
-  rsiZone: string | null;
-  rsiEdge?: string | null;
-  flow?: string | null;
-  btcState?: string | null;
-  obRelation?: string | null;
-  obBias?: string | null;
-  confluence?: number;
-  sniperScore?: number;
-  finalRr?: number | null;
-  plannedRR?: number | null;
-  rr?: number | null;
-  spreadBucket?: string | null;
-  depthBucket?: string | null;
-}): string {
+function buildCohortKey(event: TradeEvent): string {
   return [
-    `SETUP=${event.setupClass || "UNKNOWN"}`,
-    `SIDE=${event.side || "unknown"}`,
-    `REASON=${event.reason || "UNKNOWN"}`,
-    `RSI=${event.rsiZone || "UNKNOWN"}`,
-    `EDGE=${event.rsiEdge || "UNKNOWN"}`,
-    `FLOW=${event.flow || "UNKNOWN"}`,
-    `BTC=${event.btcState || "UNKNOWN"}`,
-    `OB=${event.obRelation || event.obBias || "UNKNOWN"}`,
+    `SETUP=${asString(event.setupClass, "UNKNOWN")}`,
+    `SIDE=${asString(event.side, "unknown")}`,
+    `REASON=${asString(event.reason, "UNKNOWN")}`,
+    `RSI=${asString(event.rsiZone, "UNKNOWN")}`,
+    `EDGE=${asString(event.rsiEdge, "UNKNOWN")}`,
+    `FLOW=${asString(event.flow, "UNKNOWN")}`,
+    `BTC=${asString(event.btcState, "UNKNOWN")}`,
+    `OB=${asString(event.obRelation || event.obBias, "UNKNOWN")}`,
     scoreBucket(event.confluence, "CONF"),
     scoreBucket(event.sniperScore, "SNIPER"),
     rrBucket(event.finalRr ?? event.plannedRR ?? event.rr),
-    event.spreadBucket || "SPREAD_NA",
-    event.depthBucket || "DEPTH_NA"
+    asString(event.spreadBucket, "SPREAD_NA"),
+    asString(event.depthBucket, "DEPTH_NA")
   ].join("|");
 }
 
-function buildEventId(event: AnyRecord, eventType: string, symbol: string | null, side: string | null): string {
+function buildEventId(
+  event: AnyRecord,
+  eventType: string,
+  symbol: string | null,
+  side: string | null
+): string {
   const existing = asString(
     firstValue(event, [
       "eventId",
@@ -445,16 +409,17 @@ function buildEventId(event: AnyRecord, eventType: string, symbol: string | null
     ""
   );
 
-  const ts = asNumber(
-    firstValue(event, [
-      "ts",
-      "createdAt",
-      "timestamp",
-      "payload.ts",
-      "payload.createdAt",
-      "payload.timestamp"
-    ])
-  ) ?? Date.now();
+  const ts =
+    asNumber(
+      firstValue(event, [
+        "ts",
+        "createdAt",
+        "timestamp",
+        "payload.ts",
+        "payload.createdAt",
+        "payload.timestamp"
+      ])
+    ) ?? Date.now();
 
   const reason = getReason(event, eventType);
 
@@ -514,6 +479,7 @@ function compactPayload(event: AnyRecord): AnyRecord {
     score: event.score,
     confluence: event.confluence,
     rawConfluence: event.rawConfluence,
+    effectiveConfluence: event.effectiveConfluence,
     sniperScore: event.sniperScore,
     rawSniperScore: event.rawSniperScore,
     fallbackSniperScore: event.fallbackSniperScore,
@@ -556,6 +522,7 @@ function compactPayload(event: AnyRecord): AnyRecord {
 function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   const event = isRecord(raw) ? raw : {};
   const payload = isRecord(event.payload) ? event.payload : {};
+
   const merged: AnyRecord = {
     ...parent,
     ...payload,
@@ -625,7 +592,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
       "payload.entryType",
       "payload.setup.entryReason"
     ]),
-    ""
+    "UNKNOWN"
   );
 
   const exitReason = asUpper(
@@ -633,7 +600,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
       "exitReason",
       "payload.exitReason"
     ]),
-    ""
+    "UNKNOWN"
   );
 
   const rejectReason = asUpper(
@@ -641,7 +608,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
       "rejectReason",
       "payload.rejectReason"
     ]),
-    ""
+    "UNKNOWN"
   );
 
   const score =
@@ -666,22 +633,22 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     asUpper(firstValue(merged, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"]), "") || null;
 
   const rsiEdge =
-    asUpper(firstValue(merged, ["rsiEdge", "rsiEntryEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]), "") || null;
+    asUpper(firstValue(merged, ["rsiEdge", "rsiEntryEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]), "UNKNOWN");
 
   const btcState =
-    asUpper(firstValue(merged, ["btcState", "payload.btcState", "payload.market.btcState"]), "") || null;
+    asUpper(firstValue(merged, ["btcState", "payload.btcState", "payload.market.btcState"]), "UNKNOWN");
 
   const regime =
-    asUpper(firstValue(merged, ["regime", "payload.regime", "payload.market.regime"]), "") || null;
+    asUpper(firstValue(merged, ["regime", "payload.regime", "payload.market.regime"]), "UNKNOWN");
 
   const flow =
-    asUpper(firstValue(merged, ["flow", "payload.flow", "payload.market.flow"]), "") || null;
+    asUpper(firstValue(merged, ["flow", "payload.flow", "payload.market.flow"]), "UNKNOWN");
 
   const obBias =
-    asUpper(firstValue(merged, ["obBias", "payload.obBias", "payload.ob.bias", "ob.bias"]), "") || null;
+    asUpper(firstValue(merged, ["obBias", "payload.obBias", "payload.ob.bias", "ob.bias"]), "UNKNOWN");
 
   const obRelation =
-    asUpper(firstValue(merged, ["obRelation", "payload.obRelation", "payload.ob.relation", "ob.relation"]), "") || null;
+    asUpper(firstValue(merged, ["obRelation", "payload.obRelation", "payload.ob.relation", "ob.relation"]), "UNKNOWN");
 
   const spreadPct =
     asNumber(firstValue(merged, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct", "ob.spreadPct"]));
@@ -797,15 +764,15 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     rawJson: "{}",
     payloadJson: "{}",
 
-    entryReason: entryReason || null,
-    exitReason: exitReason || null,
-    rejectReason: rejectReason || null,
+    entryReason,
+    exitReason,
+    rejectReason,
 
     gradePoints:
       asNumber(firstValue(merged, ["gradePoints", "payload.gradePoints", "payload.setup.gradePoints"])) ?? 0,
 
     recommendedRisk:
-      asString(firstValue(merged, ["recommendedRisk", "payload.recommendedRisk"]), "") || "N/A",
+      asString(firstValue(merged, ["recommendedRisk", "payload.recommendedRisk"]), "N/A"),
 
     rawConfluence,
     effectiveConfluence:
@@ -857,6 +824,26 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   compact.payloadJson = minimalJson;
 
   return compact;
+}
+
+function parseStoredEvent(value: unknown): TradeEvent | null {
+  if (!value) return null;
+
+  if (isRecord(value)) {
+    return compactTradeEvent(value);
+  }
+
+  if (typeof value !== "string") return null;
+
+  try {
+    const parsed = JSON.parse(value);
+
+    if (!isRecord(parsed)) return null;
+
+    return compactTradeEvent(parsed);
+  } catch {
+    return null;
+  }
 }
 
 function getBatchRows(event: unknown): unknown[] {
