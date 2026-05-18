@@ -14,7 +14,7 @@ export type DashboardFilters = {
   to: string;
 };
 
-type Overview = {
+export type Overview = {
   entries: number;
   closed: number;
   open: number;
@@ -28,7 +28,7 @@ type Overview = {
   nearTpPct: number;
 };
 
-type DashboardOptions = {
+export type DashboardOptions = {
   strategies: string[];
   strategyVersions: string[];
   symbols: string[];
@@ -38,9 +38,120 @@ type DashboardOptions = {
   setupClasses: string[];
 };
 
-type CohortRow = Record<string, unknown>;
-type BreakdownRow = Record<string, unknown>;
-type RecentTradeRow = Record<string, unknown>;
+export type CohortRow = {
+  cohortKey: string;
+  label: string;
+  sample: number;
+  count: number;
+  trades: number;
+
+  setupClass: string;
+  side: string;
+  rsiZone: string;
+  obBias: string;
+  reason: string;
+
+  avgScore: number;
+  avgConfluence: number;
+  avgSniper: number;
+
+  exits: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+  wilson: number;
+  totalR: number;
+  avgR: number;
+  pnlPct: number;
+  profitFactor: number | null;
+  directSlPct: number;
+  nearTpPct: number;
+};
+
+export type BreakdownRow = {
+  reason: string;
+  count: number;
+  pct: number;
+
+  entries: number;
+  exits: number;
+  rejects: number;
+  holds: number;
+
+  examples: string;
+
+  closed: number;
+  wins: number;
+  losses: number;
+  winrate: number;
+  wilson: number;
+  totalR: number;
+  avgR: number;
+  pnlPct: number;
+  profitFactor: number | null;
+  directSlPct: number;
+  nearTpPct: number;
+};
+
+export type RecentTradeRow = {
+  id: string;
+  eventId: string;
+  tradeId: string | null;
+
+  ts: number;
+  receivedAt: number;
+  date: string;
+
+  eventType: string;
+  action: string;
+  reason: string;
+
+  symbol: string | null;
+  side: string | null;
+
+  setupClass: string | null;
+  grade: string | null;
+
+  entry: number | null;
+  sl: number | null;
+  initialSl: number | null;
+  tp: number | null;
+  exit: number | null;
+
+  rr: number | null;
+  plannedRR: number | null;
+  baseRR: number | null;
+  finalRr: number | null;
+  exitR: number | null;
+  pnlPct: number | null;
+
+  score: number;
+  confluence: number;
+  sniperScore: number;
+
+  rsi: number | null;
+  rsiHTF: number | null;
+  rsiZone: string | null;
+
+  obBias: string | null;
+  spreadPct: number | null;
+  depthMinUsd1p: number | null;
+
+  mfeR: number | null;
+  maeR: number | null;
+  currentR: number | null;
+
+  directToSL: boolean;
+  nearTpSeen: boolean;
+  reachedHalfR: boolean;
+  reachedOneR: boolean;
+  breakEvenActivated: boolean;
+  breakEvenStop: boolean;
+
+  strategyVersion: string;
+  runId: string;
+};
 
 export type DashboardData = {
   overview: Overview;
@@ -186,6 +297,35 @@ function profitFactorFromEvents(events: NormalizedWebhookEvent[]): number | null
   return round(grossWin / grossLoss, 3);
 }
 
+function summarizeExitEvents(events: NormalizedWebhookEvent[]) {
+  const exits = events.filter(event => event.eventType === "EXIT");
+
+  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
+  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
+  const completed = wins + losses;
+
+  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
+  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
+
+  const directSlCount = exits.filter(event => event.directToSL).length;
+  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
+
+  return {
+    exits: exits.length,
+    closed: exits.length,
+    wins,
+    losses,
+    winrate: completed ? wins / completed : 0,
+    wilson: wilsonLowerBound(wins, completed),
+    totalR: round(totalR, 3),
+    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
+    pnlPct: round(pnlPct, 3),
+    profitFactor: profitFactorFromEvents(exits),
+    directSlPct: exits.length ? directSlCount / exits.length : 0,
+    nearTpPct: exits.length ? nearTpCount / exits.length : 0
+  };
+}
+
 function buildOverview(events: NormalizedWebhookEvent[]): Overview {
   const entries = events.filter(event => event.eventType === "ENTRY");
   const exits = events.filter(event => event.eventType === "EXIT");
@@ -251,35 +391,6 @@ function getCohortKey(event: NormalizedWebhookEvent): string {
   ].join("|");
 }
 
-function summarizeExitEvents(events: NormalizedWebhookEvent[]) {
-  const exits = events.filter(event => event.eventType === "EXIT");
-
-  const wins = exits.filter(event => n(event.exitR, 0) > 0).length;
-  const losses = exits.filter(event => n(event.exitR, 0) < 0).length;
-  const completed = wins + losses;
-
-  const totalR = exits.reduce((sum, event) => sum + n(event.exitR, 0), 0);
-  const pnlPct = exits.reduce((sum, event) => sum + n(event.pnlPct, 0), 0);
-
-  const directSlCount = exits.filter(event => event.directToSL).length;
-  const nearTpCount = exits.filter(event => event.nearTpSeen).length;
-
-  return {
-    exits: exits.length,
-    closed: exits.length,
-    wins,
-    losses,
-    winrate: completed ? wins / completed : 0,
-    wilson: wilsonLowerBound(wins, completed),
-    totalR: round(totalR, 3),
-    avgR: exits.length ? round(totalR / exits.length, 3) : 0,
-    pnlPct: round(pnlPct, 3),
-    profitFactor: profitFactorFromEvents(exits),
-    directSlPct: exits.length ? directSlCount / exits.length : 0,
-    nearTpPct: exits.length ? nearTpCount / exits.length : 0
-  };
-}
-
 function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
   const exits = events.filter(event => event.eventType === "EXIT");
   const map = new Map<string, NormalizedWebhookEvent[]>();
@@ -328,7 +439,7 @@ function buildCohorts(events: NormalizedWebhookEvent[]): CohortRow[] {
         ...stats
       };
     })
-    .sort((a, b) => n(b.totalR, 0) - n(a.totalR, 0))
+    .sort((a, b) => b.totalR - a.totalR)
     .slice(0, 100);
 }
 
@@ -373,7 +484,7 @@ function buildBreakdown(events: NormalizedWebhookEvent[]): BreakdownRow[] {
         ...stats
       };
     })
-    .sort((a, b) => n(b.count, 0) - n(a.count, 0))
+    .sort((a, b) => b.count - a.count)
     .slice(0, 100);
 }
 
