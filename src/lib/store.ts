@@ -453,6 +453,7 @@ function compactPayload(event: AnyRecord): AnyRecord {
     tradeId: event.tradeId,
 
     symbol: event.symbol,
+    rawBitgetSymbol: event.rawBitgetSymbol,
     side: event.side,
     reason: event.reason,
     entryReason: event.entryReason,
@@ -462,24 +463,29 @@ function compactPayload(event: AnyRecord): AnyRecord {
     setupClass: event.setupClass,
     grade: event.grade,
     gradePoints: event.gradePoints,
+    recommendedRisk: event.recommendedRisk,
 
     entry: event.entry,
     sl: event.sl,
     initialSl: event.initialSl,
     tp: event.tp,
     exit: event.exit,
+    price: event.price,
 
     rr: event.rr,
     plannedRR: event.plannedRR,
     baseRR: event.baseRR,
     finalRr: event.finalRr,
+    effectiveRR: event.effectiveRR,
     exitR: event.exitR,
     pnlPct: event.pnlPct,
 
     score: event.score,
+    moveScore: event.moveScore,
     confluence: event.confluence,
     rawConfluence: event.rawConfluence,
     effectiveConfluence: event.effectiveConfluence,
+    sniper: event.sniper,
     sniperScore: event.sniperScore,
     rawSniperScore: event.rawSniperScore,
     fallbackSniperScore: event.fallbackSniperScore,
@@ -492,6 +498,7 @@ function compactPayload(event: AnyRecord): AnyRecord {
     btcState: event.btcState,
     regime: event.regime,
     flow: event.flow,
+    funding: event.funding,
 
     obBias: event.obBias,
     obRelation: event.obRelation,
@@ -515,6 +522,7 @@ function compactPayload(event: AnyRecord): AnyRecord {
     maxSlProgress: event.maxSlProgress,
 
     ts: event.ts,
+    createdAt: event.createdAt,
     receivedAt: event.receivedAt
   };
 }
@@ -542,6 +550,17 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
       "payload.contractSymbol"
     ])
   );
+
+  const rawBitgetSymbol =
+    asString(
+      firstValue(merged, [
+        "rawBitgetSymbol",
+        "payload.rawBitgetSymbol",
+        "contractSymbol",
+        "payload.contractSymbol"
+      ]),
+      symbol ? `${symbol}USDT` : "UNKNOWNUSDT"
+    );
 
   const side = normalizeSide(
     firstValue(merged, [
@@ -614,11 +633,20 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   const score =
     asNumber(firstValue(merged, ["score", "moveScore", "payload.score", "payload.scores.score"])) ?? 0;
 
+  const moveScore =
+    asNumber(firstValue(merged, ["moveScore", "score", "payload.moveScore", "payload.score"])) ?? score;
+
   const confluence =
     asNumber(firstValue(merged, ["confluence", "effectiveConfluence", "payload.confluence", "payload.scores.confluence"])) ?? 0;
 
   const rawConfluence =
     asNumber(firstValue(merged, ["rawConfluence", "payload.rawConfluence", "payload.scores.rawConfluence"])) ?? 0;
+
+  const effectiveConfluence =
+    asNumber(firstValue(merged, ["effectiveConfluence", "payload.effectiveConfluence"])) ?? confluence;
+
+  const sniper =
+    asString(firstValue(merged, ["sniper", "payload.sniper"]), "UNKNOWN");
 
   const sniperScore =
     asNumber(firstValue(merged, ["sniperScore", "payload.sniperScore", "payload.scores.sniperScore"])) ?? 0;
@@ -644,6 +672,9 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   const flow =
     asUpper(firstValue(merged, ["flow", "payload.flow", "payload.market.flow"]), "UNKNOWN");
 
+  const funding =
+    asNumber(firstValue(merged, ["funding", "payload.funding"])) ?? 0;
+
   const obBias =
     asUpper(firstValue(merged, ["obBias", "payload.obBias", "payload.ob.bias", "ob.bias"]), "UNKNOWN");
 
@@ -664,6 +695,9 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     asNumber(firstValue(merged, ["entry", "entryPrice", "price.entry", "payload.entry", "payload.price.entry", "payload.price"])) ??
     asNumber(firstValue(merged, ["price", "payload.price"])) ??
     null;
+
+  const price =
+    asNumber(firstValue(merged, ["price", "payload.price"])) ?? entry;
 
   const sl =
     asNumber(firstValue(merged, ["sl", "slPrice", "price.sl", "payload.sl", "payload.price.sl"])) ?? null;
@@ -689,14 +723,20 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   const finalRr =
     asNumber(firstValue(merged, ["finalRr", "finalRR", "effectiveRR", "payload.finalRr", "payload.finalRR", "payload.effectiveRR"])) ?? null;
 
+  const effectiveRR =
+    asNumber(firstValue(merged, ["effectiveRR", "finalRr", "plannedRR", "rr", "payload.effectiveRR", "payload.finalRr"])) ?? finalRr;
+
   const ts =
     asNumber(firstValue(merged, ["ts", "createdAt", "timestamp", "payload.ts", "payload.createdAt", "payload.timestamp"])) ??
     Date.now();
 
+  const createdAt =
+    asNumber(firstValue(merged, ["createdAt", "payload.createdAt", "ts", "payload.ts"])) ?? ts;
+
   const receivedAt =
     asNumber(firstValue(merged, ["receivedAt", "payload.receivedAt"])) ?? Date.now();
 
-    const compact = {
+  const compact = {
     eventId,
     eventType,
     action,
@@ -706,6 +746,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     tradeId: tradeId || eventId,
 
     symbol,
+    rawBitgetSymbol,
     side,
     reason,
     cohortKey: null,
@@ -714,18 +755,30 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     grade,
 
     ts,
+    createdAt,
     receivedAt,
 
     score,
+    moveScore,
     confluence,
+    rawConfluence,
+    effectiveConfluence,
+
+    sniper,
     sniperScore,
+    rawSniperScore,
+    fallbackSniperScore,
 
     rsi: asNumber(firstValue(merged, ["rsi", "payload.rsi", "payload.rsi.rsi"])),
     rsiHTF: asNumber(firstValue(merged, ["rsiHTF", "payload.rsiHTF", "payload.rsi.rsiHTF"])),
     rsiZone,
+    rsiEdge,
 
     obBias,
+    obRelation,
     spreadPct,
+    spreadBps,
+    spreadBucket,
     depthMinUsd1p: asNumber(
       firstValue(merged, [
         "depthMinUsd1p",
@@ -735,8 +788,10 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
         "payload.ob.depthMinUsd1p"
       ])
     ),
+    depthBucket,
 
     entry,
+    price,
     sl,
     initialSl,
     tp,
@@ -746,6 +801,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     plannedRR,
     baseRR,
     finalRr,
+    effectiveRR,
     exitR: asNumber(firstValue(merged, ["exitR", "payload.exitR", "outcome.exitR"])),
     pnlPct: asNumber(firstValue(merged, ["pnlPct", "pnl", "payload.pnlPct", "payload.pnl", "outcome.pnlPct"])),
 
@@ -774,23 +830,10 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
     recommendedRisk:
       asString(firstValue(merged, ["recommendedRisk", "payload.recommendedRisk"]), "N/A"),
 
-    rawConfluence,
-    effectiveConfluence:
-      asNumber(firstValue(merged, ["effectiveConfluence", "payload.effectiveConfluence"])) ?? confluence,
-
-    rawSniperScore,
-    fallbackSniperScore,
-
-    rsiEdge,
-
     btcState,
     regime,
     flow,
-
-    obRelation,
-    spreadBps,
-    spreadBucket,
-    depthBucket,
+    funding,
 
     triggerR: asNumber(firstValue(merged, ["triggerR", "payload.triggerR"])) ?? 0,
     triggerPnlPct: asNumber(firstValue(merged, ["triggerPnlPct", "payload.triggerPnlPct"])) ?? 0,
@@ -809,8 +852,25 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
 
     status: asUpper(firstValue(merged, ["status", "payload.status"], eventType), eventType),
 
+    bullishMidTrendProbe: asBoolean(firstValue(merged, ["bullishMidTrendProbe", "payload.bullishMidTrendProbe"])),
+    bullishMidTrendProbeReason:
+      asString(firstValue(merged, ["bullishMidTrendProbeReason", "payload.bullishMidTrendProbeReason"]), "") || null,
+
+    btcBullishBearException: asBoolean(firstValue(merged, ["btcBullishBearException", "payload.btcBullishBearException"])),
+    btcBullishBearExceptionReason:
+      asString(firstValue(merged, ["btcBullishBearExceptionReason", "payload.btcBullishBearExceptionReason"]), "") || null,
+
+    filterDiagnostics: firstValue(merged, ["filterDiagnostics", "payload.filterDiagnostics"]),
+    filterValues: firstValue(merged, ["filterValues", "payload.filterValues"]),
+    filterChecks: firstValue(merged, ["filterChecks", "payload.filterChecks"]),
+    liveFilterMetrics: firstValue(merged, ["liveFilterMetrics", "payload.liveFilterMetrics"]),
+    specialFilterChecks: firstValue(merged, ["specialFilterChecks", "payload.specialFilterChecks"]),
+
+    analysisType:
+      asString(firstValue(merged, ["analysisType", "payload.analysisType"]), "TRADESYSTEM"),
+
     payloadHash: hashString(safeJson(merged))
-  };
+  } as unknown as TradeEvent;
 
   compact.cohortKey =
     asString(firstValue(merged, ["cohortKey", "payload.cohortKey"]), "") ||
@@ -823,7 +883,7 @@ function compactTradeEvent(raw: unknown, parent: AnyRecord = {}): TradeEvent {
   compact.rawJson = minimalJson;
   compact.payloadJson = minimalJson;
 
-    return compact as unknown as TradeEvent;
+  return compact;
 }
 
 function parseStoredEvent(value: unknown): TradeEvent | null {
