@@ -142,7 +142,7 @@ export async function insertTradeEntry(
       ${entry.cohortKey},
 
       ${entry.setupClass},
-      ${entry.entryReason},
+      ${(entry as any).entryReason},  // FIX: type-assertion om ontbrekende property in NormalizedEntry te omzeilen
       ${entry.grade},
       ${entry.gradePoints},
 
