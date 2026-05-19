@@ -114,6 +114,7 @@ export type BreakdownRow = {
   dimension: string;
   value: string;
 
+  count: number;
   events: number;
   trades: number;
   closed: number;
@@ -363,15 +364,6 @@ function isEntry(event: TradeEvent): boolean {
 
 function isExit(event: TradeEvent): boolean {
   return normalizeEventType(event) === "EXIT";
-}
-
-function isReject(event: TradeEvent): boolean {
-  return normalizeEventType(event) === "REJECT";
-}
-
-function isSnapshot(event: TradeEvent): boolean {
-  const type = normalizeEventType(event);
-  return type === "SNAPSHOT" || type === "HOLD";
 }
 
 export function parseDashboardFilters(params: SearchParams = {}): DashboardFilters {
@@ -988,7 +980,6 @@ function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): bo
 
 function buildOverview(events: TradeEvent[], closedTrades: ClosedTrade[]): Overview {
   const entries = events.filter(isEntry);
-  const exits = closedTrades;
 
   const openByTradeId = new Map<string, TradeEvent>();
 
@@ -999,7 +990,7 @@ function buildOverview(events: TradeEvent[], closedTrades: ClosedTrade[]): Overv
     openByTradeId.set(tradeId, entry);
   }
 
-  for (const trade of exits) {
+  for (const trade of closedTrades) {
     if (!trade.tradeId) continue;
     openByTradeId.delete(trade.tradeId);
   }
@@ -1159,6 +1150,7 @@ function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
         dimension,
         value,
 
+        count: group.length,
         events: group.length,
         trades: metrics.trades,
         closed: metrics.closed,
