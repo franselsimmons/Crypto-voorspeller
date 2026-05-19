@@ -438,6 +438,15 @@ function normalizeEventType(event: TradeEvent): string {
   return raw;
 }
 
+function normalizedSide(value: unknown): string {
+  const raw = upper(value, "UNKNOWN");
+
+  if (["BULL", "LONG", "BUY", "BULLISH"].includes(raw)) return "LONG";
+  if (["BEAR", "SHORT", "SELL", "BEARISH"].includes(raw)) return "SHORT";
+
+  return raw;
+}
+
 function getTradeId(event: TradeEvent): string | null {
   const value = firstValue(event, [
     "tradeId",
@@ -458,6 +467,10 @@ function isEntry(event: TradeEvent): boolean {
 
 function isExit(event: TradeEvent): boolean {
   return normalizeEventType(event) === "EXIT";
+}
+
+function eventString(event: TradeEvent, paths: string[], fallback = "UNKNOWN"): string {
+  return upper(firstValue(event, paths), fallback);
 }
 
 export function parseDashboardFilters(params: SearchParams = {}): DashboardFilters {
@@ -536,12 +549,7 @@ function symbolOf(trade: ClosedTrade): string {
 }
 
 function sideOf(trade: ClosedTrade): string {
-  const raw = upper(tradeValue(trade, ["side", "payload.side"]), "UNKNOWN");
-
-  if (["BULL", "LONG", "BUY", "BULLISH"].includes(raw)) return "LONG";
-  if (["BEAR", "SHORT", "SELL", "BEARISH"].includes(raw)) return "SHORT";
-
-  return raw;
+  return normalizedSide(tradeValue(trade, ["side", "payload.side"]));
 }
 
 function setupClassOf(trade: ClosedTrade): string {
@@ -975,65 +983,90 @@ function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): 
     if (version !== filters.strategyVersion) return false;
   }
 
-  if (filters.symbol && upper(firstValue(event, ["symbol", "payload.symbol"])) !== filters.symbol) {
+  if (filters.symbol && eventString(event, ["symbol", "payload.symbol"]) !== filters.symbol) {
     return false;
   }
 
   if (filters.side) {
-    const rawSide = upper(firstValue(event, ["side", "payload.side"]), "UNKNOWN");
-    const normalizedSide = ["BULL", "LONG", "BUY", "BULLISH"].includes(rawSide)
-      ? "long"
-      : ["BEAR", "SHORT", "SELL", "BEARISH"].includes(rawSide)
-        ? "short"
-        : lower(rawSide);
-
-    if (normalizedSide !== filters.side) return false;
+    const side = lower(normalizedSide(firstValue(event, ["side", "payload.side"])));
+    if (side !== filters.side) return false;
   }
 
-  if (filters.setupClass && upper(firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])) !== filters.setupClass) {
+  if (
+    filters.setupClass &&
+    eventString(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"]) !== filters.setupClass
+  ) {
     return false;
   }
 
-  if (filters.grade && upper(firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])) !== filters.grade) {
+  if (
+    filters.grade &&
+    eventString(event, ["grade", "payload.grade", "payload.setup.grade"]) !== filters.grade
+  ) {
     return false;
   }
 
-  if (filters.regime && upper(firstValue(event, ["regime", "payload.regime", "payload.market.regime"])) !== filters.regime) {
+  if (
+    filters.regime &&
+    eventString(event, ["regime", "payload.regime", "payload.market.regime"]) !== filters.regime
+  ) {
     return false;
   }
 
-  if (filters.flow && upper(firstValue(event, ["flow", "payload.flow", "payload.market.flow"])) !== filters.flow) {
+  if (
+    filters.flow &&
+    eventString(event, ["flow", "payload.flow", "payload.market.flow"]) !== filters.flow
+  ) {
     return false;
   }
 
-  if (filters.btcState && upper(firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])) !== filters.btcState) {
+  if (
+    filters.btcState &&
+    eventString(event, ["btcState", "payload.btcState", "payload.market.btcState"]) !== filters.btcState
+  ) {
     return false;
   }
 
-  if (filters.rsiZone && upper(firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])) !== filters.rsiZone) {
+  if (
+    filters.rsiZone &&
+    eventString(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"]) !== filters.rsiZone
+  ) {
     return false;
   }
 
-  if (filters.rsiEdge && upper(firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])) !== filters.rsiEdge) {
+  if (
+    filters.rsiEdge &&
+    eventString(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]) !== filters.rsiEdge
+  ) {
     return false;
   }
 
-  if (filters.obBias && upper(firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])) !== filters.obBias) {
+  if (
+    filters.obBias &&
+    eventString(event, ["obBias", "payload.obBias", "payload.ob.bias"]) !== filters.obBias
+  ) {
     return false;
   }
 
-  if (filters.obRelation && upper(firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])) !== filters.obRelation) {
+  if (
+    filters.obRelation &&
+    eventString(event, ["obRelation", "payload.obRelation", "payload.ob.relation"]) !== filters.obRelation
+  ) {
     return false;
   }
 
-  if (filters.spreadBucket) {
-    const bucket = upper(firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"]));
-    if (bucket && bucket !== filters.spreadBucket) return false;
+  if (
+    filters.spreadBucket &&
+    eventString(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "") !== filters.spreadBucket
+  ) {
+    return false;
   }
 
-  if (filters.depthBucket) {
-    const bucket = upper(firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"]));
-    if (bucket && bucket !== filters.depthBucket) return false;
+  if (
+    filters.depthBucket &&
+    eventString(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "") !== filters.depthBucket
+  ) {
+    return false;
   }
 
   const fromMs = parseDateMs(filters.from);
@@ -1049,12 +1082,13 @@ function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): 
 function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): boolean {
   if (filters.eventType && normalizeEventType(event) !== filters.eventType) return false;
 
-  if (filters.symbol && upper(firstValue(event, ["symbol", "payload.symbol"])) !== filters.symbol) {
+  if (filters.symbol && eventString(event, ["symbol", "payload.symbol"]) !== filters.symbol) {
     return false;
   }
 
-  if (filters.side && lower(firstValue(event, ["side", "payload.side"])) !== filters.side) {
-    return false;
+  if (filters.side) {
+    const side = lower(normalizedSide(firstValue(event, ["side", "payload.side"])));
+    if (side !== filters.side) return false;
   }
 
   const fromMs = parseDateMs(filters.from);
@@ -1067,7 +1101,11 @@ function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): bo
   return true;
 }
 
-function buildOverview(events: TradeEvent[], closedTrades: ClosedTrade[], filters: DashboardFilters): Overview {
+function buildOverview(
+  events: TradeEvent[],
+  closedTrades: ClosedTrade[],
+  filters: DashboardFilters
+): Overview {
   const metrics = summarizeTrades(closedTrades);
 
   const closedIds = new Set(
@@ -1125,20 +1163,56 @@ function buildOptions(events: TradeEvent[]): DashboardOptions {
     strategyVersions: uniqueSorted(events.map(event => text(firstValue(event, ["strategyVersion"])))),
 
     symbols: uniqueSorted(events.map(event => upper(firstValue(event, ["symbol", "payload.symbol"])))),
-    sides: uniqueSorted(closedTrades.map(sideOf)),
+    sides: uniqueSorted([
+      ...events.map(event => normalizedSide(firstValue(event, ["side", "payload.side"]))),
+      ...closedTrades.map(sideOf)
+    ]),
     eventTypes: uniqueSorted(events.map(normalizeEventType)),
     reasons: uniqueSorted(closedTrades.map(exitReasonOf)),
-    setupClasses: uniqueSorted(closedTrades.map(setupClassOf)),
-    grades: uniqueSorted(closedTrades.map(gradeOf)),
-    regimes: uniqueSorted(closedTrades.map(regimeOf)),
-    flows: uniqueSorted(closedTrades.map(flowOf)),
-    btcStates: uniqueSorted(closedTrades.map(btcStateOf)),
-    rsiZones: uniqueSorted(closedTrades.map(rsiZoneOf)),
-    rsiEdges: uniqueSorted(closedTrades.map(rsiEdgeOf)),
-    obBiases: uniqueSorted(closedTrades.map(obBiasOf)),
-    obRelations: uniqueSorted(closedTrades.map(obRelationOf)),
-    spreadBuckets: uniqueSorted(closedTrades.map(spreadBucketOf)),
-    depthBuckets: uniqueSorted(closedTrades.map(depthBucketOf))
+    setupClasses: uniqueSorted([
+      ...events.map(event => eventString(event, ["setupClass", "payload.setupClass"], "")),
+      ...closedTrades.map(setupClassOf)
+    ]),
+    grades: uniqueSorted([
+      ...events.map(event => eventString(event, ["grade", "payload.grade"], "")),
+      ...closedTrades.map(gradeOf)
+    ]),
+    regimes: uniqueSorted([
+      ...events.map(event => eventString(event, ["regime", "payload.regime", "payload.market.regime"], "")),
+      ...closedTrades.map(regimeOf)
+    ]),
+    flows: uniqueSorted([
+      ...events.map(event => eventString(event, ["flow", "payload.flow", "payload.market.flow"], "")),
+      ...closedTrades.map(flowOf)
+    ]),
+    btcStates: uniqueSorted([
+      ...events.map(event => eventString(event, ["btcState", "payload.btcState", "payload.market.btcState"], "")),
+      ...closedTrades.map(btcStateOf)
+    ]),
+    rsiZones: uniqueSorted([
+      ...events.map(event => eventString(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], "")),
+      ...closedTrades.map(rsiZoneOf)
+    ]),
+    rsiEdges: uniqueSorted([
+      ...events.map(event => eventString(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], "")),
+      ...closedTrades.map(rsiEdgeOf)
+    ]),
+    obBiases: uniqueSorted([
+      ...events.map(event => eventString(event, ["obBias", "payload.obBias", "payload.ob.bias"], "")),
+      ...closedTrades.map(obBiasOf)
+    ]),
+    obRelations: uniqueSorted([
+      ...events.map(event => eventString(event, ["obRelation", "payload.obRelation", "payload.ob.relation"], "")),
+      ...closedTrades.map(obRelationOf)
+    ]),
+    spreadBuckets: uniqueSorted([
+      ...events.map(event => eventString(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")),
+      ...closedTrades.map(spreadBucketOf)
+    ]),
+    depthBuckets: uniqueSorted([
+      ...events.map(event => eventString(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")),
+      ...closedTrades.map(depthBucketOf)
+    ])
   };
 }
 
