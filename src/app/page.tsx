@@ -8,6 +8,7 @@ import {
   getDashboardData,
   parseDashboardFilters,
   type CohortRow,
+  type DashboardFilters,
   type SearchParams
 } from "@/lib/dashboard";
 import { compactNumber, pct, r } from "@/lib/format";
@@ -15,10 +16,24 @@ import { compactNumber, pct, r } from "@/lib/format";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const BEST_COHORT_MIN_TRADES_FLOOR = 5;
+
 function toneFromNumber(value: number): "good" | "bad" | "warn" | "default" {
   if (value > 0) return "good";
   if (value < 0) return "bad";
   return "default";
+}
+
+function numberFromFilter(value: string, fallback: number): number {
+  const n = Number(String(value || "").replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function getBestCohortMinTrades(filters: DashboardFilters): number {
+  return Math.max(
+    BEST_COHORT_MIN_TRADES_FLOOR,
+    numberFromFilter(filters.minTrades, BEST_COHORT_MIN_TRADES_FLOOR)
+  );
 }
 
 function profitFactorText(value: number | null): string {
@@ -35,20 +50,31 @@ function cleanCohortLabel(value: string): string {
     .trim();
 }
 
-function getBestCohort(rows: CohortRow[]): CohortRow | null {
+function getBestCohort(rows: CohortRow[], minTrades: number): CohortRow | null {
   if (!rows.length) return null;
 
-  const profitable = rows.find(row =>
-    row.closed > 0 &&
-    row.totalR > 0 &&
-    row.avgR > 0 &&
-    row.winrate > 0
-  );
+  const validRows = rows.filter(row => {
+    if (row.closed < minTrades) return false;
+    if (row.count < minTrades) return false;
+    if (row.totalR <= 0) return false;
+    if (row.avgR <= 0) return false;
+    if (row.winrate <= 0) return false;
 
-  return profitable || rows[0] || null;
+    return true;
+  });
+
+  if (!validRows.length) return null;
+
+  return validRows[0] || null;
 }
 
-function BestFilterCombination({ cohort }: { cohort: CohortRow | null }) {
+function BestFilterCombination({
+  cohort,
+  minTrades
+}: {
+  cohort: CohortRow | null;
+  minTrades: number;
+}) {
   if (!cohort) {
     return (
       <section className="hero best-cohort">
@@ -56,14 +82,15 @@ function BestFilterCombination({ cohort }: { cohort: CohortRow | null }) {
           <div className="eyebrow">Beste filter combinatie</div>
           <h2>Nog geen betrouwbare combinatie</h2>
           <p>
-            Er zijn nog geen closed trades die door de huidige filters komen.
-            Wacht op exits of verlaag tijdelijk je minimum filters.
+            Er is nog geen positieve cohort met minimaal {minTrades} closed trades.
+            Tot die tijd wordt er geen “beste” combinatie gekozen, zodat 1/1 geluk
+            niet bovenaan komt.
           </p>
         </div>
 
         <div className="hero-box">
-          <div className="hero-box-label">Status</div>
-          <code>NO_COHORT_DATA</code>
+          <div className="hero-box-label">Min sample</div>
+          <code>{minTrades} closed trades</code>
         </div>
       </section>
     );
@@ -78,10 +105,13 @@ function BestFilterCombination({ cohort }: { cohort: CohortRow | null }) {
       <header className="hero">
         <div>
           <div className="eyebrow">Beste filter combinatie</div>
-          <h2>{cohort.setupClass} {cohort.side}</h2>
+          <h2>
+            {cohort.setupClass} {cohort.side}
+          </h2>
           <p>
-            Deze combinatie staat bovenaan op basis van optimizer-score,
-            winrate/Wilson, total R, avg R, PnL, profit factor, near-TP en direct-SL penalty.
+            Deze combinatie voldoet aan de minimum sample van {minTrades} closed trades
+            en staat bovenaan op basis van score, winrate/Wilson, total R, avg R,
+            PnL, profit factor, near-TP en direct-SL penalty.
           </p>
         </div>
 
@@ -96,7 +126,7 @@ function BestFilterCombination({ cohort }: { cohort: CohortRow | null }) {
           label="Beste winrate"
           value={pct(cohort.winrate)}
           sub={`Wilson: ${pct(cohort.wilson)}`}
-          tone={cohort.winrate > 0.5 ? "good" : "default"}
+          tone={cohort.winrate >= 0.5 ? "good" : "default"}
         />
 
         <MetricCard
@@ -168,7 +198,9 @@ export default async function Home({
   const params = (await searchParams) ?? {};
   const filters = parseDashboardFilters(params);
   const data = await getDashboardData(filters);
-  const bestCohort = getBestCohort(data.cohorts);
+
+  const bestCohortMinTrades = getBestCohortMinTrades(filters);
+  const bestCohort = getBestCohort(data.cohorts, bestCohortMinTrades);
 
   const totalRTone =
     data.overview.totalR > 0
@@ -207,7 +239,10 @@ export default async function Home({
 
       <FilterForm filters={filters} options={data.options} />
 
-      <BestFilterCombination cohort={bestCohort} />
+      <BestFilterCombination
+        cohort={bestCohort}
+        minTrades={bestCohortMinTrades}
+      />
 
       <section className="metric-grid">
         <MetricCard
