@@ -25,11 +25,13 @@ export type DashboardFilters = {
 
   minTrades: string;
   winrateWeight: string;
+  wilsonWeight: string;
   pnlWeight: string;
   avgRWeight: string;
   profitFactorWeight: string;
-  directSlPenalty: string;
+  nearTpWeight: string;
   nearTpBonus: string;
+  directSlPenalty: string;
 };
 
 export type Overview = {
@@ -405,11 +407,13 @@ export function parseDashboardFilters(params: SearchParams = {}): DashboardFilte
 
     minTrades: one(params.minTrades) || "1",
     winrateWeight: one(params.winrateWeight) || "1",
+    wilsonWeight: one(params.wilsonWeight) || "1",
     pnlWeight: one(params.pnlWeight) || "1",
     avgRWeight: one(params.avgRWeight) || "1",
     profitFactorWeight: one(params.profitFactorWeight) || "0.5",
-    directSlPenalty: one(params.directSlPenalty) || "0.5",
-    nearTpBonus: one(params.nearTpBonus) || "0.25"
+    nearTpWeight: one(params.nearTpWeight) || one(params.nearTpBonus) || "0.25",
+    nearTpBonus: one(params.nearTpBonus) || one(params.nearTpWeight) || "0.25",
+    directSlPenalty: one(params.directSlPenalty) || "0.5"
   };
 }
 
@@ -886,21 +890,23 @@ function summarizeTrades(trades: ClosedTrade[]): Metrics {
 
 function optimizerScore(metrics: Metrics, filters: DashboardFilters): number {
   const winrateWeight = num(filters.winrateWeight, 1);
+  const wilsonWeight = num(filters.wilsonWeight, 1);
   const pnlWeight = num(filters.pnlWeight, 1);
   const avgRWeight = num(filters.avgRWeight, 1);
   const profitFactorWeight = num(filters.profitFactorWeight, 0.5);
+  const nearTpWeight = num(filters.nearTpWeight || filters.nearTpBonus, 0.25);
   const directSlPenalty = num(filters.directSlPenalty, 0.5);
-  const nearTpBonus = num(filters.nearTpBonus, 0.25);
 
   const pf = metrics.profitFactor ?? 0;
 
   const score =
-    metrics.wilson * 100 * winrateWeight +
+    metrics.winrate * 100 * winrateWeight +
+    metrics.wilson * 100 * wilsonWeight +
     clamp(metrics.avgR, -2, 3) * 25 * avgRWeight +
     clamp(metrics.totalR, -10, 20) * 4 * pnlWeight +
-    clamp(pf, 0, 5) * 8 * profitFactorWeight -
-    metrics.directSlPct * 100 * directSlPenalty +
-    metrics.nearTpPct * 100 * nearTpBonus;
+    clamp(pf, 0, 5) * 8 * profitFactorWeight +
+    metrics.nearTpPct * 100 * nearTpWeight -
+    metrics.directSlPct * 100 * directSlPenalty;
 
   return round(score, 2);
 }
@@ -957,7 +963,12 @@ function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): bool
 
     if (filters.outcome === "WIN" && !["WIN", "TP"].includes(outcome)) return false;
     if (filters.outcome === "LOSS" && !["LOSS", "SL"].includes(outcome)) return false;
-    if (filters.outcome !== "WIN" && filters.outcome !== "LOSS" && outcome !== filters.outcome) {
+
+    if (
+      filters.outcome !== "WIN" &&
+      filters.outcome !== "LOSS" &&
+      outcome !== filters.outcome
+    ) {
       return false;
     }
   }
