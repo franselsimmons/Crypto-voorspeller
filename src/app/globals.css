@@ -174,7 +174,7 @@ code, .mono {
    ========================================== */
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); /* FIX: Flexibele fallback in plaats van geforceerd 8 rijen */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -205,23 +205,24 @@ code, .mono {
 .metric-sub { color: var(--muted-2); margin-top: auto; padding-top: 6px; font-size: 13px; }
 
 /* ==========================================
-   5. TABLES (Gerepareerde layout)
+   5. TABLES (Gerepareerde layout voor mobiel)
    ========================================== */
 .table-wrap {
   width: 100%;
-  overflow-x: auto; /* FIX: Forceert een scrollbar als de tabel te breed is */
-  overflow-y: auto;
+  overflow-x: auto; 
+  -webkit-overflow-scrolling: touch;
   border: 1px solid var(--line);
   border-radius: 14px;
   max-height: 720px;
-  background: var(--panel-2); /* FIX: Voorkomt doorzichtig overlappen van tabellen */
+  background: var(--panel-2); 
   margin-bottom: 24px;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: max-content; /* FIX: Zorgt dat kolommen hun natuurlijke breedte behouden i.p.v. harde 1400px */
+  table-layout: auto;
+  min-width: 800px;
 }
 
 thead th {
@@ -245,16 +246,19 @@ tbody td {
   color: #dbeafe;
   font-size: 13px;
   white-space: nowrap;
-  vertical-align: top;
+  vertical-align: middle;
+  background: var(--bg);
 }
 
-tbody tr:hover {
+tbody tr:hover td {
   background: rgba(59, 130, 246, 0.08);
 }
 
 .cohort-cell {
-  max-width: 520px;
-  white-space: normal; /* Laat tekst afbreken in plaats van de tabel oneindig breed maken */
+  min-width: 250px;
+  max-width: 400px;
+  white-space: normal; 
+  word-break: break-word;
   line-height: 1.45;
   color: #bfdbfe;
 }
