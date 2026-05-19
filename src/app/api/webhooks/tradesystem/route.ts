@@ -25,7 +25,10 @@ function isRecord(value: unknown): value is AnyRecord {
 
 function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
-  return String(value).trim() || fallback;
+
+  const text = String(value).trim();
+
+  return text || fallback;
 }
 
 function safeUpper(value: unknown, fallback = ""): string {
@@ -48,6 +51,7 @@ function parseNestedJsonObject(value: unknown): AnyRecord | null {
 
   try {
     const parsed = JSON.parse(value);
+
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
@@ -71,6 +75,7 @@ function readAuthSecret(req: NextRequest): string {
 
 function isAuthorized(req: NextRequest): boolean {
   if (!WEBHOOK_SECRET) return true;
+
   return readAuthSecret(req) === WEBHOOK_SECRET;
 }
 
@@ -84,7 +89,7 @@ function getFirstArray(body: AnyRecord): unknown[] | null {
   ];
 
   for (const candidate of candidates) {
-    if (Array.isArray(candidate) && candidate.length) {
+    if (Array.isArray(candidate) && candidate.length > 0) {
       return candidate;
     }
   }
@@ -101,6 +106,7 @@ function getNestedBatchRows(body: AnyRecord): unknown[] | null {
 
   for (const nested of nestedObjects) {
     const rows = getFirstArray(nested);
+
     if (rows?.length) return rows;
   }
 
@@ -140,22 +146,33 @@ function getRowsFromRequestBody(parsed: unknown): AnyRecord[] {
 }
 
 function enrichRowWithBatchMeta(row: AnyRecord, batch: unknown): WebhookRecord {
-  if (!isRecord(batch)) return row as WebhookRecord;
+  if (!isRecord(batch)) {
+    return row as WebhookRecord;
+  }
 
-  const eventType = safeUpper(row.eventType || row.type || row.action);
+  const rowEventType = safeUpper(row.eventType || row.type || row.action);
+  const rowAction = safeUpper(row.action || row.eventType || row.type);
 
   return {
     source: row.source || batch.source || "tradesystem",
     runId: row.runId || batch.runId || null,
     strategyVersion: row.strategyVersion || batch.strategyVersion || "UNKNOWN",
+
     btcState: row.btcState || batch.btcState || "UNKNOWN",
+    regime: row.regime || batch.regime || "UNKNOWN",
     discoveryMode: row.discoveryMode ?? batch.discoveryMode ?? false,
 
     ...row,
 
-    eventType: eventType || safeUpper(row.action || "SNAPSHOT", "SNAPSHOT"),
-    action: safeUpper(row.action || row.eventType || eventType || "SNAPSHOT", "SNAPSHOT")
+    eventType: rowEventType || rowAction || "SNAPSHOT",
+    action: rowAction || rowEventType || "SNAPSHOT"
   };
+}
+
+function isWrapperEvent(event: NormalizedWebhookEvent): boolean {
+  const type = safeUpper(event.eventType || event.action);
+
+  return type === "BATCH";
 }
 
 function countByEventType(events: NormalizedWebhookEvent[]) {
@@ -184,6 +201,8 @@ function countByEventType(events: NormalizedWebhookEvent[]) {
 }
 
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
+
   if (!isAuthorized(req)) {
     return NextResponse.json(
       {
@@ -200,11 +219,24 @@ export async function POST(req: NextRequest) {
   const incomingRows = getRowsFromRequestBody(parsed);
 
   if (!incomingRows.length) {
+    console.warn(
+      "TRADESYSTEM_WEBHOOK_NO_ROWS:",
+      JSON.stringify({
+        parsedIsArray: Array.isArray(parsed),
+        parsedIsRecord: isRecord(parsed),
+        durationMs: Date.now() - startedAt
+      })
+    );
+
     return NextResponse.json(
       {
         ok: false,
+        received: 0,
+        normalized: 0,
         stored: 0,
+        deduped: 0,
         failed: 0,
+        persistent: false,
         error: "NO_ROWS_FOUND"
       },
       { status: 400 }
@@ -221,8 +253,8 @@ export async function POST(req: NextRequest) {
       const enriched = enrichRowWithBatchMeta(row, parsed);
       const normalized = normalizeWebhookBody(enriched);
 
-      // Cruciaal: nooit de BATCH-wrapper opslaan.
-      if (safeUpper(normalized.eventType) === "BATCH") {
+      // Cruciaal: nooit BATCH-wrapper events opslaan.
+      if (isWrapperEvent(normalized)) {
         errors.push({
           index: i,
           error: "BATCH_ROW_SKIPPED"
@@ -254,6 +286,15 @@ export async function POST(req: NextRequest) {
       if (result.stored) stored += 1;
       if (result.deduped) deduped += 1;
       if (result.persistent) persistent = true;
+
+      if (!result.ok) {
+        failed += 1;
+
+        errors.push({
+          index: i,
+          error: "SAVE_TRADE_EVENT_NOT_OK"
+        });
+      }
     } catch (error) {
       failed += 1;
 
@@ -265,12 +306,13 @@ export async function POST(req: NextRequest) {
   }
 
   const counts = countByEventType(normalizedEvents);
+  const ok = normalizedEvents.length > 0 && failed < incomingRows.length;
+  const status = ok ? 200 : 500;
 
-  const status = normalizedEvents.length > 0 && failed < incomingRows.length ? 200 : 500;
-
-  return NextResponse.json(
-    {
-      ok: status === 200,
+  console.log(
+    "TRADESYSTEM_WEBHOOK_BATCH_RESULT:",
+    JSON.stringify({
+      ok,
       received: incomingRows.length,
       normalized: normalizedEvents.length,
       stored,
@@ -278,7 +320,22 @@ export async function POST(req: NextRequest) {
       failed,
       persistent,
       counts,
-      errors: errors.slice(0, 20)
+      durationMs: Date.now() - startedAt
+    })
+  );
+
+  return NextResponse.json(
+    {
+      ok,
+      received: incomingRows.length,
+      normalized: normalizedEvents.length,
+      stored,
+      deduped,
+      failed,
+      persistent,
+      counts,
+      errors: errors.slice(0, 20),
+      durationMs: Date.now() - startedAt
     },
     { status }
   );
@@ -289,6 +346,7 @@ export async function GET() {
     ok: true,
     route: "/api/webhooks/tradesystem",
     accepts: ["single event", "BATCH.rows", "BATCH.actions", "BATCH.data"],
-    stores: "individual normalized events only"
+    stores: "individual normalized events only",
+    ts: Date.now()
   });
 }
