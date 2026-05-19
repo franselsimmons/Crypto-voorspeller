@@ -255,6 +255,11 @@ type Metrics = {
   nearTpPct: number;
 };
 
+const CONF_THRESHOLDS = [60, 70, 80, 90, 95];
+const SNIPER_THRESHOLDS = [60, 70, 80, 90, 95];
+const SPREAD_CAPS = [5, 8, 12, 25];
+const DEPTH_MINS = [50_000, 100_000, 200_000, 500_000];
+
 function one(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] || "";
   return value || "";
@@ -495,7 +500,7 @@ export function parseDashboardFilters(params: SearchParams = {}): DashboardFilte
     from: one(params.from),
     to: one(params.to),
 
-    minTrades: one(params.minTrades) || "1",
+    minTrades: one(params.minTrades) || "5",
     minWilson: one(params.minWilson) || "0",
     minWinrate: one(params.minWinrate) || "0",
 
@@ -567,7 +572,7 @@ function gradeOf(trade: ClosedTrade): string {
 }
 
 function entryReasonOf(trade: ClosedTrade): string {
-  return upper(
+  const value = upper(
     trade.entry
       ? firstValue(trade.entry, [
           "entryReason",
@@ -583,6 +588,12 @@ function entryReasonOf(trade: ClosedTrade): string {
         ]),
     "UNKNOWN"
   );
+
+  if (["TP", "SL", "STOP", "STOPLOSS", "TAKE_PROFIT"].includes(value)) {
+    return "UNKNOWN";
+  }
+
+  return value;
 }
 
 function exitReasonOf(trade: ClosedTrade): string {
@@ -644,6 +655,28 @@ function obRelationOf(trade: ClosedTrade): string {
     ]),
     obBiasOf(trade)
   );
+}
+
+function spreadBpsFromBucket(bucket: string): number | null {
+  if (bucket === "SPREAD_LT_2BPS") return 2;
+  if (bucket === "SPREAD_2_5BPS") return 5;
+  if (bucket === "SPREAD_5_8BPS") return 8;
+  if (bucket === "SPREAD_8_12BPS") return 12;
+  if (bucket === "SPREAD_12_25BPS") return 25;
+  if (bucket === "SPREAD_GTE_25BPS") return 999;
+
+  return null;
+}
+
+function depthUsdFromBucket(bucket: string): number | null {
+  if (bucket === "DEPTH_LT_50K") return 0;
+  if (bucket === "DEPTH_50K_100K") return 50_000;
+  if (bucket === "DEPTH_100K_200K") return 100_000;
+  if (bucket === "DEPTH_200K_500K") return 200_000;
+  if (bucket === "DEPTH_500K_1M") return 500_000;
+  if (bucket === "DEPTH_GTE_1M") return 1_000_000;
+
+  return null;
 }
 
 function spreadBucketOf(trade: ClosedTrade): string {
@@ -716,6 +749,18 @@ function scoreBucket(value: unknown, label: string): string {
   return `${label}_LT_60`;
 }
 
+function scoreLowerFromBucket(bucket: string): number | null {
+  if (bucket.includes("_95_100")) return 95;
+  if (bucket.includes("_90_95")) return 90;
+  if (bucket.includes("_85_90")) return 85;
+  if (bucket.includes("_80_85")) return 80;
+  if (bucket.includes("_70_80")) return 70;
+  if (bucket.includes("_60_70")) return 60;
+  if (bucket.includes("_LT_60")) return 0;
+
+  return null;
+}
+
 function rrBucket(value: unknown): string {
   const n = nullableNum(value);
 
@@ -766,6 +811,114 @@ function rrBucketOf(trade: ClosedTrade): string {
       "payload.rr.finalRr"
     ])
   );
+}
+
+function confluenceValueOf(trade: ClosedTrade): number | null {
+  const explicit = nullableNum(
+    tradeValue(trade, [
+      "confluence",
+      "effectiveConfluence",
+      "payload.confluence",
+      "payload.scores.confluence"
+    ])
+  );
+
+  if (explicit !== null) return explicit;
+  return scoreLowerFromBucket(confluenceBucketOf(trade));
+}
+
+function sniperValueOf(trade: ClosedTrade): number | null {
+  const explicit = nullableNum(
+    tradeValue(trade, [
+      "sniperScore",
+      "fallbackSniperScore",
+      "payload.sniperScore",
+      "payload.scores.sniperScore"
+    ])
+  );
+
+  if (explicit !== null) return explicit;
+  return scoreLowerFromBucket(sniperBucketOf(trade));
+}
+
+function spreadBpsOf(trade: ClosedTrade): number | null {
+  const spreadBps = nullableNum(
+    tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
+  );
+
+  if (spreadBps !== null) return spreadBps;
+
+  const spreadPct = nullableNum(
+    tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
+  );
+
+  if (spreadPct !== null) return spreadPct * 10000;
+
+  return spreadBpsFromBucket(spreadBucketOf(trade));
+}
+
+function depthUsdOf(trade: ClosedTrade): number | null {
+  const depth = nullableNum(
+    tradeValue(trade, [
+      "depthMinUsd1p",
+      "depthUsd1p",
+      "payload.depthMinUsd1p",
+      "payload.depthUsd1p",
+      "payload.ob.depthMinUsd1p"
+    ])
+  );
+
+  if (depth !== null) return depth;
+  return depthUsdFromBucket(depthBucketOf(trade));
+}
+
+function confThresholdLabels(trade: ClosedTrade): string[] {
+  const value = confluenceValueOf(trade);
+
+  if (value === null) return ["CONF=NA"];
+  if (value < 60) return ["CONF<60"];
+
+  return CONF_THRESHOLDS
+    .filter(threshold => value >= threshold)
+    .map(threshold => `CONF>=${threshold}`);
+}
+
+function sniperThresholdLabels(trade: ClosedTrade): string[] {
+  const value = sniperValueOf(trade);
+
+  if (value === null) return ["SNIPER=NA"];
+  if (value < 60) return ["SNIPER<60"];
+
+  return SNIPER_THRESHOLDS
+    .filter(threshold => value >= threshold)
+    .map(threshold => `SNIPER>=${threshold}`);
+}
+
+function spreadCapLabels(trade: ClosedTrade): string[] {
+  const value = spreadBpsOf(trade);
+
+  if (value === null) return ["SPREAD=NA"];
+  if (value > 25) return ["SPREAD>25BPS"];
+
+  return SPREAD_CAPS
+    .filter(cap => value <= cap)
+    .map(cap => `SPREAD<=${cap}BPS`);
+}
+
+function depthMinLabels(trade: ClosedTrade): string[] {
+  const value = depthUsdOf(trade);
+
+  if (value === null) return ["DEPTH=NA"];
+  if (value < 50_000) return ["DEPTH<50K"];
+
+  return DEPTH_MINS
+    .filter(min => value >= min)
+    .map(min => `DEPTH>=${formatUsdThreshold(min)}`);
+}
+
+function formatUsdThreshold(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
+  return `${Math.round(value / 1000)}K`;
 }
 
 function exitROf(trade: ClosedTrade): number | null {
@@ -911,8 +1064,9 @@ function optimizerScore(metrics: Metrics, filters: DashboardFilters): number {
   return round(score, 2);
 }
 
-function cohortKeyOf(trade: ClosedTrade): string {
+function exactCohortKeyOf(trade: ClosedTrade): string {
   return [
+    "MODE=EXACT",
     `SETUP=${setupClassOf(trade)}`,
     `SIDE=${sideOf(trade)}`,
     `ENTRY=${entryReasonOf(trade)}`,
@@ -929,6 +1083,63 @@ function cohortKeyOf(trade: ClosedTrade): string {
     spreadBucketOf(trade),
     depthBucketOf(trade)
   ].join("|");
+}
+
+function thresholdBaseParts(trade: ClosedTrade): string[][] {
+  const setup = `SETUP=${setupClassOf(trade)}`;
+  const side = `SIDE=${sideOf(trade)}`;
+  const entry = `ENTRY=${entryReasonOf(trade)}`;
+  const grade = `GRADE=${gradeOf(trade)}`;
+  const rsi = `RSI=${rsiZoneOf(trade)}`;
+  const edge = `EDGE=${rsiEdgeOf(trade)}`;
+  const flow = `FLOW=${flowOf(trade)}`;
+  const btc = `BTC=${btcStateOf(trade)}`;
+  const regime = `REGIME=${regimeOf(trade)}`;
+  const ob = `OB=${obRelationOf(trade)}`;
+  const rr = rrBucketOf(trade);
+
+  return [
+    ["MODE=THRESHOLD_FULL", setup, side, entry, grade, rsi, edge, flow, btc, regime, ob, rr],
+    ["MODE=THRESHOLD_CORE", setup, side, grade, rsi, flow, btc, ob, rr],
+    ["MODE=THRESHOLD_SIDE", setup, side, grade, rsi, flow, ob, rr],
+    ["MODE=THRESHOLD_MARKET", setup, side, grade, flow, btc, ob, rr]
+  ];
+}
+
+function thresholdCohortKeysOf(trade: ClosedTrade): string[] {
+  const bases = thresholdBaseParts(trade);
+  const confs = confThresholdLabels(trade);
+  const snipers = sniperThresholdLabels(trade);
+  const spreads = spreadCapLabels(trade);
+  const depths = depthMinLabels(trade);
+
+  const keys: string[] = [];
+
+  for (const base of bases) {
+    for (const conf of confs) {
+      for (const sniper of snipers) {
+        for (const spread of spreads) {
+          for (const depth of depths) {
+            keys.push([...base, conf, sniper, spread, depth].join("|"));
+          }
+        }
+      }
+    }
+  }
+
+  return keys;
+}
+
+function keyPart(key: string, prefix: string, fallback = "UNKNOWN"): string {
+  const found = key
+    .split("|")
+    .find(part => part.startsWith(prefix));
+
+  if (!found) return fallback;
+
+  if (found.includes("=")) return found.split("=").slice(1).join("=") || fallback;
+
+  return found || fallback;
 }
 
 function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): boolean {
@@ -1217,20 +1428,34 @@ function buildOptions(events: TradeEvent[]): DashboardOptions {
 }
 
 function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortRow[] {
-  const minTrades = Math.max(1, num(filters.minTrades, 1));
+  const minTrades = Math.max(1, num(filters.minTrades, 5));
   const minWilson = percentInputToRatio(filters.minWilson, 0);
   const minWinrate = percentInputToRatio(filters.minWinrate, 0);
 
   const map = new Map<string, ClosedTrade[]>();
 
   for (const trade of trades) {
-    const key = cohortKeyOf(trade);
+    const keys = thresholdCohortKeysOf(trade);
 
-    if (!map.has(key)) {
-      map.set(key, []);
+    for (const key of keys) {
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+
+      map.get(key)!.push(trade);
     }
+  }
 
-    map.get(key)!.push(trade);
+  if (minTrades <= 1) {
+    for (const trade of trades) {
+      const key = exactCohortKeyOf(trade);
+
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+
+      map.get(key)!.push(trade);
+    }
   }
 
   return Array.from(map.entries())
@@ -1254,20 +1479,24 @@ function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortR
 
         ...metrics,
 
-        setupClass: setupClassOf(first),
-        side: sideOf(first),
-        entryReason: entryReasonOf(first),
-        reason: entryReasonOf(first),
-        grade: gradeOf(first),
-        regime: regimeOf(first),
-        flow: flowOf(first),
-        btcState: btcStateOf(first),
-        rsiZone: rsiZoneOf(first),
-        rsiEdge: rsiEdgeOf(first),
+        setupClass: keyPart(cohortKey, "SETUP=", setupClassOf(first)),
+        side: keyPart(cohortKey, "SIDE=", sideOf(first)),
+        entryReason: keyPart(cohortKey, "ENTRY=", entryReasonOf(first)),
+        reason: keyPart(cohortKey, "ENTRY=", entryReasonOf(first)),
+        grade: keyPart(cohortKey, "GRADE=", gradeOf(first)),
+        regime: keyPart(cohortKey, "REGIME=", regimeOf(first)),
+        flow: keyPart(cohortKey, "FLOW=", flowOf(first)),
+        btcState: keyPart(cohortKey, "BTC=", btcStateOf(first)),
+        rsiZone: keyPart(cohortKey, "RSI=", rsiZoneOf(first)),
+        rsiEdge: keyPart(cohortKey, "EDGE=", rsiEdgeOf(first)),
         obBias: obBiasOf(first),
-        obRelation: obRelationOf(first),
-        spreadBucket: spreadBucketOf(first),
-        depthBucket: depthBucketOf(first),
+        obRelation: keyPart(cohortKey, "OB=", obRelationOf(first)),
+        spreadBucket:
+          cohortKey.split("|").find(part => part.startsWith("SPREAD")) ||
+          spreadBucketOf(first),
+        depthBucket:
+          cohortKey.split("|").find(part => part.startsWith("DEPTH")) ||
+          depthBucketOf(first),
 
         symbols
       };
