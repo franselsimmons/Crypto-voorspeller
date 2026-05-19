@@ -119,6 +119,12 @@ export type BreakdownRow = {
   trades: number;
   closed: number;
 
+  entries: number;
+  exits: number;
+  rejects: number;
+  snapshots: number;
+  holds: number;
+
   wins: number;
   losses: number;
   flats: number;
@@ -151,7 +157,7 @@ export type DashboardData = {
 
 type AnyRecord = Record<string, unknown>;
 
-type ClosedTrade = {
+export type ClosedTrade = {
   tradeId: string;
   entry: TradeEvent | null;
   exit: TradeEvent;
@@ -364,6 +370,15 @@ function isEntry(event: TradeEvent): boolean {
 
 function isExit(event: TradeEvent): boolean {
   return normalizeEventType(event) === "EXIT";
+}
+
+function isReject(event: TradeEvent): boolean {
+  return normalizeEventType(event) === "REJECT";
+}
+
+function isSnapshot(event: TradeEvent): boolean {
+  const type = normalizeEventType(event);
+  return type === "SNAPSHOT" || type === "HOLD";
 }
 
 export function parseDashboardFilters(params: SearchParams = {}): DashboardFilters {
@@ -1154,6 +1169,12 @@ function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
         events: group.length,
         trades: metrics.trades,
         closed: metrics.closed,
+
+        entries: group.length,
+        exits: group.length,
+        rejects: 0,
+        snapshots: 0,
+        holds: 0,
 
         wins: metrics.wins,
         losses: metrics.losses,
