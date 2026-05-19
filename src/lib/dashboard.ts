@@ -532,23 +532,11 @@ function buildClosedTrades(events: TradeEvent[]): ClosedTrade[] {
 }
 
 function symbolOf(trade: ClosedTrade): string {
-  return upper(
-    tradeValue(trade, [
-      "symbol",
-      "payload.symbol"
-    ]),
-    "UNKNOWN"
-  );
+  return upper(tradeValue(trade, ["symbol", "payload.symbol"]), "UNKNOWN");
 }
 
 function sideOf(trade: ClosedTrade): string {
-  const raw = upper(
-    tradeValue(trade, [
-      "side",
-      "payload.side"
-    ]),
-    "UNKNOWN"
-  );
+  const raw = upper(tradeValue(trade, ["side", "payload.side"]), "UNKNOWN");
 
   if (["BULL", "LONG", "BUY", "BULLISH"].includes(raw)) return "LONG";
   if (["BEAR", "SHORT", "SELL", "BEARISH"].includes(raw)) return "SHORT";
@@ -558,22 +546,14 @@ function sideOf(trade: ClosedTrade): string {
 
 function setupClassOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "setupClass",
-      "payload.setupClass",
-      "payload.setup.setupClass"
-    ]),
+    tradeValue(trade, ["setupClass", "payload.setupClass", "payload.setup.setupClass"]),
     "UNKNOWN"
   );
 }
 
 function gradeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "grade",
-      "payload.grade",
-      "payload.setup.grade"
-    ]),
+    tradeValue(trade, ["grade", "payload.grade", "payload.setup.grade"]),
     "UNKNOWN"
   );
 }
@@ -599,79 +579,49 @@ function entryReasonOf(trade: ClosedTrade): string {
 
 function exitReasonOf(trade: ClosedTrade): string {
   return upper(
-    firstValue(trade.exit, [
-      "exitReason",
-      "payload.exitReason",
-      "reason",
-      "payload.reason"
-    ]),
+    firstValue(trade.exit, ["exitReason", "payload.exitReason", "reason", "payload.reason"]),
     "UNKNOWN"
   );
 }
 
 function rsiZoneOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "rsiZone",
-      "payload.rsiZone",
-      "payload.rsi.rsiZone"
-    ]),
+    tradeValue(trade, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"]),
     "UNKNOWN"
   );
 }
 
 function rsiEdgeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "rsiEdge",
-      "payload.rsiEdge",
-      "payload.rsi.rsiEdge"
-    ]),
+    tradeValue(trade, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]),
     "UNKNOWN"
   );
 }
 
 function flowOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "flow",
-      "payload.flow",
-      "payload.market.flow"
-    ]),
+    tradeValue(trade, ["flow", "payload.flow", "payload.market.flow"]),
     "UNKNOWN"
   );
 }
 
 function btcStateOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "btcState",
-      "payload.btcState",
-      "payload.market.btcState"
-    ]),
+    tradeValue(trade, ["btcState", "payload.btcState", "payload.market.btcState"]),
     "UNKNOWN"
   );
 }
 
 function regimeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "regime",
-      "payload.regime",
-      "payload.market.regime"
-    ]),
+    tradeValue(trade, ["regime", "payload.regime", "payload.market.regime"]),
     "UNKNOWN"
   );
 }
 
 function obBiasOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, [
-      "obBias",
-      "payload.obBias",
-      "payload.ob.bias",
-      "payload.orderbook.bias"
-    ]),
+    tradeValue(trade, ["obBias", "payload.obBias", "payload.ob.bias", "payload.orderbook.bias"]),
     "UNKNOWN"
   );
 }
@@ -690,30 +640,18 @@ function obRelationOf(trade: ClosedTrade): string {
 
 function spreadBucketOf(trade: ClosedTrade): string {
   const explicit = upper(
-    tradeValue(trade, [
-      "spreadBucket",
-      "payload.spreadBucket",
-      "payload.ob.spreadBucket"
-    ]),
+    tradeValue(trade, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"]),
     ""
   );
 
   if (explicit) return explicit;
 
   const spreadBps = nullableNum(
-    tradeValue(trade, [
-      "spreadBps",
-      "payload.spreadBps",
-      "payload.ob.spreadBps"
-    ])
+    tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
   );
 
   const spreadPct = nullableNum(
-    tradeValue(trade, [
-      "spreadPct",
-      "payload.spreadPct",
-      "payload.ob.spreadPct"
-    ])
+    tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
   );
 
   const bps = spreadBps ?? (spreadPct !== null ? spreadPct * 10000 : null);
@@ -730,11 +668,7 @@ function spreadBucketOf(trade: ClosedTrade): string {
 
 function depthBucketOf(trade: ClosedTrade): string {
   const explicit = upper(
-    tradeValue(trade, [
-      "depthBucket",
-      "payload.depthBucket",
-      "payload.ob.depthBucket"
-    ]),
+    tradeValue(trade, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"]),
     ""
   );
 
@@ -827,43 +761,21 @@ function rrBucketOf(trade: ClosedTrade): string {
 }
 
 function exitROf(trade: ClosedTrade): number | null {
-  return nullableNum(
-    firstValue(trade.exit, [
-      "exitR",
-      "payload.exitR",
-      "outcome.exitR"
-    ])
-  );
+  return nullableNum(firstValue(trade.exit, ["exitR", "payload.exitR", "outcome.exitR"]));
 }
 
 function pnlPctOf(trade: ClosedTrade): number | null {
   return nullableNum(
-    firstValue(trade.exit, [
-      "pnlPct",
-      "pnl",
-      "payload.pnlPct",
-      "payload.pnl",
-      "outcome.pnlPct"
-    ])
+    firstValue(trade.exit, ["pnlPct", "pnl", "payload.pnlPct", "payload.pnl", "outcome.pnlPct"])
   );
 }
 
 function directSlOf(trade: ClosedTrade): boolean {
-  return bool(
-    firstValue(trade.exit, [
-      "directToSL",
-      "payload.directToSL"
-    ])
-  );
+  return bool(firstValue(trade.exit, ["directToSL", "payload.directToSL"]));
 }
 
 function nearTpOf(trade: ClosedTrade): boolean {
-  return bool(
-    firstValue(trade.exit, [
-      "nearTpSeen",
-      "payload.nearTpSeen"
-    ])
-  );
+  return bool(firstValue(trade.exit, ["nearTpSeen", "payload.nearTpSeen"]));
 }
 
 function outcomeOf(trade: ClosedTrade): string {
@@ -1013,13 +925,7 @@ function cohortKeyOf(trade: ClosedTrade): string {
 
 function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): boolean {
   if (filters.strategyVersion) {
-    const version = text(
-      tradeValue(trade, [
-        "strategyVersion",
-        "payload.strategyVersion"
-      ])
-    );
-
+    const version = text(tradeValue(trade, ["strategyVersion", "payload.strategyVersion"]));
     if (version !== filters.strategyVersion) return false;
   }
 
@@ -1063,6 +969,83 @@ function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): bool
   return true;
 }
 
+function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): boolean {
+  if (filters.strategyVersion) {
+    const version = text(firstValue(event, ["strategyVersion", "payload.strategyVersion"]));
+    if (version !== filters.strategyVersion) return false;
+  }
+
+  if (filters.symbol && upper(firstValue(event, ["symbol", "payload.symbol"])) !== filters.symbol) {
+    return false;
+  }
+
+  if (filters.side) {
+    const rawSide = upper(firstValue(event, ["side", "payload.side"]), "UNKNOWN");
+    const normalizedSide = ["BULL", "LONG", "BUY", "BULLISH"].includes(rawSide)
+      ? "long"
+      : ["BEAR", "SHORT", "SELL", "BEARISH"].includes(rawSide)
+        ? "short"
+        : lower(rawSide);
+
+    if (normalizedSide !== filters.side) return false;
+  }
+
+  if (filters.setupClass && upper(firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])) !== filters.setupClass) {
+    return false;
+  }
+
+  if (filters.grade && upper(firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])) !== filters.grade) {
+    return false;
+  }
+
+  if (filters.regime && upper(firstValue(event, ["regime", "payload.regime", "payload.market.regime"])) !== filters.regime) {
+    return false;
+  }
+
+  if (filters.flow && upper(firstValue(event, ["flow", "payload.flow", "payload.market.flow"])) !== filters.flow) {
+    return false;
+  }
+
+  if (filters.btcState && upper(firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])) !== filters.btcState) {
+    return false;
+  }
+
+  if (filters.rsiZone && upper(firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])) !== filters.rsiZone) {
+    return false;
+  }
+
+  if (filters.rsiEdge && upper(firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])) !== filters.rsiEdge) {
+    return false;
+  }
+
+  if (filters.obBias && upper(firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])) !== filters.obBias) {
+    return false;
+  }
+
+  if (filters.obRelation && upper(firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])) !== filters.obRelation) {
+    return false;
+  }
+
+  if (filters.spreadBucket) {
+    const bucket = upper(firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"]));
+    if (bucket && bucket !== filters.spreadBucket) return false;
+  }
+
+  if (filters.depthBucket) {
+    const bucket = upper(firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"]));
+    if (bucket && bucket !== filters.depthBucket) return false;
+  }
+
+  const fromMs = parseDateMs(filters.from);
+  const toMs = parseDateMs(filters.to);
+  const ts = eventTime(event);
+
+  if (fromMs !== null && ts < fromMs) return false;
+  if (toMs !== null && ts > toMs) return false;
+
+  return true;
+}
+
 function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): boolean {
   if (filters.eventType && normalizeEventType(event) !== filters.eventType) return false;
 
@@ -1084,29 +1067,41 @@ function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): bo
   return true;
 }
 
-function buildOverview(events: TradeEvent[], closedTrades: ClosedTrade[]): Overview {
-  const entries = events.filter(isEntry);
-
-  const openByTradeId = new Map<string, TradeEvent>();
-
-  for (const entry of entries) {
-    const tradeId = getTradeId(entry);
-    if (!tradeId) continue;
-
-    openByTradeId.set(tradeId, entry);
-  }
-
-  for (const trade of closedTrades) {
-    if (!trade.tradeId) continue;
-    openByTradeId.delete(trade.tradeId);
-  }
-
+function buildOverview(events: TradeEvent[], closedTrades: ClosedTrade[], filters: DashboardFilters): Overview {
   const metrics = summarizeTrades(closedTrades);
 
+  const closedIds = new Set(
+    closedTrades
+      .map(trade => trade.tradeId)
+      .filter(Boolean)
+  );
+
+  const entryIds = new Set<string>();
+
+  if (!filters.outcome) {
+    for (const event of events) {
+      if (!isEntry(event)) continue;
+      if (!eventPassesEntryFilters(event, filters)) continue;
+
+      const tradeId = getTradeId(event) || text(event.eventId);
+      if (!tradeId) continue;
+
+      entryIds.add(tradeId);
+    }
+  }
+
+  for (const tradeId of closedIds) {
+    entryIds.add(tradeId);
+  }
+
+  const open = filters.outcome
+    ? 0
+    : [...entryIds].filter(tradeId => !closedIds.has(tradeId)).length;
+
   return {
-    entries: entries.length,
+    entries: entryIds.size,
     closed: metrics.closed,
-    open: openByTradeId.size,
+    open,
 
     winrate: metrics.winrate,
     wilson: metrics.wilson,
@@ -1403,7 +1398,7 @@ export async function getDashboardData(filters: DashboardFilters): Promise<Dashb
   );
 
   return {
-    overview: buildOverview(allEvents, filteredClosedTrades),
+    overview: buildOverview(allEvents, filteredClosedTrades, filters),
     options: buildOptions(allEvents),
     cohorts: buildCohorts(filteredClosedTrades, filters),
     breakdown: buildBreakdown(filteredClosedTrades),
