@@ -149,6 +149,8 @@ export type BreakdownRow = {
   examples: string;
 };
 
+export type RecentTradeCell = string | number | boolean | null;
+
 export type RecentTradeRow = {
   id: string;
   eventId: string;
@@ -188,10 +190,19 @@ export type RecentTradeRow = {
   rsi: number | null;
   rsiHTF: number | null;
   rsiZone: string | null;
+  rsiEdge: string | null;
 
   obBias: string | null;
+  obRelation: string | null;
   spreadPct: number | null;
+  spreadBps: number | null;
+  spreadBucket: string | null;
   depthMinUsd1p: number | null;
+  depthBucket: string | null;
+
+  flow: string | null;
+  btcState: string | null;
+  regime: string | null;
 
   mfeR: number | null;
   maeR: number | null;
@@ -206,6 +217,8 @@ export type RecentTradeRow = {
 
   strategyVersion: string | null;
   runId: string | null;
+
+  [key: string]: RecentTradeCell;
 };
 
 export type DashboardData = {
@@ -1343,10 +1356,21 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
         rsi: nullableNum(firstValue(event, ["rsi", "payload.rsi"])),
         rsiHTF: nullableNum(firstValue(event, ["rsiHTF", "payload.rsiHTF"])),
         rsiZone: nullableText(firstValue(event, ["rsiZone", "payload.rsiZone"])),
+        rsiEdge: nullableText(firstValue(event, ["rsiEdge", "payload.rsiEdge"])),
 
         obBias: nullableText(firstValue(event, ["obBias", "payload.obBias"])),
+        obRelation: nullableText(firstValue(event, ["obRelation", "payload.obRelation"])),
+
         spreadPct: nullableNum(firstValue(event, ["spreadPct", "payload.spreadPct"])),
+        spreadBps: nullableNum(firstValue(event, ["spreadBps", "payload.spreadBps"])),
+        spreadBucket: nullableText(firstValue(event, ["spreadBucket", "payload.spreadBucket"])),
+
         depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p"])),
+        depthBucket: nullableText(firstValue(event, ["depthBucket", "payload.depthBucket"])),
+
+        flow: nullableText(firstValue(event, ["flow", "payload.flow"])),
+        btcState: nullableText(firstValue(event, ["btcState", "payload.btcState"])),
+        regime: nullableText(firstValue(event, ["regime", "payload.regime"])),
 
         mfeR: nullableNum(firstValue(event, ["mfeR", "payload.mfeR"])),
         maeR: nullableNum(firstValue(event, ["maeR", "payload.maeR"])),
