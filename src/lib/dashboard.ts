@@ -149,7 +149,64 @@ export type BreakdownRow = {
   examples: string;
 };
 
-export type RecentTradeRow = Record<string, unknown>;
+export type RecentTradeRow = {
+  id: string;
+  eventId: string;
+  tradeId: string | null;
+
+  ts: number;
+  receivedAt: number | null;
+  date: string;
+
+  eventType: string;
+  action: string;
+  reason: string;
+
+  symbol: string | null;
+  side: string | null;
+
+  setupClass: string | null;
+  grade: string | null;
+
+  entry: number | null;
+  sl: number | null;
+  initialSl: number | null;
+  tp: number | null;
+  exit: number | null;
+
+  rr: number | null;
+  plannedRR: number | null;
+  baseRR: number | null;
+  finalRr: number | null;
+  exitR: number | null;
+  pnlPct: number | null;
+
+  score: number | null;
+  confluence: number | null;
+  sniperScore: number | null;
+
+  rsi: number | null;
+  rsiHTF: number | null;
+  rsiZone: string | null;
+
+  obBias: string | null;
+  spreadPct: number | null;
+  depthMinUsd1p: number | null;
+
+  mfeR: number | null;
+  maeR: number | null;
+  currentR: number | null;
+
+  directToSL: boolean;
+  nearTpSeen: boolean;
+  reachedHalfR: boolean;
+  reachedOneR: boolean;
+  breakEvenActivated: boolean;
+  breakEvenStop: boolean;
+
+  strategyVersion: string | null;
+  runId: string | null;
+};
 
 export type DashboardData = {
   overview: Overview;
@@ -241,6 +298,11 @@ function text(value: unknown, fallback = ""): string {
 
   const result = String(value).trim();
   return result || fallback;
+}
+
+function nullableText(value: unknown): string | null {
+  const result = text(value);
+  return result || null;
 }
 
 function upper(value: unknown, fallback = ""): string {
@@ -1239,64 +1301,68 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
   return [...events]
     .sort((a, b) => eventTime(b) - eventTime(a))
     .slice(0, 150)
-    .map(event => ({
-      id: event.eventId,
-      eventId: event.eventId,
-      tradeId: firstValue(event, ["tradeId", "payload.tradeId"]),
+    .map(event => {
+      const ts = eventTime(event);
 
-      ts: eventTime(event),
-      receivedAt: firstValue(event, ["receivedAt"]),
-      date: new Date(eventTime(event) || Date.now()).toISOString(),
+      return {
+        id: text(event.eventId),
+        eventId: text(event.eventId),
+        tradeId: nullableText(firstValue(event, ["tradeId", "payload.tradeId"])),
 
-      eventType: normalizeEventType(event),
-      action: firstValue(event, ["action"]),
-      reason: firstValue(event, ["reason", "payload.reason"]),
+        ts,
+        receivedAt: nullableNum(firstValue(event, ["receivedAt"])),
+        date: new Date(ts || Date.now()).toISOString(),
 
-      symbol: firstValue(event, ["symbol", "payload.symbol"]),
-      side: firstValue(event, ["side", "payload.side"]),
+        eventType: normalizeEventType(event),
+        action: text(firstValue(event, ["action"])),
+        reason: text(firstValue(event, ["reason", "payload.reason"])),
 
-      setupClass: firstValue(event, ["setupClass", "payload.setupClass"]),
-      grade: firstValue(event, ["grade", "payload.grade"]),
+        symbol: nullableText(firstValue(event, ["symbol", "payload.symbol"])),
+        side: nullableText(firstValue(event, ["side", "payload.side"])),
 
-      entry: firstValue(event, ["entry", "price", "payload.entry", "payload.price"]),
-      sl: firstValue(event, ["sl", "payload.sl"]),
-      initialSl: firstValue(event, ["initialSl", "payload.initialSl"]),
-      tp: firstValue(event, ["tp", "payload.tp"]),
-      exit: firstValue(event, ["exit", "executionPrice", "payload.exit", "payload.executionPrice"]),
+        setupClass: nullableText(firstValue(event, ["setupClass", "payload.setupClass"])),
+        grade: nullableText(firstValue(event, ["grade", "payload.grade"])),
 
-      rr: firstValue(event, ["rr", "payload.rr"]),
-      plannedRR: firstValue(event, ["plannedRR", "payload.plannedRR"]),
-      baseRR: firstValue(event, ["baseRR", "payload.baseRR"]),
-      finalRr: firstValue(event, ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR"]),
-      exitR: firstValue(event, ["exitR", "payload.exitR"]),
-      pnlPct: firstValue(event, ["pnlPct", "payload.pnlPct"]),
+        entry: nullableNum(firstValue(event, ["entry", "price", "payload.entry", "payload.price"])),
+        sl: nullableNum(firstValue(event, ["sl", "payload.sl"])),
+        initialSl: nullableNum(firstValue(event, ["initialSl", "payload.initialSl"])),
+        tp: nullableNum(firstValue(event, ["tp", "payload.tp"])),
+        exit: nullableNum(firstValue(event, ["exit", "executionPrice", "payload.exit", "payload.executionPrice"])),
 
-      score: firstValue(event, ["score", "payload.score"]),
-      confluence: firstValue(event, ["confluence", "payload.confluence"]),
-      sniperScore: firstValue(event, ["sniperScore", "payload.sniperScore"]),
+        rr: nullableNum(firstValue(event, ["rr", "payload.rr"])),
+        plannedRR: nullableNum(firstValue(event, ["plannedRR", "payload.plannedRR"])),
+        baseRR: nullableNum(firstValue(event, ["baseRR", "payload.baseRR"])),
+        finalRr: nullableNum(firstValue(event, ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR"])),
+        exitR: nullableNum(firstValue(event, ["exitR", "payload.exitR"])),
+        pnlPct: nullableNum(firstValue(event, ["pnlPct", "payload.pnlPct"])),
 
-      rsi: firstValue(event, ["rsi", "payload.rsi"]),
-      rsiHTF: firstValue(event, ["rsiHTF", "payload.rsiHTF"]),
-      rsiZone: firstValue(event, ["rsiZone", "payload.rsiZone"]),
+        score: nullableNum(firstValue(event, ["score", "payload.score"])),
+        confluence: nullableNum(firstValue(event, ["confluence", "payload.confluence"])),
+        sniperScore: nullableNum(firstValue(event, ["sniperScore", "payload.sniperScore"])),
 
-      obBias: firstValue(event, ["obBias", "payload.obBias"]),
-      spreadPct: firstValue(event, ["spreadPct", "payload.spreadPct"]),
-      depthMinUsd1p: firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p"]),
+        rsi: nullableNum(firstValue(event, ["rsi", "payload.rsi"])),
+        rsiHTF: nullableNum(firstValue(event, ["rsiHTF", "payload.rsiHTF"])),
+        rsiZone: nullableText(firstValue(event, ["rsiZone", "payload.rsiZone"])),
 
-      mfeR: firstValue(event, ["mfeR", "payload.mfeR"]),
-      maeR: firstValue(event, ["maeR", "payload.maeR"]),
-      currentR: firstValue(event, ["currentR", "payload.currentR"]),
+        obBias: nullableText(firstValue(event, ["obBias", "payload.obBias"])),
+        spreadPct: nullableNum(firstValue(event, ["spreadPct", "payload.spreadPct"])),
+        depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p"])),
 
-      directToSL: firstValue(event, ["directToSL", "payload.directToSL"]),
-      nearTpSeen: firstValue(event, ["nearTpSeen", "payload.nearTpSeen"]),
-      reachedHalfR: firstValue(event, ["reachedHalfR", "payload.reachedHalfR"]),
-      reachedOneR: firstValue(event, ["reachedOneR", "payload.reachedOneR"]),
-      breakEvenActivated: firstValue(event, ["breakEvenActivated", "payload.breakEvenActivated"]),
-      breakEvenStop: firstValue(event, ["breakEvenStop", "payload.breakEvenStop"]),
+        mfeR: nullableNum(firstValue(event, ["mfeR", "payload.mfeR"])),
+        maeR: nullableNum(firstValue(event, ["maeR", "payload.maeR"])),
+        currentR: nullableNum(firstValue(event, ["currentR", "payload.currentR"])),
 
-      strategyVersion: firstValue(event, ["strategyVersion"]),
-      runId: firstValue(event, ["runId"])
-    }));
+        directToSL: bool(firstValue(event, ["directToSL", "payload.directToSL"])),
+        nearTpSeen: bool(firstValue(event, ["nearTpSeen", "payload.nearTpSeen"])),
+        reachedHalfR: bool(firstValue(event, ["reachedHalfR", "payload.reachedHalfR"])),
+        reachedOneR: bool(firstValue(event, ["reachedOneR", "payload.reachedOneR"])),
+        breakEvenActivated: bool(firstValue(event, ["breakEvenActivated", "payload.breakEvenActivated"])),
+        breakEvenStop: bool(firstValue(event, ["breakEvenStop", "payload.breakEvenStop"])),
+
+        strategyVersion: nullableText(firstValue(event, ["strategyVersion"])),
+        runId: nullableText(firstValue(event, ["runId"]))
+      };
+    });
 }
 
 export async function getDashboardData(filters: DashboardFilters): Promise<DashboardData> {
