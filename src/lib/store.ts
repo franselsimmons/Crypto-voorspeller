@@ -356,7 +356,8 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
     throw new Error("REDIS_ENV_MISSING");
   }
 
-  const commandBytes = byteLength(command);
+  const normalizedCommand = command.map(value => String(value));
+  const commandBytes = byteLength(normalizedCommand);
 
   const res = await fetch(url, {
     method: "POST",
@@ -364,7 +365,7 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(command),
+    body: JSON.stringify(normalizedCommand),
     cache: "no-store"
   });
 
@@ -383,7 +384,7 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
       "REDIS_COMMAND_FAILED:",
       JSON.stringify({
         status: res.status,
-        command: command[0],
+        command: normalizedCommand[0],
         commandBytes,
         error: json?.error || text.slice(0, 700)
       })
@@ -397,6 +398,39 @@ async function redisCommand<T = unknown>(command: RedisCommand): Promise<T> {
   }
 
   return json?.result as T;
+}
+
+async function redisCommandBestEffort<T = unknown>(
+  command: RedisCommand,
+  label: string
+): Promise<T | null> {
+  try {
+    return await redisCommand<T>(command);
+  } catch (error) {
+    console.warn(
+      `${label}:`,
+      JSON.stringify({
+        command: String(command[0] || "UNKNOWN"),
+        reason: error instanceof Error ? error.message : String(error)
+      })
+    );
+
+    return null;
+  }
+}
+
+async function trimTradeEventsBestEffort(): Promise<void> {
+  if (!hasRedis()) return;
+
+  await redisCommandBestEffort(
+    [
+      "LTRIM",
+      TRADE_EVENTS_KEY,
+      String(-TRADE_EVENTS_MAX_ROWS),
+      "-1"
+    ],
+    "TRADE_EVENTS_TRIM_SKIPPED"
+  );
 }
 
 function compactPayload(event: TradeEvent): AnyRecord {
@@ -443,6 +477,7 @@ function compactPayload(event: TradeEvent): AnyRecord {
     plannedRR: event.plannedRR,
     baseRR: event.baseRR,
     finalRr: event.finalRr,
+    finalRR: firstValue(event, ["finalRR"], event.finalRr),
     effectiveRR: firstValue(event, ["effectiveRR"], null),
     requiredRR: firstValue(event, ["requiredRR"], null),
     finalRequiredRR: firstValue(event, ["finalRequiredRR"], null),
@@ -753,7 +788,7 @@ export async function saveTradeEvent(
     dedupeKey,
     "1",
     "EX",
-    TRADE_DEDUPE_TTL_SECONDS,
+    String(TRADE_DEDUPE_TTL_SECONDS),
     "NX"
   ]);
 
@@ -771,30 +806,34 @@ export async function saveTradeEvent(
     };
   }
 
-  const count = await redisCommand<number>([
-    "RPUSH",
-    TRADE_EVENTS_KEY,
-    storedJson
-  ]);
+  try {
+    const count = await redisCommand<number>([
+      "RPUSH",
+      TRADE_EVENTS_KEY,
+      storedJson
+    ]);
 
-  await redisCommand([
-    "LTRIM",
-    TRADE_EVENTS_KEY,
-    -TRADE_EVENTS_MAX_ROWS,
-    -1
-  ]);
+    await trimTradeEventsBestEffort();
 
-  return {
-    ok: true,
-    stored: true,
-    deduped: false,
-    persistent: true,
-    key: TRADE_EVENTS_KEY,
-    eventId: event.eventId,
-    count: Number(count || 0),
-    bytes,
-    error: null
-  };
+    return {
+      ok: true,
+      stored: true,
+      deduped: false,
+      persistent: true,
+      key: TRADE_EVENTS_KEY,
+      eventId: event.eventId,
+      count: Number(count || 0),
+      bytes,
+      error: null
+    };
+  } catch (error) {
+    await redisCommandBestEffort(
+      ["DEL", dedupeKey],
+      "TRADE_EVENT_DEDUPE_ROLLBACK_SKIPPED"
+    );
+
+    throw error;
+  }
 }
 
 async function listRedisTradeEvents(): Promise<TradeEvent[]> {
@@ -816,8 +855,8 @@ async function listRedisTradeEvents(): Promise<TradeEvent[]> {
       const rows = await redisCommand<string[]>([
         "LRANGE",
         TRADE_EVENTS_KEY,
-        cursor,
-        end
+        String(cursor),
+        String(end)
       ]);
 
       for (const row of Array.isArray(rows) ? rows : []) {
@@ -924,10 +963,10 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
     };
   }
 
-  await redisCommand(["DEL", TRADE_EVENTS_KEY]);
+  await redisCommandBestEffort(["DEL", TRADE_EVENTS_KEY], "TRADE_EVENTS_CLEAR_LIST_SKIPPED");
 
-  const oldHashDedupe = TRADE_DEDUPE_KEY;
-  await redisCommand(["DEL", oldHashDedupe]);
+  // Oude hash-dedupe key uit eerdere versies.
+  await redisCommandBestEffort(["DEL", TRADE_DEDUPE_KEY], "TRADE_EVENTS_CLEAR_OLD_DEDUPE_SKIPPED");
 
   return {
     ok: true,
