@@ -18,11 +18,14 @@ export const revalidate = 0;
 
 const BEST_COHORT_MIN_TRADES_FLOOR = 5;
 
+type Tone = "good" | "bad" | "warn" | "default";
+type TradeSide = "LONG" | "SHORT";
+
 // ==========================================
 // HELPER FUNCTIES
 // ==========================================
 
-function toneFromNumber(value: number): "good" | "bad" | "warn" | "default" {
+function toneFromNumber(value: number): Tone {
   if (value > 0) return "good";
   if (value < 0) return "bad";
   return "default";
@@ -54,18 +57,36 @@ function cleanCohortLabel(value: string): string {
     .trim();
 }
 
-function getBestCohort(rows: CohortRow[], minTrades: number): CohortRow | null {
-  if (!rows.length) return null;
+function normalizeSide(value: unknown): TradeSide | null {
+  const side = String(value || "").trim().toUpperCase();
 
-  const validRows = rows.filter((row) => {
-    return (
-      row.closed >= minTrades &&
-      row.count >= minTrades &&
-      row.totalR > 0 &&
-      row.avgR > 0 &&
-      row.winrate > 0
-    );
-  });
+  if (["LONG", "BULL", "BUY", "BULLISH"].includes(side)) return "LONG";
+  if (["SHORT", "BEAR", "SELL", "BEARISH"].includes(side)) return "SHORT";
+
+  return null;
+}
+
+function cohortsForSide(rows: CohortRow[], side: TradeSide): CohortRow[] {
+  return rows.filter(row => normalizeSide(row.side) === side);
+}
+
+function isValidBestCohort(row: CohortRow, minTrades: number): boolean {
+  return (
+    row.closed >= minTrades &&
+    row.count >= minTrades &&
+    row.totalR > 0 &&
+    row.avgR > 0 &&
+    row.winrate > 0
+  );
+}
+
+function getBestCohortForSide(
+  rows: CohortRow[],
+  side: TradeSide,
+  minTrades: number
+): CohortRow | null {
+  const sideRows = cohortsForSide(rows, side);
+  const validRows = sideRows.filter(row => isValidBestCohort(row, minTrades));
 
   return validRows.length > 0 ? validRows[0] : null;
 }
@@ -74,16 +95,26 @@ function getBestCohort(rows: CohortRow[], minTrades: number): CohortRow | null {
 // SUB-COMPONENTEN
 // ==========================================
 
-function BestFilterCombination({ cohort, minTrades }: { cohort: CohortRow | null; minTrades: number }) {
+function BestSideFilterCombination({
+  title,
+  side,
+  cohort,
+  minTrades
+}: {
+  title: string;
+  side: TradeSide;
+  cohort: CohortRow | null;
+  minTrades: number;
+}) {
   if (!cohort) {
     return (
       <section className="hero best-cohort panel">
         <div>
-          <div className="eyebrow">Beste filter combinatie</div>
-          <h2>Nog geen betrouwbare combinatie</h2>
+          <div className="eyebrow">{title}</div>
+          <h2>Nog geen betrouwbare {side} combinatie</h2>
           <p>
-            Er is nog geen positieve cohort met minimaal {minTrades} closed trades.
-            Tot die tijd wordt er geen “beste” combinatie gekozen, zodat 1/1 geluk
+            Er is nog geen positieve {side} cohort met minimaal {minTrades} closed trades.
+            Tot die tijd wordt er geen {side} topfilter gekozen, zodat 1/1 geluk
             niet bovenaan komt.
           </p>
         </div>
@@ -105,14 +136,14 @@ function BestFilterCombination({ cohort, minTrades }: { cohort: CohortRow | null
     <section className="best-cohort panel">
       <header className="hero">
         <div>
-          <div className="eyebrow">Beste filter combinatie</div>
+          <div className="eyebrow">{title}</div>
           <h2>
             {cohort.setupClass} {cohort.side}
           </h2>
           <p>
-            Deze combinatie voldoet aan de minimum sample van {minTrades} closed trades
-            en staat bovenaan op basis van score, winrate/Wilson, total R, avg R,
-            PnL, profit factor, near-TP en direct-SL penalty.
+            Deze {side} combinatie voldoet aan de minimum sample van {minTrades} closed trades
+            en staat bovenaan binnen alleen {side}-cohorts op basis van score,
+            winrate/Wilson, total R, avg R, PnL, profit factor, near-TP en direct-SL penalty.
           </p>
         </div>
 
@@ -123,20 +154,99 @@ function BestFilterCombination({ cohort, minTrades }: { cohort: CohortRow | null
       </header>
 
       <section className="metric-grid">
-        <MetricCard label="Beste winrate" value={pct(cohort.winrate)} sub={`Wilson: ${pct(cohort.wilson)}`} tone={cohort.winrate >= 0.5 ? "good" : "default"} />
-        <MetricCard label="Beste PnL" value={pct(cohort.pnlPct)} sub={`Avg: ${pct(cohort.avgPnlPct)}`} tone={pnlTone} />
-        <MetricCard label="Beste Total R" value={r(cohort.totalR)} sub={`Avg: ${r(cohort.avgR)}`} tone={totalRTone} />
-        <MetricCard label="Avg R" value={r(cohort.avgR)} sub={`${cohort.closed} closed / ${cohort.count} sample`} tone={avgRTone} />
-        <MetricCard label="Profit factor" value={profitFactorText(cohort.profitFactor)} sub="Gross win / gross loss" tone={isProfitFactorGood ? "good" : "default"} />
-        <MetricCard label="Direct SL" value={pct(cohort.directSlPct)} sub="Lager is beter" tone={cohort.directSlPct > 0.3 ? "bad" : "default"} />
-        <MetricCard label="Near TP" value={pct(cohort.nearTpPct)} sub="TP bijna gehaald" tone="warn" />
-        <MetricCard label="Trades" value={compactNumber(cohort.count, 0)} sub={`${cohort.wins} wins / ${cohort.losses} losses / ${cohort.flats} flat`} />
+        <MetricCard
+          label={`${side} winrate`}
+          value={pct(cohort.winrate)}
+          sub={`Wilson: ${pct(cohort.wilson)}`}
+          tone={cohort.winrate >= 0.5 ? "good" : "default"}
+        />
+
+        <MetricCard
+          label={`${side} PnL`}
+          value={pct(cohort.pnlPct)}
+          sub={`Avg: ${pct(cohort.avgPnlPct)}`}
+          tone={pnlTone}
+        />
+
+        <MetricCard
+          label={`${side} Total R`}
+          value={r(cohort.totalR)}
+          sub={`Avg: ${r(cohort.avgR)}`}
+          tone={totalRTone}
+        />
+
+        <MetricCard
+          label="Avg R"
+          value={r(cohort.avgR)}
+          sub={`${cohort.closed} closed / ${cohort.count} sample`}
+          tone={avgRTone}
+        />
+
+        <MetricCard
+          label="Profit factor"
+          value={profitFactorText(cohort.profitFactor)}
+          sub="Gross win / gross loss"
+          tone={isProfitFactorGood ? "good" : "default"}
+        />
+
+        <MetricCard
+          label="Direct SL"
+          value={pct(cohort.directSlPct)}
+          sub="Lager is beter"
+          tone={cohort.directSlPct > 0.3 ? "bad" : "default"}
+        />
+
+        <MetricCard
+          label="Near TP"
+          value={pct(cohort.nearTpPct)}
+          sub="TP bijna gehaald"
+          tone="warn"
+        />
+
+        <MetricCard
+          label="Trades"
+          value={compactNumber(cohort.count, 0)}
+          sub={`${cohort.wins} wins / ${cohort.losses} losses / ${cohort.flats} flat`}
+        />
       </section>
 
       <div className="hero-box" style={{ marginTop: "18px" }}>
-        <div className="hero-box-label">Filter combinatie</div>
+        <div className="hero-box-label">{side} filter combinatie</div>
         <code>{cleanCohortLabel(cohort.cohortKey)}</code>
       </div>
+    </section>
+  );
+}
+
+function SideCohortSection({
+  title,
+  side,
+  rows
+}: {
+  title: string;
+  side: TradeSide;
+  rows: CohortRow[];
+}) {
+  return (
+    <section className="panel">
+      <header className="hero">
+        <div>
+          <div className="eyebrow">Cohort analyse</div>
+          <h2>{title}</h2>
+          <p>
+            Alleen {side}-cohorts. Gebruik deze tabel om de beste {side} filtergroep
+            te beoordelen op score, winrate, Wilson, total R, avg R, profit factor
+            en direct-SL.
+          </p>
+        </div>
+
+        <div className="hero-box">
+          <div className="hero-box-label">{side} cohorts</div>
+          <code>{compactNumber(rows.length, 0)}</code>
+        </div>
+      </header>
+
+      <CohortTable rows={rows} />
     </section>
   );
 }
@@ -145,13 +255,31 @@ function BestFilterCombination({ cohort, minTrades }: { cohort: CohortRow | null
 // HOOFDPAGINA
 // ==========================================
 
-export default async function Home({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+export default async function Home({
+  searchParams
+}: {
+  searchParams?: Promise<SearchParams>;
+}) {
   const params = (await searchParams) ?? {};
   const filters = parseDashboardFilters(params);
   const data = await getDashboardData(filters);
 
   const bestCohortMinTrades = getBestCohortMinTrades(filters);
-  const bestCohort = getBestCohort(data.cohorts, bestCohortMinTrades);
+
+  const longCohorts = cohortsForSide(data.cohorts, "LONG");
+  const shortCohorts = cohortsForSide(data.cohorts, "SHORT");
+
+  const bestLongCohort = getBestCohortForSide(
+    data.cohorts,
+    "LONG",
+    bestCohortMinTrades
+  );
+
+  const bestShortCohort = getBestCohortForSide(
+    data.cohorts,
+    "SHORT",
+    bestCohortMinTrades
+  );
 
   const totalRTone = toneFromNumber(data.overview.totalR);
   const pnlTone = toneFromNumber(data.overview.pnlPct);
@@ -166,8 +294,8 @@ export default async function Home({ searchParams }: { searchParams?: Promise<Se
           <h1>Trade Filter Optimizer</h1>
           <p>
             Alle entry, exit, path en filterwaardes worden opgeslagen. Doel:
-            filter-combinaties vinden met de beste balans tussen winrate, total R,
-            PnL en lage direct-SL ratio.
+            aparte beste filter-combinaties vinden voor LONG en SHORT, met balans tussen
+            winrate, total R, PnL en lage direct-SL ratio.
           </p>
         </div>
 
@@ -179,21 +307,92 @@ export default async function Home({ searchParams }: { searchParams?: Promise<Se
 
       <FilterForm filters={filters} options={data.options} />
 
-      <BestFilterCombination cohort={bestCohort} minTrades={bestCohortMinTrades} />
+      <BestSideFilterCombination
+        title="Beste LONG filter combinatie"
+        side="LONG"
+        cohort={bestLongCohort}
+        minTrades={bestCohortMinTrades}
+      />
+
+      <BestSideFilterCombination
+        title="Beste SHORT filter combinatie"
+        side="SHORT"
+        cohort={bestShortCohort}
+        minTrades={bestCohortMinTrades}
+      />
 
       <section className="metric-grid">
-        <MetricCard label="Entries" value={compactNumber(data.overview.entries, 0)} sub="Totaal ontvangen" />
-        <MetricCard label="Closed" value={compactNumber(data.overview.closed, 0)} sub={`${data.overview.open} open`} />
-        <MetricCard label="Winrate" value={pct(data.overview.winrate)} sub={`Wilson: ${pct(data.overview.wilson)}`} />
-        <MetricCard label="Total R" value={r(data.overview.totalR)} sub={`Avg: ${r(data.overview.avgR)}`} tone={totalRTone} />
-        <MetricCard label="PnL" value={pct(data.overview.pnlPct)} sub="Som van closed trades" tone={pnlTone} />
-        <MetricCard label="Profit factor" value={data.overview.profitFactor === null ? "—" : compactNumber(data.overview.profitFactor, 2)} sub="Gross win / gross loss" />
-        <MetricCard label="Direct SL" value={pct(data.overview.directSlPct)} sub="MFE kwam bijna niet op gang" tone="bad" />
-        <MetricCard label="Near TP" value={pct(data.overview.nearTpPct)} sub="TP bijna gehaald" tone="warn" />
+        <MetricCard
+          label="Entries"
+          value={compactNumber(data.overview.entries, 0)}
+          sub="Totaal ontvangen"
+        />
+
+        <MetricCard
+          label="Closed"
+          value={compactNumber(data.overview.closed, 0)}
+          sub={`${data.overview.open} open`}
+        />
+
+        <MetricCard
+          label="Winrate"
+          value={pct(data.overview.winrate)}
+          sub={`Wilson: ${pct(data.overview.wilson)}`}
+        />
+
+        <MetricCard
+          label="Total R"
+          value={r(data.overview.totalR)}
+          sub={`Avg: ${r(data.overview.avgR)}`}
+          tone={totalRTone}
+        />
+
+        <MetricCard
+          label="PnL"
+          value={pct(data.overview.pnlPct)}
+          sub="Som van closed trades"
+          tone={pnlTone}
+        />
+
+        <MetricCard
+          label="Profit factor"
+          value={
+            data.overview.profitFactor === null
+              ? "—"
+              : compactNumber(data.overview.profitFactor, 2)
+          }
+          sub="Gross win / gross loss"
+        />
+
+        <MetricCard
+          label="Direct SL"
+          value={pct(data.overview.directSlPct)}
+          sub="MFE kwam bijna niet op gang"
+          tone="bad"
+        />
+
+        <MetricCard
+          label="Near TP"
+          value={pct(data.overview.nearTpPct)}
+          sub="TP bijna gehaald"
+          tone="warn"
+        />
       </section>
 
-      <CohortTable rows={data.cohorts} />
+      <SideCohortSection
+        title="LONG cohort tabel"
+        side="LONG"
+        rows={longCohorts}
+      />
+
+      <SideCohortSection
+        title="SHORT cohort tabel"
+        side="SHORT"
+        rows={shortCohorts}
+      />
+
       <BreakdownTable rows={data.breakdown} />
+
       <RecentTradesTable rows={data.recentTrades} />
     </main>
   );
