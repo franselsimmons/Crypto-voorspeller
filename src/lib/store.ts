@@ -18,10 +18,19 @@ export type SaveTradeEventResult = {
   error?: string | null;
 };
 
-const TRADE_EVENTS_KEY =
+const TRADE_EVENTS_INDEX_KEY =
+  process.env.TRADE_EVENTS_INDEX_KEY || "tradesystem:events:index:v2";
+
+const TRADE_EVENT_ITEM_PREFIX =
+  process.env.TRADE_EVENT_ITEM_PREFIX || "tradesystem:event:v2";
+
+const TRADE_DEDUPE_KEY_PREFIX =
+  process.env.TRADE_DEDUPE_KEY_PREFIX || "tradesystem:events:dedupe:v2";
+
+const OLD_TRADE_EVENTS_LIST_KEY =
   process.env.TRADE_EVENTS_KEY || "tradesystem:events:v1";
 
-const TRADE_DEDUPE_KEY =
+const OLD_TRADE_DEDUPE_KEY =
   process.env.TRADE_DEDUPE_KEY || "tradesystem:events:dedupe:v1";
 
 const TRADE_EVENTS_MAX_ROWS = Math.max(
@@ -44,14 +53,19 @@ const TRADE_DEDUPE_TTL_SECONDS = Math.max(
   Number(process.env.TRADE_DEDUPE_TTL_SECONDS || 60 * 60 * 24 * 14)
 );
 
-const MAX_STORED_EVENT_BYTES = Math.max(
-  4000,
-  Number(process.env.TRADE_EVENT_MAX_BYTES || 24000)
+const TRADE_EVENT_TTL_SECONDS = Math.max(
+  3600,
+  Number(process.env.TRADE_EVENT_TTL_SECONDS || 60 * 60 * 24 * 30)
+);
+
+const MAX_STORED_EVENT_BYTES = Math.min(
+  12000,
+  Math.max(3000, Number(process.env.TRADE_EVENT_MAX_BYTES || 8000))
 );
 
 const TOP_LEVEL_FIELD_MAX_BYTES = Math.max(
   512,
-  Number(process.env.TRADE_EVENT_TOP_FIELD_MAX_BYTES || 4096)
+  Number(process.env.TRADE_EVENT_TOP_FIELD_MAX_BYTES || 2048)
 );
 
 const memoryKey = "__TRADESYSTEM_ANALYSIS_EVENTS__";
@@ -241,23 +255,10 @@ function asUpper(value: unknown, fallback = ""): string {
   return asString(value, fallback).toUpperCase();
 }
 
-function asNumber(value: unknown, fallback: number | null = null): number | null {
-  if (value === null || value === undefined || value === "") return fallback;
-
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function asBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-
-  const text = asString(value).toLowerCase();
-  return ["true", "1", "yes", "y"].includes(text);
-}
-
 function safeJson(value: unknown, fallback = "{}"): string {
   try {
-    return JSON.stringify(value);
+    const text = JSON.stringify(value);
+    return typeof text === "string" ? text : fallback;
   } catch {
     return fallback;
   }
@@ -314,6 +315,14 @@ function hashString(input: string): string {
 
 function safeRedisKeyPart(value: string): string {
   return value.replace(/[^a-zA-Z0-9:_-]/g, "_").slice(0, 300);
+}
+
+function buildEventItemKey(eventId: string): string {
+  return `${TRADE_EVENT_ITEM_PREFIX}:${safeRedisKeyPart(eventId)}`;
+}
+
+function buildDedupeKey(eventId: string): string {
+  return `${TRADE_DEDUPE_KEY_PREFIX}:${safeRedisKeyPart(eventId)}`;
 }
 
 function getRedisRestUrl(): string {
@@ -419,17 +428,17 @@ async function redisCommandBestEffort<T = unknown>(
   }
 }
 
-async function trimTradeEventsBestEffort(): Promise<void> {
+async function trimTradeEventIndexBestEffort(): Promise<void> {
   if (!hasRedis()) return;
 
   await redisCommandBestEffort(
     [
       "LTRIM",
-      TRADE_EVENTS_KEY,
+      TRADE_EVENTS_INDEX_KEY,
       String(-TRADE_EVENTS_MAX_ROWS),
       "-1"
     ],
-    "TRADE_EVENTS_TRIM_SKIPPED"
+    "TRADE_EVENTS_INDEX_TRIM_SKIPPED"
   );
 }
 
@@ -616,9 +625,7 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
   for (const [key, value] of Object.entries(record)) {
     if (CORE_FIELDS.has(key)) continue;
 
-    const size = byteLength(value);
-
-    if (size > TOP_LEVEL_FIELD_MAX_BYTES) {
+    if (byteLength(value) > TOP_LEVEL_FIELD_MAX_BYTES) {
       delete record[key];
     }
   }
@@ -738,7 +745,7 @@ export async function saveTradeEvent(
       stored: false,
       deduped: false,
       persistent: hasRedis(),
-      key: hasRedis() ? TRADE_EVENTS_KEY : "memory",
+      key: hasRedis() ? TRADE_EVENTS_INDEX_KEY : "memory",
       eventId: event.eventId,
       count: null,
       bytes: 0,
@@ -755,18 +762,6 @@ export async function saveTradeEvent(
   const storedJson = safeJson(storedEvent);
   const bytes = byteLength(storedJson);
 
-  if (bytes > MAX_STORED_EVENT_BYTES * 1.25) {
-    console.warn(
-      "TRADE_EVENT_STILL_LARGE_AFTER_COMPACT:",
-      JSON.stringify({
-        eventId: event.eventId,
-        eventType,
-        bytes,
-        maxBytes: MAX_STORED_EVENT_BYTES
-      })
-    );
-  }
-
   if (!hasRedis()) {
     console.warn(
       "TRADE_EVENT_STORE_USING_MEMORY_FALLBACK:",
@@ -781,7 +776,9 @@ export async function saveTradeEvent(
     return saveMemoryEvent(event);
   }
 
-  const dedupeKey = `${TRADE_DEDUPE_KEY}:${safeRedisKeyPart(event.eventId)}`;
+  const eventId = asString(event.eventId);
+  const eventKey = buildEventItemKey(eventId);
+  const dedupeKey = buildDedupeKey(eventId);
 
   const dedupeResult = await redisCommand<string | null>([
     "SET",
@@ -798,8 +795,8 @@ export async function saveTradeEvent(
       stored: false,
       deduped: true,
       persistent: true,
-      key: TRADE_EVENTS_KEY,
-      eventId: event.eventId,
+      key: TRADE_EVENTS_INDEX_KEY,
+      eventId,
       count: null,
       bytes,
       error: null
@@ -807,42 +804,49 @@ export async function saveTradeEvent(
   }
 
   try {
-    const count = await redisCommand<number>([
-      "RPUSH",
-      TRADE_EVENTS_KEY,
-      storedJson
+    await redisCommand([
+      "SET",
+      eventKey,
+      storedJson,
+      "EX",
+      String(TRADE_EVENT_TTL_SECONDS)
     ]);
 
-    await trimTradeEventsBestEffort();
+    const count = await redisCommand<number>([
+      "RPUSH",
+      TRADE_EVENTS_INDEX_KEY,
+      eventId
+    ]);
+
+    await trimTradeEventIndexBestEffort();
 
     return {
       ok: true,
       stored: true,
       deduped: false,
       persistent: true,
-      key: TRADE_EVENTS_KEY,
-      eventId: event.eventId,
+      key: TRADE_EVENTS_INDEX_KEY,
+      eventId,
       count: Number(count || 0),
       bytes,
       error: null
     };
   } catch (error) {
-    await redisCommandBestEffort(
-      ["DEL", dedupeKey],
-      "TRADE_EVENT_DEDUPE_ROLLBACK_SKIPPED"
-    );
+    await redisCommandBestEffort(["DEL", dedupeKey], "TRADE_EVENT_DEDUPE_ROLLBACK_SKIPPED");
+    await redisCommandBestEffort(["DEL", eventKey], "TRADE_EVENT_ITEM_ROLLBACK_SKIPPED");
 
     throw error;
   }
 }
 
 async function listRedisTradeEvents(): Promise<TradeEvent[]> {
-  const total = await redisCommand<number>(["LLEN", TRADE_EVENTS_KEY]);
+  const total = await redisCommand<number>(["LLEN", TRADE_EVENTS_INDEX_KEY]);
   const length = Number(total || 0);
 
   if (!length) return [];
 
-  const start = Math.max(0, length - TRADE_EVENTS_READ_ROWS);
+  const readRows = Math.min(TRADE_EVENTS_READ_ROWS, length);
+  const start = Math.max(0, length - readRows);
   const events: TradeEvent[] = [];
 
   let cursor = start;
@@ -852,18 +856,31 @@ async function listRedisTradeEvents(): Promise<TradeEvent[]> {
     const end = Math.min(length - 1, cursor + chunkSize - 1);
 
     try {
-      const rows = await redisCommand<string[]>([
+      const eventIds = await redisCommand<string[]>([
         "LRANGE",
-        TRADE_EVENTS_KEY,
+        TRADE_EVENTS_INDEX_KEY,
         String(cursor),
         String(end)
       ]);
 
-      for (const row of Array.isArray(rows) ? rows : []) {
-        const parsed = parseStoredEvent(row);
+      const ids = (Array.isArray(eventIds) ? eventIds : [])
+        .map(id => asString(id))
+        .filter(Boolean);
 
-        if (isUsableStoredEvent(parsed)) {
-          events.push(parsed);
+      if (ids.length) {
+        const itemKeys = ids.map(buildEventItemKey);
+
+        const rows = await redisCommand<Array<string | null>>([
+          "MGET",
+          ...itemKeys
+        ]);
+
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const parsed = parseStoredEvent(row);
+
+          if (isUsableStoredEvent(parsed)) {
+            events.push(parsed);
+          }
         }
       }
 
@@ -936,7 +953,7 @@ export async function getTradeEventCount(): Promise<number> {
   if (!hasRedis()) return memoryStore.filter(isUsableStoredEvent).length;
 
   try {
-    const count = await redisCommand<number>(["LLEN", TRADE_EVENTS_KEY]);
+    const count = await redisCommand<number>(["LLEN", TRADE_EVENTS_INDEX_KEY]);
     return Number(count || 0);
   } catch (error) {
     console.error(
@@ -963,10 +980,20 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
     };
   }
 
-  await redisCommandBestEffort(["DEL", TRADE_EVENTS_KEY], "TRADE_EVENTS_CLEAR_LIST_SKIPPED");
+  await redisCommandBestEffort(
+    ["DEL", TRADE_EVENTS_INDEX_KEY],
+    "TRADE_EVENTS_CLEAR_INDEX_SKIPPED"
+  );
 
-  // Oude hash-dedupe key uit eerdere versies.
-  await redisCommandBestEffort(["DEL", TRADE_DEDUPE_KEY], "TRADE_EVENTS_CLEAR_OLD_DEDUPE_SKIPPED");
+  await redisCommandBestEffort(
+    ["DEL", OLD_TRADE_EVENTS_LIST_KEY],
+    "TRADE_EVENTS_CLEAR_OLD_LIST_SKIPPED"
+  );
+
+  await redisCommandBestEffort(
+    ["DEL", OLD_TRADE_DEDUPE_KEY],
+    "TRADE_EVENTS_CLEAR_OLD_HASH_DEDUPE_SKIPPED"
+  );
 
   return {
     ok: true,
