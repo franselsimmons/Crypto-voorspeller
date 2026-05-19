@@ -40,12 +40,12 @@ const TRADE_EVENTS_MAX_ROWS = Math.max(
 
 const TRADE_EVENTS_READ_ROWS = Math.max(
   100,
-  Number(process.env.TRADE_EVENTS_READ_ROWS || 1500)
+  Number(process.env.TRADE_EVENTS_READ_ROWS || 2500)
 );
 
 const TRADE_EVENTS_READ_CHUNK_ROWS = Math.max(
   1,
-  Number(process.env.TRADE_EVENTS_READ_CHUNK_ROWS || 25)
+  Number(process.env.TRADE_EVENTS_READ_CHUNK_ROWS || 50)
 );
 
 const TRADE_DEDUPE_TTL_SECONDS = Math.max(
@@ -72,6 +72,8 @@ const memoryKey = "__TRADESYSTEM_ANALYSIS_EVENTS__";
 
 const memoryStore: TradeEvent[] =
   ((globalThis as unknown as Record<string, TradeEvent[]>)[memoryKey] ||= []);
+
+const STORED_EVENT_TYPES = new Set(["ENTRY", "EXIT", "REJECT"]);
 
 const CORE_FIELDS = new Set([
   "eventId",
@@ -255,6 +257,13 @@ function asUpper(value: unknown, fallback = ""): string {
   return asString(value, fallback).toUpperCase();
 }
 
+function asNumber(value: unknown, fallback: number | null = null): number | null {
+  if (value === null || value === undefined || value === "") return fallback;
+
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function safeJson(value: unknown, fallback = "{}"): string {
   try {
     const text = JSON.stringify(value);
@@ -323,6 +332,47 @@ function buildEventItemKey(eventId: string): string {
 
 function buildDedupeKey(eventId: string): string {
   return `${TRADE_DEDUPE_KEY_PREFIX}:${safeRedisKeyPart(eventId)}`;
+}
+
+function normalizeEventType(value: unknown): string {
+  const raw = asUpper(value, "UNKNOWN");
+
+  if (raw.includes("ENTRY")) return "ENTRY";
+  if (raw.includes("EXIT")) return "EXIT";
+  if (raw.includes("REJECT")) return "REJECT";
+  if (raw.includes("WAIT")) return "REJECT";
+  if (raw.includes("SKIP")) return "REJECT";
+  if (raw.includes("SNAPSHOT")) return "SNAPSHOT";
+  if (raw.includes("HOLD")) return "HOLD";
+  if (raw.includes("BATCH")) return "BATCH";
+
+  return raw;
+}
+
+function eventTypeOf(event: unknown): string {
+  return normalizeEventType(
+    firstValue(event, [
+      "eventType",
+      "type",
+      "action",
+      "payload.eventType",
+      "payload.type",
+      "payload.action"
+    ])
+  );
+}
+
+function eventIdOf(event: unknown): string {
+  return asString(
+    firstValue(event, [
+      "eventId",
+      "payload.eventId",
+      "id",
+      "payload.id",
+      "signalId",
+      "payload.signalId"
+    ])
+  );
 }
 
 function getRedisRestUrl(): string {
@@ -444,160 +494,165 @@ async function trimTradeEventIndexBestEffort(): Promise<void> {
 
 function compactPayload(event: TradeEvent): AnyRecord {
   return {
-    eventId: event.eventId,
-    eventType: event.eventType,
-    action: event.action,
-    source: event.source,
-    strategyVersion: event.strategyVersion,
-    runId: event.runId,
-    tradeId: event.tradeId,
+    eventId: firstValue(event, ["eventId"], null),
+    eventType: eventTypeOf(event),
+    action: firstValue(event, ["action"], eventTypeOf(event)),
+    source: firstValue(event, ["source"], null),
+    strategyVersion: firstValue(event, ["strategyVersion"], null),
+    runId: firstValue(event, ["runId"], null),
+    tradeId: firstValue(event, ["tradeId", "payload.tradeId"], null),
 
-    symbol: event.symbol,
-    rawBitgetSymbol: firstValue(event, ["rawBitgetSymbol"], null),
-    side: event.side,
-    status: firstValue(event, ["status"], null),
-    open: firstValue(event, ["open"], null),
+    symbol: firstValue(event, ["symbol", "payload.symbol"], null),
+    rawBitgetSymbol: firstValue(event, ["rawBitgetSymbol", "payload.rawBitgetSymbol"], null),
+    side: firstValue(event, ["side", "payload.side"], null),
+    status: firstValue(event, ["status", "payload.status"], null),
+    open: firstValue(event, ["open", "payload.open"], null),
 
-    reason: event.reason,
-    entryReason: firstValue(event, ["entryReason"], null),
-    exitReason: firstValue(event, ["exitReason"], null),
-    rejectReason: firstValue(event, ["rejectReason"], null),
-    cohortKey: event.cohortKey,
+    reason: firstValue(event, ["reason", "payload.reason"], null),
+    entryReason: firstValue(event, ["entryReason", "payload.entryReason", "payload.setup.entryReason"], null),
+    exitReason: firstValue(event, ["exitReason", "payload.exitReason"], null),
+    rejectReason: firstValue(event, ["rejectReason", "payload.rejectReason"], null),
+    cohortKey: firstValue(event, ["cohortKey", "payload.cohortKey"], null),
 
-    setupClass: event.setupClass,
-    grade: event.grade,
-    gradePoints: firstValue(event, ["gradePoints"], null),
-    recommendedRisk: firstValue(event, ["recommendedRisk"], null),
+    setupClass: firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"], null),
+    grade: firstValue(event, ["grade", "payload.grade", "payload.setup.grade"], null),
+    gradePoints: firstValue(event, ["gradePoints", "payload.gradePoints", "payload.setup.gradePoints"], null),
+    recommendedRisk: firstValue(event, ["recommendedRisk", "payload.recommendedRisk"], null),
 
-    entry: event.entry,
-    price: firstValue(event, ["price"], event.entry),
-    entryPrice: firstValue(event, ["entryPrice"], event.entry),
-    sl: event.sl,
-    slPrice: firstValue(event, ["slPrice"], event.sl),
-    initialSl: event.initialSl,
-    tp: event.tp,
-    tpPrice: firstValue(event, ["tpPrice"], event.tp),
-    exit: event.exit,
-    exitPrice: firstValue(event, ["exitPrice"], event.exit),
-    executionPrice: firstValue(event, ["executionPrice"], null),
-    triggerPrice: firstValue(event, ["triggerPrice"], null),
+    entry: firstValue(event, ["entry", "price", "entryPrice", "payload.entry", "payload.price"], null),
+    price: firstValue(event, ["price", "entry", "entryPrice", "payload.price", "payload.entry"], null),
+    entryPrice: firstValue(event, ["entryPrice", "entry", "price", "payload.entryPrice", "payload.entry"], null),
+    sl: firstValue(event, ["sl", "slPrice", "payload.sl"], null),
+    slPrice: firstValue(event, ["slPrice", "sl", "payload.slPrice", "payload.sl"], null),
+    initialSl: firstValue(event, ["initialSl", "payload.initialSl"], null),
+    tp: firstValue(event, ["tp", "tpPrice", "payload.tp"], null),
+    tpPrice: firstValue(event, ["tpPrice", "tp", "payload.tpPrice", "payload.tp"], null),
+    exit: firstValue(event, ["exit", "exitPrice", "executionPrice", "payload.exit"], null),
+    exitPrice: firstValue(event, ["exitPrice", "exit", "executionPrice", "payload.exitPrice"], null),
+    executionPrice: firstValue(event, ["executionPrice", "payload.executionPrice"], null),
+    triggerPrice: firstValue(event, ["triggerPrice", "payload.triggerPrice"], null),
 
-    rr: event.rr,
-    plannedRR: event.plannedRR,
-    baseRR: event.baseRR,
-    finalRr: event.finalRr,
-    finalRR: firstValue(event, ["finalRR"], event.finalRr),
-    effectiveRR: firstValue(event, ["effectiveRR"], null),
-    requiredRR: firstValue(event, ["requiredRR"], null),
-    finalRequiredRR: firstValue(event, ["finalRequiredRR"], null),
-    tpRewardMultiplier: firstValue(event, ["tpRewardMultiplier"], null),
+    rr: firstValue(event, ["rr", "payload.rr"], null),
+    plannedRR: firstValue(event, ["plannedRR", "payload.plannedRR"], null),
+    baseRR: firstValue(event, ["baseRR", "payload.baseRR", "payload.rr.baseRR"], null),
+    finalRr: firstValue(event, ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR", "payload.rr.finalRr"], null),
+    finalRR: firstValue(event, ["finalRR", "finalRr", "payload.finalRR", "payload.finalRr"], null),
+    effectiveRR: firstValue(event, ["effectiveRR", "payload.effectiveRR"], null),
+    requiredRR: firstValue(event, ["requiredRR", "payload.requiredRR", "payload.rr.requiredRR"], null),
+    finalRequiredRR: firstValue(event, ["finalRequiredRR", "payload.finalRequiredRR"], null),
+    tpRewardMultiplier: firstValue(event, ["tpRewardMultiplier", "payload.tpRewardMultiplier"], null),
 
-    exitR: event.exitR,
-    pnlPct: event.pnlPct,
-    triggerR: firstValue(event, ["triggerR"], null),
-    triggerPnlPct: firstValue(event, ["triggerPnlPct"], null),
+    exitR: firstValue(event, ["exitR", "payload.exitR", "outcome.exitR"], null),
+    pnlPct: firstValue(event, ["pnlPct", "pnl", "payload.pnlPct", "payload.pnl", "outcome.pnlPct"], null),
+    triggerR: firstValue(event, ["triggerR", "payload.triggerR"], null),
+    triggerPnlPct: firstValue(event, ["triggerPnlPct", "payload.triggerPnlPct"], null),
 
-    score: event.score,
-    moveScore: firstValue(event, ["moveScore"], event.score),
-    confluence: event.confluence,
-    rawConfluence: firstValue(event, ["rawConfluence"], null),
-    effectiveConfluence: firstValue(event, ["effectiveConfluence"], event.confluence),
-    sniper: firstValue(event, ["sniper"], null),
-    sniperScore: event.sniperScore,
-    rawSniperScore: firstValue(event, ["rawSniperScore"], null),
-    fallbackSniperScore: firstValue(event, ["fallbackSniperScore"], null),
+    score: firstValue(event, ["score", "payload.score", "payload.scores.score"], null),
+    moveScore: firstValue(event, ["moveScore", "payload.moveScore"], null),
+    confluence: firstValue(event, ["confluence", "payload.confluence", "payload.scores.confluence"], null),
+    rawConfluence: firstValue(event, ["rawConfluence", "payload.rawConfluence", "payload.scores.rawConfluence"], null),
+    effectiveConfluence: firstValue(event, ["effectiveConfluence", "payload.effectiveConfluence"], null),
+    sniper: firstValue(event, ["sniper", "payload.sniper"], null),
+    sniperScore: firstValue(event, ["sniperScore", "payload.sniperScore", "payload.scores.sniperScore"], null),
+    rawSniperScore: firstValue(event, ["rawSniperScore", "payload.rawSniperScore"], null),
+    fallbackSniperScore: firstValue(event, ["fallbackSniperScore", "payload.fallbackSniperScore"], null),
 
-    rsi: event.rsi,
-    rsiHTF: event.rsiHTF,
-    rsiZone: event.rsiZone,
-    rsiEdge: firstValue(event, ["rsiEdge"], null),
+    rsi: firstValue(event, ["rsi", "payload.rsi"], null),
+    rsiHTF: firstValue(event, ["rsiHTF", "payload.rsiHTF"], null),
+    rsiZone: firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], null),
+    rsiEdge: firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], null),
 
-    obBias: event.obBias,
-    obRelation: firstValue(event, ["obRelation"], null),
-    spreadPct: event.spreadPct,
-    spreadBps: firstValue(event, ["spreadBps"], null),
-    spreadBucket: firstValue(event, ["spreadBucket"], null),
-    depthMinUsd1p: event.depthMinUsd1p,
-    depthUsd1p: firstValue(event, ["depthUsd1p"], event.depthMinUsd1p),
-    depthBucket: firstValue(event, ["depthBucket"], null),
+    obBias: firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias", "payload.orderbook.bias"], null),
+    obRelation: firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation", "payload.orderbook.relation"], null),
+    spreadPct: firstValue(event, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"], null),
+    spreadBps: firstValue(event, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"], null),
+    spreadBucket: firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], null),
+    depthMinUsd1p: firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p", "payload.ob.depthMinUsd1p"], null),
+    depthUsd1p: firstValue(event, ["depthUsd1p", "payload.depthUsd1p"], null),
+    depthBucket: firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], null),
 
-    flow: firstValue(event, ["flow"], null),
-    funding: firstValue(event, ["funding"], null),
-    fundingBucket: firstValue(event, ["fundingBucket"], null),
-    regime: firstValue(event, ["regime"], null),
-    btcState: firstValue(event, ["btcState"], null),
-    tfStrength: firstValue(event, ["tfStrength"], null),
-    tfAlignment: firstValue(event, ["tfAlignment"], null),
-    change1h: firstValue(event, ["change1h"], null),
-    change24: firstValue(event, ["change24"], null),
+    flow: firstValue(event, ["flow", "payload.flow", "payload.market.flow"], null),
+    funding: firstValue(event, ["funding", "payload.funding", "payload.market.funding"], null),
+    fundingBucket: firstValue(event, ["fundingBucket", "payload.fundingBucket"], null),
+    regime: firstValue(event, ["regime", "payload.regime", "payload.market.regime"], null),
+    btcState: firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"], null),
+    tfStrength: firstValue(event, ["tfStrength", "payload.tfStrength", "payload.market.tfStrength"], null),
+    tfAlignment: firstValue(event, ["tfAlignment", "payload.tfAlignment", "payload.market.tfAlignment"], null),
+    change1h: firstValue(event, ["change1h", "payload.change1h", "payload.market.change1h"], null),
+    change24: firstValue(event, ["change24", "payload.change24", "payload.market.change24"], null),
 
-    currentR: event.currentR,
-    mfeR: event.mfeR,
-    maeR: event.maeR,
-    maxTpProgress: firstValue(event, ["maxTpProgress"], null),
-    maxSlProgress: firstValue(event, ["maxSlProgress"], null),
+    currentR: firstValue(event, ["currentR", "payload.currentR"], null),
+    mfeR: firstValue(event, ["mfeR", "payload.mfeR"], null),
+    maeR: firstValue(event, ["maeR", "payload.maeR"], null),
+    maxTpProgress: firstValue(event, ["maxTpProgress", "payload.maxTpProgress"], null),
+    maxSlProgress: firstValue(event, ["maxSlProgress", "payload.maxSlProgress"], null),
 
-    reachedHalfR: event.reachedHalfR,
-    reachedOneR: event.reachedOneR,
-    nearTpSeen: event.nearTpSeen,
-    directToSL: event.directToSL,
-    slAfterHalfR: firstValue(event, ["slAfterHalfR"], null),
-    slAfterOneR: firstValue(event, ["slAfterOneR"], null),
-    slAfterNearTp: firstValue(event, ["slAfterNearTp"], null),
+    reachedHalfR: firstValue(event, ["reachedHalfR", "payload.reachedHalfR"], null),
+    reachedOneR: firstValue(event, ["reachedOneR", "payload.reachedOneR"], null),
+    nearTpSeen: firstValue(event, ["nearTpSeen", "payload.nearTpSeen"], null),
+    directToSL: firstValue(event, ["directToSL", "payload.directToSL"], null),
+    slAfterHalfR: firstValue(event, ["slAfterHalfR", "payload.slAfterHalfR"], null),
+    slAfterOneR: firstValue(event, ["slAfterOneR", "payload.slAfterOneR"], null),
+    slAfterNearTp: firstValue(event, ["slAfterNearTp", "payload.slAfterNearTp"], null),
 
-    breakEvenActivated: event.breakEvenActivated,
-    breakEvenStop: event.breakEvenStop,
-    breakEvenSl: firstValue(event, ["breakEvenSl"], null),
-    slBeforeBreakEven: firstValue(event, ["slBeforeBreakEven"], null),
+    breakEvenActivated: firstValue(event, ["breakEvenActivated", "payload.breakEvenActivated"], null),
+    breakEvenStop: firstValue(event, ["breakEvenStop", "payload.breakEvenStop"], null),
+    breakEvenSl: firstValue(event, ["breakEvenSl", "payload.breakEvenSl"], null),
+    slBeforeBreakEven: firstValue(event, ["slBeforeBreakEven", "payload.slBeforeBreakEven"], null),
 
-    ticksObserved: firstValue(event, ["ticksObserved"], null),
-    favorableTicks: firstValue(event, ["favorableTicks"], null),
-    adverseTicks: firstValue(event, ["adverseTicks"], null),
-    neutralTicks: firstValue(event, ["neutralTicks"], null),
+    ticksObserved: firstValue(event, ["ticksObserved", "payload.ticksObserved"], null),
+    favorableTicks: firstValue(event, ["favorableTicks", "payload.favorableTicks"], null),
+    adverseTicks: firstValue(event, ["adverseTicks", "payload.adverseTicks"], null),
+    neutralTicks: firstValue(event, ["neutralTicks", "payload.neutralTicks"], null),
 
-    stage: firstValue(event, ["stage"], null),
-    scannerStage: firstValue(event, ["scannerStage"], null),
-    stageSource: firstValue(event, ["stageSource"], null),
+    stage: firstValue(event, ["stage", "payload.stage"], null),
+    scannerStage: firstValue(event, ["scannerStage", "payload.scannerStage"], null),
+    stageSource: firstValue(event, ["stageSource", "payload.stageSource"], null),
 
-    ts: event.ts,
-    createdAt: firstValue(event, ["createdAt"], event.ts),
-    receivedAt: event.receivedAt
+    ts: firstValue(event, ["ts", "payload.ts"], Date.now()),
+    createdAt: firstValue(event, ["createdAt", "payload.createdAt", "ts"], Date.now()),
+    receivedAt: firstValue(event, ["receivedAt", "payload.receivedAt"], Date.now())
   };
 }
 
 function buildCohortKey(event: TradeEvent): string {
   return [
-    `SETUP=${asUpper(firstValue(event, ["setupClass"]), "UNKNOWN")}`,
-    `SIDE=${asString(firstValue(event, ["side"]), "unknown")}`,
-    `REASON=${asUpper(firstValue(event, ["entryReason", "reason"]), "UNKNOWN")}`,
-    `RSI=${asUpper(firstValue(event, ["rsiZone"]), "UNKNOWN")}`,
-    `EDGE=${asUpper(firstValue(event, ["rsiEdge"]), "UNKNOWN")}`,
-    `FLOW=${asUpper(firstValue(event, ["flow"]), "UNKNOWN")}`,
-    `BTC=${asUpper(firstValue(event, ["btcState"]), "UNKNOWN")}`,
-    `OB=${asUpper(firstValue(event, ["obRelation", "obBias"]), "UNKNOWN")}`
+    `SETUP=${asUpper(firstValue(event, ["setupClass", "payload.setupClass"]), "UNKNOWN")}`,
+    `SIDE=${asString(firstValue(event, ["side", "payload.side"]), "unknown")}`,
+    `REASON=${asUpper(firstValue(event, ["entryReason", "reason", "payload.entryReason", "payload.reason"]), "UNKNOWN")}`,
+    `RSI=${asUpper(firstValue(event, ["rsiZone", "payload.rsiZone"]), "UNKNOWN")}`,
+    `EDGE=${asUpper(firstValue(event, ["rsiEdge", "payload.rsiEdge"]), "UNKNOWN")}`,
+    `FLOW=${asUpper(firstValue(event, ["flow", "payload.flow"]), "UNKNOWN")}`,
+    `BTC=${asUpper(firstValue(event, ["btcState", "payload.btcState"]), "UNKNOWN")}`,
+    `OB=${asUpper(firstValue(event, ["obRelation", "obBias", "payload.obRelation", "payload.obBias"]), "UNKNOWN")}`
   ].join("|");
 }
 
 function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
   const event = input as TradeEvent;
+  const eventId = eventIdOf(event);
+  const eventType = eventTypeOf(event);
 
   const payloadSeed =
-    asString(event.rawJson) ||
-    asString(event.payloadJson) ||
-    safeJson(event.payload);
+    asString(firstValue(event, ["rawJson"])) ||
+    asString(firstValue(event, ["payloadJson"])) ||
+    safeJson(firstValue(event, ["payload"], {}));
 
   const payloadHash =
     asString(firstValue(event, ["payloadHash"])) ||
-    hashString(`${event.eventId}|${payloadSeed}`);
+    hashString(`${eventId}|${payloadSeed}`);
 
-  const compact: TradeEvent = {
-    ...event,
+  const record: AnyRecord = {
+    ...compactPayload(event),
+
+    eventId,
+    eventType,
+    action: asUpper(firstValue(event, ["action"], eventType), eventType),
 
     cohortKey:
-      asString(firstValue(event, ["cohortKey"])) ||
+      asString(firstValue(event, ["cohortKey", "payload.cohortKey"])) ||
       buildCohortKey(event),
 
-    payload: compactPayload(event),
     rawJson: "{}",
     payloadJson: "{}",
 
@@ -605,19 +660,18 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
     storedCompact: true
   };
 
-  const record = compact as AnyRecord;
-
   for (const key of HEAVY_FIELDS) {
     if (key in record) {
       delete record[key];
     }
   }
 
-  record.payload = compactPayload(compact);
+  record.payload = compactPayload(record as TradeEvent);
   record.rawJson = "{}";
   record.payloadJson = "{}";
 
   let json = safeJson(record);
+
   if (byteLength(json) <= MAX_STORED_EVENT_BYTES) {
     return record as TradeEvent;
   }
@@ -631,6 +685,7 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
   }
 
   json = safeJson(record);
+
   if (byteLength(json) <= MAX_STORED_EVENT_BYTES) {
     return record as TradeEvent;
   }
@@ -643,6 +698,10 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
     }
   }
 
+  minimal.eventId = eventId;
+  minimal.eventType = eventType;
+  minimal.action = eventType;
+  minimal.cohortKey = asString(record.cohortKey) || buildCohortKey(record as TradeEvent);
   minimal.payload = compactPayload(record as TradeEvent);
   minimal.rawJson = "{}";
   minimal.payloadJson = "{}";
@@ -674,28 +733,27 @@ function parseStoredEvent(value: unknown): TradeEvent | null {
 
 function isUsableStoredEvent(event: TradeEvent | null): event is TradeEvent {
   if (!event) return false;
-  if (!asString(event.eventId)) return false;
+  if (!eventIdOf(event)) return false;
 
-  const eventType = asUpper(event.eventType || event.action || event.type);
-
-  if (eventType === "BATCH") return false;
-  if (eventType === "UNKNOWN") return false;
-
-  return ["ENTRY", "EXIT", "REJECT", "SNAPSHOT", "HOLD"].includes(eventType);
+  return STORED_EVENT_TYPES.has(eventTypeOf(event));
 }
 
 function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
   return [...events].sort((a, b) => {
-    const tsDiff = Number(a.ts || 0) - Number(b.ts || 0);
+    const ta = asNumber(firstValue(a, ["ts", "createdAt", "receivedAt", "storedAt"]), 0) || 0;
+    const tb = asNumber(firstValue(b, ["ts", "createdAt", "receivedAt", "storedAt"]), 0) || 0;
+
+    const tsDiff = ta - tb;
     if (tsDiff !== 0) return tsDiff;
 
-    return asString(a.eventId).localeCompare(asString(b.eventId));
+    return eventIdOf(a).localeCompare(eventIdOf(b));
   });
 }
 
 function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
   const compact = compactTradeEvent(event);
-  const exists = memoryStore.some(row => row.eventId === compact.eventId);
+  const eventId = eventIdOf(compact);
+  const exists = memoryStore.some(row => eventIdOf(row) === eventId);
 
   if (exists) {
     return {
@@ -704,7 +762,7 @@ function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
       deduped: true,
       persistent: false,
       key: "memory",
-      eventId: compact.eventId,
+      eventId,
       count: memoryStore.length,
       bytes: byteLength(compact),
       error: null
@@ -723,7 +781,7 @@ function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
     deduped: false,
     persistent: false,
     key: "memory",
-    eventId: compact.eventId,
+    eventId,
     count: memoryStore.length,
     bytes: byteLength(compact),
     error: null
@@ -733,29 +791,34 @@ function saveMemoryEvent(event: NormalizedWebhookEvent): SaveTradeEventResult {
 export async function saveTradeEvent(
   event: NormalizedWebhookEvent
 ): Promise<SaveTradeEventResult> {
-  if (!event?.eventId) {
+  const eventId = eventIdOf(event);
+
+  if (!eventId) {
     throw new Error("TRADE_EVENT_EVENT_ID_MISSING");
   }
 
-  const eventType = asUpper(event.eventType || event.action);
+  const eventType = eventTypeOf(event);
 
-  if (eventType === "BATCH") {
+  if (!STORED_EVENT_TYPES.has(eventType)) {
     return {
       ok: true,
       stored: false,
       deduped: false,
       persistent: hasRedis(),
       key: hasRedis() ? TRADE_EVENTS_INDEX_KEY : "memory",
-      eventId: event.eventId,
+      eventId,
       count: null,
       bytes: 0,
-      error: "BATCH_EVENT_SKIPPED"
+      error: `EVENT_TYPE_SKIPPED_${eventType}`
     };
   }
 
   const compact = compactTradeEvent(event);
   const storedEvent = {
     ...compact,
+    eventId,
+    eventType,
+    action: eventType,
     storedAt: Date.now()
   };
 
@@ -767,7 +830,7 @@ export async function saveTradeEvent(
       "TRADE_EVENT_STORE_USING_MEMORY_FALLBACK:",
       JSON.stringify({
         reason: "REDIS_ENV_MISSING_OR_NOT_REST_URL",
-        eventId: event.eventId,
+        eventId,
         hasUrl: Boolean(getRedisRestUrl()),
         hasToken: Boolean(getRedisToken())
       })
@@ -776,7 +839,6 @@ export async function saveTradeEvent(
     return saveMemoryEvent(event);
   }
 
-  const eventId = asString(event.eventId);
   const eventKey = buildEventItemKey(eventId);
   const dedupeKey = buildDedupeKey(eventId);
 
@@ -848,6 +910,7 @@ async function listRedisTradeEvents(): Promise<TradeEvent[]> {
   const readRows = Math.min(TRADE_EVENTS_READ_ROWS, length);
   const start = Math.max(0, length - readRows);
   const events: TradeEvent[] = [];
+  const seen = new Set<string>();
 
   let cursor = start;
   let chunkSize = TRADE_EVENTS_READ_CHUNK_ROWS;
@@ -865,7 +928,12 @@ async function listRedisTradeEvents(): Promise<TradeEvent[]> {
 
       const ids = (Array.isArray(eventIds) ? eventIds : [])
         .map(id => asString(id))
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter(id => {
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
 
       if (ids.length) {
         const itemKeys = ids.map(buildEventItemKey);
@@ -918,8 +986,7 @@ async function listRedisTradeEvents(): Promise<TradeEvent[]> {
         })
       );
 
-      cursor = end + 1;
-      chunkSize = TRADE_EVENTS_READ_CHUNK_ROWS;
+      throw error;
     }
   }
 
@@ -935,13 +1002,14 @@ export async function listTradeEvents(): Promise<TradeEvent[]> {
     return await listRedisTradeEvents();
   } catch (error) {
     console.error(
-      "TRADE_EVENTS_LIST_REDIS_FAILED:",
+      "TRADE_EVENTS_LIST_REDIS_FAILED_NO_MEMORY_FALLBACK:",
       JSON.stringify({
+        key: TRADE_EVENTS_INDEX_KEY,
         reason: error instanceof Error ? error.message : String(error)
       })
     );
 
-    return sortEventsAsc(memoryStore.filter(isUsableStoredEvent));
+    return [];
   }
 }
 
@@ -957,13 +1025,65 @@ export async function getTradeEventCount(): Promise<number> {
     return Number(count || 0);
   } catch (error) {
     console.error(
-      "TRADE_EVENT_COUNT_REDIS_FAILED:",
+      "TRADE_EVENT_COUNT_REDIS_FAILED_NO_MEMORY_FALLBACK:",
       JSON.stringify({
+        key: TRADE_EVENTS_INDEX_KEY,
         reason: error instanceof Error ? error.message : String(error)
       })
     );
 
-    return memoryStore.filter(isUsableStoredEvent).length;
+    return 0;
+  }
+}
+
+async function scanDeleteKeys(pattern: string): Promise<number> {
+  if (!hasRedis()) return 0;
+
+  let cursor = "0";
+  let deleted = 0;
+
+  do {
+    const result = await redisCommand<[string, string[]]>([
+      "SCAN",
+      cursor,
+      "MATCH",
+      pattern,
+      "COUNT",
+      "1000"
+    ]);
+
+    cursor = asString(result?.[0], "0");
+
+    const keys = Array.isArray(result?.[1])
+      ? result[1].map(key => asString(key)).filter(Boolean)
+      : [];
+
+    for (let i = 0; i < keys.length; i += 250) {
+      const chunk = keys.slice(i, i + 250);
+
+      if (!chunk.length) continue;
+
+      const removed = await redisCommand<number>(["DEL", ...chunk]);
+      deleted += Number(removed || 0);
+    }
+  } while (cursor !== "0");
+
+  return deleted;
+}
+
+async function scanDeleteKeysBestEffort(pattern: string, label: string): Promise<number> {
+  try {
+    return await scanDeleteKeys(pattern);
+  } catch (error) {
+    console.warn(
+      label,
+      JSON.stringify({
+        pattern,
+        reason: error instanceof Error ? error.message : String(error)
+      })
+    );
+
+    return 0;
   }
 }
 
@@ -993,6 +1113,21 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
   await redisCommandBestEffort(
     ["DEL", OLD_TRADE_DEDUPE_KEY],
     "TRADE_EVENTS_CLEAR_OLD_HASH_DEDUPE_SKIPPED"
+  );
+
+  await scanDeleteKeysBestEffort(
+    `${TRADE_EVENT_ITEM_PREFIX}:*`,
+    "TRADE_EVENTS_CLEAR_ITEMS_SKIPPED"
+  );
+
+  await scanDeleteKeysBestEffort(
+    `${TRADE_DEDUPE_KEY_PREFIX}:*`,
+    "TRADE_EVENTS_CLEAR_DEDUPE_SKIPPED"
+  );
+
+  await scanDeleteKeysBestEffort(
+    `${OLD_TRADE_DEDUPE_KEY}:*`,
+    "TRADE_EVENTS_CLEAR_OLD_DEDUPE_KEYS_SKIPPED"
   );
 
   return {
