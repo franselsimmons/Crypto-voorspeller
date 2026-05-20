@@ -1,11 +1,11 @@
 export type TradeEvent = Record<string, any>;
 
-const MAX_READ_EVENTS = Number(process.env.MAX_READ_TRADE_EVENTS || 5000);
+const MAX_STORED_ACTIONS = 5000;
 
-const ACTION_LIST_KEYS = [
-  "tradesystem:analysis:actions:list",
-  "analysis:actions:list",
-  "ts:actions:list"
+const LATEST_KEYS = [
+  "tradesystem:analysis:latest",
+  "analysis:latest",
+  "ts:latest"
 ];
 
 const ACTION_KEYS = [
@@ -14,11 +14,12 @@ const ACTION_KEYS = [
   "ts:actions"
 ];
 
-const LATEST_KEYS = [
-  "tradesystem:analysis:latest",
-  "analysis:latest",
-  "ts:latest"
-];
+type ClearTradeEventsResult = {
+  ok: boolean;
+  redis: boolean;
+  deleted: number;
+  keys: string[];
+};
 
 function getRedisUrl(): string {
   return (
@@ -36,17 +37,53 @@ function getRedisToken(): string {
   );
 }
 
-function hasRedis(): boolean {
+export function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+async function redisCommand<T = any>(command: unknown[]): Promise<T> {
+  const url = getRedisUrl();
+  const token = getRedisToken();
+
+  if (!url || !token) {
+    throw new Error("redis_env_missing");
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(command),
+    cache: "no-store"
+  });
+
+  const text = await res.text();
+
+  let json: any = null;
+
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok || json?.error) {
+    throw new Error(json?.error || text || `redis_error_${res.status}`);
+  }
+
+  return json?.result as T;
+}
+
+function isRecord(value: unknown): value is TradeEvent {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function safeJsonParse(value: unknown): any {
+function safeJsonParse(value: unknown): unknown {
   if (!value) return null;
-  if (typeof value !== "string") return value;
+  if (isRecord(value) || Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
 
   try {
     return JSON.parse(value);
@@ -55,204 +92,263 @@ function safeJsonParse(value: unknown): any {
   }
 }
 
-async function redisCommand(command: unknown[], timeoutMs = 10_000): Promise<any> {
-  const url = getRedisUrl();
-  const token = getRedisToken();
+function readPath(obj: unknown, path: string): unknown {
+  if (!isRecord(obj)) return undefined;
 
-  if (!url || !token) {
-    throw new Error("redis_env_missing");
+  const parts = path.split(".");
+  let current: unknown = obj;
+
+  for (const part of parts) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(command),
-      signal: controller.signal,
-      cache: "no-store"
-    });
-
-    const text = await res.text();
-
-    let json: any = null;
-
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = null;
-    }
-
-    if (!res.ok || json?.error) {
-      throw new Error(json?.error || text || `redis_error_${res.status}`);
-    }
-
-    return json?.result;
-  } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error("redis_fetch_aborted");
-    }
-
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  return current;
 }
 
-function eventTime(event: TradeEvent): number {
-  const raw =
-    event.ts ??
-    event.createdAt ??
-    event.receivedAt ??
-    event.storedAt ??
-    event.payload?.ts ??
-    event.payload?.createdAt ??
-    event.payload?.receivedAt;
+function firstValue(obj: unknown, paths: string[], fallback: unknown = null): unknown {
+  for (const path of paths) {
+    const value = readPath(obj, path);
 
-  const n = Number(raw);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
 
-  if (Number.isFinite(n) && n > 1_000_000_000_000) return n;
-  if (Number.isFinite(n) && n > 1_000_000_000) return n * 1000;
+  return fallback;
+}
 
-  const parsed = Date.parse(String(raw || ""));
-  return Number.isFinite(parsed) ? parsed : 0;
+function mergePayloads(record: TradeEvent): TradeEvent {
+  const payload = safeJsonParse(record.payload);
+  const payloadJson = safeJsonParse(record.payloadJson);
+  const rawJson = safeJsonParse(record.rawJson);
+
+  return {
+    ...(isRecord(payload) ? payload : {}),
+    ...(isRecord(payloadJson) ? payloadJson : {}),
+    ...(isRecord(rawJson) ? rawJson : {}),
+    ...record
+  };
+}
+
+function extractTradeEvents(input: unknown, depth = 0): TradeEvent[] {
+  if (depth > 5) return [];
+
+  const parsed = safeJsonParse(input) ?? input;
+
+  if (Array.isArray(parsed)) {
+    return parsed.flatMap(item => extractTradeEvents(item, depth + 1));
+  }
+
+  if (!isRecord(parsed)) return [];
+
+  const nested = firstValue(parsed, [
+    "actions",
+    "data",
+    "events",
+    "items",
+    "result",
+    "payload.actions",
+    "payload.data",
+    "payload.events",
+    "payload.items"
+  ]);
+
+  if (Array.isArray(nested)) {
+    return nested.flatMap(item => extractTradeEvents(item, depth + 1));
+  }
+
+  return [mergePayloads(parsed)];
 }
 
 function eventDedupeKey(event: TradeEvent): string {
-  return String(
+  const eventId =
     event.eventId ||
-      event.payloadHash ||
-      `${event.tradeId || event.id || event.signalId || "no_trade"}:${event.eventType || event.type || event.action || "no_type"}:${eventTime(event)}:${event.reason || ""}`
-  );
-}
+    event.payload?.eventId ||
+    event.payloadHash ||
+    event.tradeId ||
+    event.id ||
+    event.signalId;
 
-function normalizeParsedEvent(value: unknown): TradeEvent | null {
-  const parsed = safeJsonParse(value);
+  if (eventId) return String(eventId);
 
-  if (!isRecord(parsed)) return null;
-
-  return parsed;
-}
-
-function extractEventsFromLegacyValue(value: unknown): TradeEvent[] {
-  const parsed = safeJsonParse(value);
-
-  if (Array.isArray(parsed)) {
-    return parsed
-      .map(normalizeParsedEvent)
-      .filter((event): event is TradeEvent => Boolean(event));
-  }
-
-  if (Array.isArray(parsed?.actions)) {
-    return parsed.actions
-      .map(normalizeParsedEvent)
-      .filter((event: TradeEvent | null): event is TradeEvent => Boolean(event));
-  }
-
-  if (Array.isArray(parsed?.events)) {
-    return parsed.events
-      .map(normalizeParsedEvent)
-      .filter((event: TradeEvent | null): event is TradeEvent => Boolean(event));
-  }
-
-  if (isRecord(parsed) && (parsed.eventType || parsed.action || parsed.tradeId || parsed.symbol)) {
-    return [parsed];
-  }
-
-  return [];
-}
-
-async function readListKey(key: string): Promise<TradeEvent[]> {
-  const result = await redisCommand(["LRANGE", key, 0, -1]).catch(() => null);
-
-  if (!Array.isArray(result)) return [];
-
-  return result
-    .map(normalizeParsedEvent)
-    .filter((event): event is TradeEvent => Boolean(event));
-}
-
-async function readLegacyKey(key: string): Promise<TradeEvent[]> {
-  const result = await redisCommand(["GET", key]).catch(() => null);
-  return extractEventsFromLegacyValue(result);
-}
-
-async function readLatestKey(key: string): Promise<TradeEvent[]> {
-  const result = await redisCommand(["GET", key]).catch(() => null);
-  const parsed = safeJsonParse(result);
-
-  if (Array.isArray(parsed?.actions)) {
-    return parsed.actions
-      .map(normalizeParsedEvent)
-      .filter((event: TradeEvent | null): event is TradeEvent => Boolean(event));
-  }
-
-  return [];
-}
-
-async function readFirstNonEmpty(
-  keys: string[],
-  reader: (key: string) => Promise<TradeEvent[]>
-): Promise<TradeEvent[]> {
-  for (const key of keys) {
-    const events = await reader(key);
-
-    if (events.length > 0) {
-      return events;
-    }
-  }
-
-  return [];
+  return [
+    event.strategyVersion || event.payload?.strategyVersion || "v",
+    event.runId || event.payload?.runId || "run",
+    event.eventType || event.type || event.action || event.payload?.eventType || "type",
+    event.symbol || event.payload?.symbol || "symbol",
+    event.side || event.payload?.side || "side",
+    event.ts || event.createdAt || event.receivedAt || event.payload?.ts || "ts"
+  ].join("|");
 }
 
 function dedupeEvents(events: TradeEvent[]): TradeEvent[] {
-  const map = new Map<string, TradeEvent>();
+  const seen = new Set<string>();
+  const result: TradeEvent[] = [];
 
   for (const event of events) {
     const key = eventDedupeKey(event);
 
-    if (!key) continue;
+    if (seen.has(key)) continue;
 
-    map.set(key, event);
+    seen.add(key);
+    result.push(event);
   }
 
-  return Array.from(map.values());
+  return result;
 }
 
-export async function listTradeEvents(): Promise<TradeEvent[]> {
+async function readRedisList(key: string): Promise<TradeEvent[]> {
+  const raw = await redisCommand<unknown[]>(["LRANGE", key, 0, -1]).catch(() => []);
+
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap(item => extractTradeEvents(item));
+}
+
+async function readRedisJsonKey(key: string): Promise<TradeEvent[]> {
+  const raw = await redisCommand<unknown>(["GET", key]).catch(() => null);
+
+  if (!raw) return [];
+
+  return extractTradeEvents(raw);
+}
+
+export async function listTradeEvents(limit = MAX_STORED_ACTIONS): Promise<TradeEvent[]> {
   if (!hasRedis()) return [];
 
-  const [listEvents, legacyEvents, latestEvents] = await Promise.all([
-    readFirstNonEmpty(ACTION_LIST_KEYS, readListKey),
-    readFirstNonEmpty(ACTION_KEYS, readLegacyKey),
-    readFirstNonEmpty(LATEST_KEYS, readLatestKey)
-  ]);
+  for (const key of ACTION_KEYS) {
+    const events = await readRedisList(key);
 
-  const merged = dedupeEvents([
-    ...legacyEvents,
-    ...latestEvents,
-    ...listEvents
-  ]);
-
-  return merged
-    .sort((a, b) => eventTime(a) - eventTime(b))
-    .slice(-MAX_READ_EVENTS);
-}
-
-export async function getLatestTradeAnalysis(): Promise<any | null> {
-  if (!hasRedis()) return null;
-
-  for (const key of LATEST_KEYS) {
-    const result = await redisCommand(["GET", key]).catch(() => null);
-    const parsed = safeJsonParse(result);
-
-    if (parsed) return parsed;
+    if (events.length) {
+      return dedupeEvents(events).slice(-limit);
+    }
   }
 
-  return null;
+  for (const key of ACTION_KEYS) {
+    const events = await readRedisJsonKey(key);
+
+    if (events.length) {
+      return dedupeEvents(events).slice(-limit);
+    }
+  }
+
+  for (const key of LATEST_KEYS) {
+    const events = await readRedisJsonKey(key);
+
+    if (events.length) {
+      return dedupeEvents(events).slice(-limit);
+    }
+  }
+
+  return [];
 }
+
+export async function appendTradeEvents(input: TradeEvent | TradeEvent[]): Promise<{
+  ok: boolean;
+  redis: boolean;
+  received: number;
+  storedTotal: number;
+}> {
+  const events = Array.isArray(input) ? input : [input];
+
+  if (!events.length) {
+    return {
+      ok: true,
+      redis: hasRedis(),
+      received: 0,
+      storedTotal: 0
+    };
+  }
+
+  if (!hasRedis()) {
+    return {
+      ok: false,
+      redis: false,
+      received: events.length,
+      storedTotal: 0
+    };
+  }
+
+  const now = Date.now();
+
+  const normalized = events.map(event => ({
+    ...event,
+    storedAt: event.storedAt || now,
+    receivedAt: event.receivedAt || now
+  }));
+
+  const payloads = normalized.map(event => JSON.stringify(event));
+
+  await redisCommand(["RPUSH", ACTION_KEYS[0], ...payloads]);
+  await redisCommand(["LTRIM", ACTION_KEYS[0], -MAX_STORED_ACTIONS, -1]);
+
+  const latestPayload = {
+    ok: true,
+    storage: "redis-list",
+    receivedAt: now,
+    count: normalized.length,
+    actions: normalized
+  };
+
+  await Promise.all([
+    ...LATEST_KEYS.map(key =>
+      redisCommand(["SET", key, JSON.stringify(latestPayload)]).catch(() => null)
+    ),
+    ...ACTION_KEYS.slice(1).map(key =>
+      redisCommand(["SET", key, JSON.stringify(normalized)]).catch(() => null)
+    )
+  ]);
+
+  const storedTotal = await redisCommand<number>(["LLEN", ACTION_KEYS[0]]).catch(() => 0);
+
+  return {
+    ok: true,
+    redis: true,
+    received: normalized.length,
+    storedTotal: Number(storedTotal || 0)
+  };
+}
+
+export async function clearTradeEvents(): Promise<ClearTradeEventsResult> {
+  const keys = Array.from(new Set([...ACTION_KEYS, ...LATEST_KEYS]));
+
+  if (!hasRedis()) {
+    return {
+      ok: true,
+      redis: false,
+      deleted: 0,
+      keys
+    };
+  }
+
+  const deleted = await redisCommand<number>(["DEL", ...keys]).catch(() => 0);
+
+  return {
+    ok: true,
+    redis: true,
+    deleted: Number(deleted || 0),
+    keys
+  };
+}
+
+export async function getLatestTradeEvents(): Promise<TradeEvent[]> {
+  if (!hasRedis()) return [];
+
+  for (const key of LATEST_KEYS) {
+    const events = await readRedisJsonKey(key);
+
+    if (events.length) {
+      return dedupeEvents(events);
+    }
+  }
+
+  return [];
+}
+
+// Backwards-compatible aliases.
+export const addTradeEvents = appendTradeEvents;
+export const saveTradeEvents = appendTradeEvents;
+export const storeTradeEvents = appendTradeEvents;
+export const getTradeEvents = listTradeEvents;
+export const resetTradeEvents = clearTradeEvents;
