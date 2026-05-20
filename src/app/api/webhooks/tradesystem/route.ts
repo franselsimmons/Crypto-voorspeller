@@ -1,352 +1,211 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import {
-  normalizeWebhookBody,
-  type WebhookRecord,
-  type NormalizedWebhookEvent
-} from "@/lib/normalize";
-
-import { saveTradeEvent } from "@/lib/store";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type AnyRecord = Record<string, unknown>;
 
 const WEBHOOK_SECRET =
   process.env.ANALYSIS_WEBHOOK_SECRET ||
   process.env.WEBHOOK_SECRET ||
-  process.env.TRADE_WEBHOOK_SECRET ||
-  "";
+  "090117";
 
-function isRecord(value: unknown): value is AnyRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+const MAX_STORED_ACTIONS = 5000;
+
+const LATEST_KEYS = [
+  "tradesystem:analysis:latest",
+  "analysis:latest",
+  "ts:latest"
+];
+
+const ACTION_KEYS = [
+  "tradesystem:analysis:actions",
+  "analysis:actions",
+  "ts:actions"
+];
+
+function getRedisUrl() {
+  return (
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    ""
+  );
 }
 
-function safeString(value: unknown, fallback = ""): string {
-  if (value === null || value === undefined) return fallback;
-
-  const text = String(value).trim();
-
-  return text || fallback;
+function getRedisToken() {
+  return (
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    ""
+  );
 }
 
-function safeUpper(value: unknown, fallback = ""): string {
-  return safeString(value, fallback).toUpperCase();
+function hasRedis() {
+  return Boolean(getRedisUrl() && getRedisToken());
 }
 
-function parseJson(text: string): unknown {
-  if (!text) return {};
+async function redisCommand(command: unknown[]) {
+  const url = getRedisUrl();
+  const token = getRedisToken();
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
+  if (!url || !token) {
+    throw new Error("redis_env_missing");
   }
-}
 
-function parseNestedJsonObject(value: unknown): AnyRecord | null {
-  if (isRecord(value)) return value;
-  if (typeof value !== "string") return null;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(command)
+  });
+
+  const text = await res.text();
+
+  let json: any = null;
 
   try {
-    const parsed = JSON.parse(value);
+    json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
 
-    return isRecord(parsed) ? parsed : null;
+  if (!res.ok || json?.error) {
+    throw new Error(json?.error || text || `redis_error_${res.status}`);
+  }
+
+  return json?.result;
+}
+
+function safeJsonParse(value: unknown) {
+  if (!value) return null;
+  if (typeof value !== "string") return value;
+
+  try {
+    return JSON.parse(value);
   } catch {
     return null;
   }
 }
 
-function readAuthSecret(req: NextRequest): string {
-  const bearer = req.headers.get("authorization") || "";
+async function redisGetJson<T>(key: string, fallback: T): Promise<T> {
+  const raw = await redisCommand(["GET", key]).catch(() => null);
+  const parsed = safeJsonParse(raw);
 
-  if (bearer.toLowerCase().startsWith("bearer ")) {
-    return bearer.slice(7).trim();
-  }
-
-  return (
-    req.headers.get("x-analysis-webhook-secret") ||
-    req.headers.get("x-webhook-secret") ||
-    req.headers.get("x-trade-webhook-secret") ||
-    ""
-  ).trim();
+  return parsed ?? fallback;
 }
 
-function isAuthorized(req: NextRequest): boolean {
-  if (!WEBHOOK_SECRET) return true;
-
-  return readAuthSecret(req) === WEBHOOK_SECRET;
+async function redisSetJson(key: string, value: unknown) {
+  return redisCommand(["SET", key, JSON.stringify(value)]);
 }
 
-function getFirstArray(body: AnyRecord): unknown[] | null {
-  const candidates = [
-    body.rows,
-    body.actions,
-    body.data,
-    body.events,
-    body.items
-  ];
+function extractActions(body: any) {
+  if (Array.isArray(body)) return body;
+  if (Array.isArray(body?.actions)) return body.actions;
+  if (Array.isArray(body?.data)) return body.data;
+  if (Array.isArray(body?.payload?.actions)) return body.payload.actions;
 
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate) && candidate.length > 0) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return [];
 }
 
-function getNestedBatchRows(body: AnyRecord): unknown[] | null {
-  const payloadJson = parseNestedJsonObject(body.payloadJson);
-  const rawJson = parseNestedJsonObject(body.rawJson);
-  const payload = parseNestedJsonObject(body.payload);
-
-  const nestedObjects = [payloadJson, rawJson, payload].filter(Boolean) as AnyRecord[];
-
-  for (const nested of nestedObjects) {
-    const rows = getFirstArray(nested);
-
-    if (rows?.length) return rows;
-  }
-
-  return null;
-}
-
-function isBatchPayload(body: AnyRecord): boolean {
-  const eventType = safeUpper(body.eventType || body.type || body.action);
-
-  if (eventType === "BATCH") return true;
-
-  return Boolean(
-    Array.isArray(body.rows) ||
-      Array.isArray(body.actions) ||
-      Array.isArray(body.data) ||
-      Array.isArray(body.events) ||
-      Array.isArray(body.items)
-  );
-}
-
-function getRowsFromRequestBody(parsed: unknown): AnyRecord[] {
-  if (Array.isArray(parsed)) {
-    return parsed.filter(isRecord);
-  }
-
-  if (!isRecord(parsed)) {
-    return [];
-  }
-
-  if (!isBatchPayload(parsed)) {
-    return [parsed];
-  }
-
-  const rows = getFirstArray(parsed) || getNestedBatchRows(parsed) || [];
-
-  return rows.filter(isRecord);
-}
-
-function enrichRowWithBatchMeta(row: AnyRecord, batch: unknown): WebhookRecord {
-  if (!isRecord(batch)) {
-    return row as WebhookRecord;
-  }
-
-  const rowEventType = safeUpper(row.eventType || row.type || row.action);
-  const rowAction = safeUpper(row.action || row.eventType || row.type);
-
+function normalizeAction(action: any, meta: any) {
   return {
-    source: row.source || batch.source || "tradesystem",
-    runId: row.runId || batch.runId || null,
-    strategyVersion: row.strategyVersion || batch.strategyVersion || "UNKNOWN",
-
-    btcState: row.btcState || batch.btcState || "UNKNOWN",
-    regime: row.regime || batch.regime || "UNKNOWN",
-    discoveryMode: row.discoveryMode ?? batch.discoveryMode ?? false,
-
-    ...row,
-
-    eventType: rowEventType || rowAction || "SNAPSHOT",
-    action: rowAction || rowEventType || "SNAPSHOT"
+    ...action,
+    receivedAt: Date.now(),
+    runId: meta?.runId || action?.runId || null,
+    strategyVersion: meta?.strategyVersion || action?.strategyVersion || null,
+    btcState: meta?.btcState || action?.btcState || null
   };
 }
 
-function isWrapperEvent(event: NormalizedWebhookEvent): boolean {
-  const type = safeUpper(event.eventType || event.action);
+function checkSecret(req: NextRequest) {
+  const urlSecret = req.nextUrl.searchParams.get("secret");
+  const headerSecret = req.headers.get("x-webhook-secret");
 
-  return type === "BATCH";
+  return urlSecret === WEBHOOK_SECRET || headerSecret === WEBHOOK_SECRET;
 }
 
-function countByEventType(events: NormalizedWebhookEvent[]) {
-  return events.reduce(
-    (acc, event) => {
-      const type = safeUpper(event.eventType, "UNKNOWN");
-
-      if (type === "ENTRY") acc.entries += 1;
-      else if (type === "EXIT") acc.exits += 1;
-      else if (type === "REJECT") acc.rejects += 1;
-      else if (type === "SNAPSHOT") acc.snapshots += 1;
-      else if (type === "HOLD") acc.holds += 1;
-      else acc.unknown += 1;
-
-      return acc;
-    },
-    {
-      entries: 0,
-      exits: 0,
-      rejects: 0,
-      snapshots: 0,
-      holds: 0,
-      unknown: 0
-    }
-  );
-}
-
-export async function POST(req: NextRequest) {
-  const startedAt = Date.now();
-
-  if (!isAuthorized(req)) {
+export async function GET(req: NextRequest) {
+  if (!checkSecret(req)) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: "UNAUTHORIZED"
-      },
+      { ok: false, error: "unauthorized" },
       { status: 401 }
     );
   }
 
-  const rawText = await req.text();
-  const parsed = parseJson(rawText);
+  return NextResponse.json({
+    ok: true,
+    route: "app-api-webhooks-tradesystem-online",
+    redis: hasRedis(),
+    ts: Date.now()
+  });
+}
 
-  const incomingRows = getRowsFromRequestBody(parsed);
-
-  if (!incomingRows.length) {
-    console.warn(
-      "TRADESYSTEM_WEBHOOK_NO_ROWS:",
-      JSON.stringify({
-        parsedIsArray: Array.isArray(parsed),
-        parsedIsRecord: isRecord(parsed),
-        durationMs: Date.now() - startedAt
-      })
+export async function POST(req: NextRequest) {
+  if (!checkSecret(req)) {
+    return NextResponse.json(
+      { ok: false, error: "unauthorized" },
+      { status: 401 }
     );
+  }
 
+  if (!hasRedis()) {
     return NextResponse.json(
       {
         ok: false,
-        received: 0,
-        normalized: 0,
-        stored: 0,
-        deduped: 0,
-        failed: 0,
-        persistent: false,
-        error: "NO_ROWS_FOUND"
+        error: "redis_env_missing",
+        route: "app-api-webhooks-tradesystem-online"
       },
+      { status: 500 }
+    );
+  }
+
+  const body = await req.json().catch(() => null);
+
+  if (!body) {
+    return NextResponse.json(
+      { ok: false, error: "invalid_json" },
       { status: 400 }
     );
   }
 
-  const normalizedEvents: NormalizedWebhookEvent[] = [];
-  const errors: Array<{ index: number; error: string }> = [];
+  const actions = extractActions(body);
+  const meta = {
+    runId: body?.runId || body?.meta?.runId || null,
+    btcState: body?.btcState || body?.meta?.btcState || null,
+    strategyVersion: body?.strategyVersion || body?.meta?.strategyVersion || null,
+    discoveryMode: body?.discoveryMode ?? body?.meta?.discoveryMode ?? null
+  };
 
-  for (let i = 0; i < incomingRows.length; i += 1) {
-    const row = incomingRows[i];
+  const normalizedActions = actions.map(action => normalizeAction(action, meta));
 
-    try {
-      const enriched = enrichRowWithBatchMeta(row, parsed);
-      const normalized = normalizeWebhookBody(enriched);
+  const latestPayload = {
+    ok: true,
+    route: "app-api-webhooks-tradesystem-online",
+    receivedAt: Date.now(),
+    count: normalizedActions.length,
+    meta,
+    actions: normalizedActions,
+    rawKeys: Object.keys(body || {})
+  };
 
-      // Cruciaal: nooit BATCH-wrapper events opslaan.
-      if (isWrapperEvent(normalized)) {
-        errors.push({
-          index: i,
-          error: "BATCH_ROW_SKIPPED"
-        });
+  const previousActions = await redisGetJson<any[]>(ACTION_KEYS[0], []);
+  const mergedActions = [
+    ...previousActions,
+    ...normalizedActions
+  ].slice(-MAX_STORED_ACTIONS);
 
-        continue;
-      }
+  await Promise.all([
+    ...LATEST_KEYS.map(key => redisSetJson(key, latestPayload)),
+    ...ACTION_KEYS.map(key => redisSetJson(key, mergedActions))
+  ]);
 
-      normalizedEvents.push(normalized);
-    } catch (error) {
-      errors.push({
-        index: i,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  let stored = 0;
-  let deduped = 0;
-  let failed = errors.length;
-  let persistent = false;
-
-  for (let i = 0; i < normalizedEvents.length; i += 1) {
-    const event = normalizedEvents[i];
-
-    try {
-      const result = await saveTradeEvent(event);
-
-      if (result.stored) stored += 1;
-      if (result.deduped) deduped += 1;
-      if (result.persistent) persistent = true;
-
-      if (!result.ok) {
-        failed += 1;
-
-        errors.push({
-          index: i,
-          error: "SAVE_TRADE_EVENT_NOT_OK"
-        });
-      }
-    } catch (error) {
-      failed += 1;
-
-      errors.push({
-        index: i,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  const counts = countByEventType(normalizedEvents);
-  const ok = normalizedEvents.length > 0 && failed < incomingRows.length;
-  const status = ok ? 200 : 500;
-
-  console.log(
-    "TRADESYSTEM_WEBHOOK_BATCH_RESULT:",
-    JSON.stringify({
-      ok,
-      received: incomingRows.length,
-      normalized: normalizedEvents.length,
-      stored,
-      deduped,
-      failed,
-      persistent,
-      counts,
-      durationMs: Date.now() - startedAt
-    })
-  );
-
-  return NextResponse.json(
-    {
-      ok,
-      received: incomingRows.length,
-      normalized: normalizedEvents.length,
-      stored,
-      deduped,
-      failed,
-      persistent,
-      counts,
-      errors: errors.slice(0, 20),
-      durationMs: Date.now() - startedAt
-    },
-    { status }
-  );
-}
-
-export async function GET() {
   return NextResponse.json({
     ok: true,
-    route: "/api/webhooks/tradesystem",
-    accepts: ["single event", "BATCH.rows", "BATCH.actions", "BATCH.data"],
-    stores: "individual normalized events only",
+    route: "app-api-webhooks-tradesystem-online",
+    received: normalizedActions.length,
+    storedTotal: mergedActions.length,
+    persistent: true,
+    redis: true,
     ts: Date.now()
   });
 }
