@@ -1,6 +1,5 @@
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { BreakdownTable } from "@/components/BreakdownTable";
-import { CohortTable } from "@/components/CohortTable";
 import { FilterForm } from "@/components/FilterForm";
 import { MetricCard } from "@/components/MetricCard";
 import { RecentTradesTable } from "@/components/RecentTradesTable";
@@ -9,6 +8,7 @@ import {
   parseDashboardFilters,
   type CohortRow,
   type DashboardFilters,
+  type ExclusiveGroupRow,
   type SearchParams
 } from "@/lib/dashboard";
 import { compactNumber, pct, r } from "@/lib/format";
@@ -69,12 +69,11 @@ function sideFromCohort(row: CohortRow): TradeSide | null {
   return normalizeSide(row.side) || normalizeSide(row.cohortKey);
 }
 
-function cohortsForSide(rows: CohortRow[], side: TradeSide): CohortRow[] {
-  return rows.filter(row => sideFromCohort(row) === side);
-}
-
 function isValidBestCohort(row: CohortRow, minTrades: number): boolean {
+  const isOther = row.cohortKey.toUpperCase().includes("PATTERN=OTHER");
+
   return (
+    !isOther &&
     row.closed >= minTrades &&
     row.count >= minTrades &&
     row.totalR > 0 &&
@@ -86,6 +85,7 @@ function isValidBestCohort(row: CohortRow, minTrades: number): boolean {
 function modeRank(row: CohortRow): number {
   const key = row.cohortKey.toUpperCase();
 
+  if (key.includes("MODE=EXCLUSIVE")) return 4;
   if (key.includes("MODE=GROUPED")) return 3;
   if (key.includes("MODE=SETUP_SIDE")) return 2;
   if (key.includes("MODE=SIDE_TOTAL")) return 1;
@@ -98,8 +98,8 @@ function getBestCohortForSide(
   side: TradeSide,
   minTrades: number
 ): CohortRow | null {
-  const validRows = cohortsForSide(rows, side).filter(row =>
-    isValidBestCohort(row, minTrades)
+  const validRows = rows.filter(row =>
+    sideFromCohort(row) === side && isValidBestCohort(row, minTrades)
   );
 
   if (!validRows.length) return null;
@@ -116,6 +116,24 @@ function getBestCohortForSide(
 
     return b.trades - a.trades;
   })[0];
+}
+
+function fixedFilterText(row: CohortRow): string {
+  const maybeExclusive = row as Partial<ExclusiveGroupRow>;
+
+  if (!maybeExclusive.fixedFilters) {
+    return cleanCohortLabel(row.cohortKey);
+  }
+
+  const entries = Object.entries(maybeExclusive.fixedFilters);
+
+  if (!entries.length) {
+    return cleanCohortLabel(row.cohortKey);
+  }
+
+  return entries
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" | ");
 }
 
 function BestSideFilterCombination({
@@ -136,7 +154,7 @@ function BestSideFilterCombination({
           <div className="eyebrow">{title}</div>
           <h2>Nog geen betrouwbare {side} combinatie</h2>
           <p>
-            Er is nog geen positieve {side} cohort met minimaal {minTrades} closed trades.
+            Er is nog geen positieve {side} exclusive group met minimaal {minTrades} closed trades.
             Tot die tijd wordt er geen {side} topfilter gekozen, zodat 1/1 geluk
             niet bovenaan komt.
           </p>
@@ -154,6 +172,7 @@ function BestSideFilterCombination({
   const totalRTone = toneFromNumber(cohort.totalR);
   const avgRTone = toneFromNumber(cohort.avgR);
   const isProfitFactorGood = cohort.profitFactor !== null && cohort.profitFactor > 1;
+  const maybeExclusive = cohort as Partial<ExclusiveGroupRow>;
 
   return (
     <section className="best-cohort panel">
@@ -161,11 +180,12 @@ function BestSideFilterCombination({
         <div>
           <div className="eyebrow">{title}</div>
           <h2>
+            {maybeExclusive.groupId ? `${maybeExclusive.groupId} · ` : ""}
             {cohort.setupClass} {cohort.side}
           </h2>
           <p>
             Deze {side} combinatie voldoet aan minimaal {minTrades} closed trades
-            en staat bovenaan binnen alleen {side}-cohorts op basis van score,
+            en staat bovenaan binnen alleen {side}-exclusive-groups op basis van score,
             winrate/Wilson, total R, avg R, PnL, profit factor, near-TP en direct-SL penalty.
           </p>
         </div>
@@ -234,42 +254,144 @@ function BestSideFilterCombination({
       </section>
 
       <div className="hero-box" style={{ marginTop: "18px" }}>
-        <div className="hero-box-label">{side} filter combinatie</div>
+        <div className="hero-box-label">{side} fixed filter combinatie</div>
+        <code>{fixedFilterText(cohort)}</code>
+      </div>
+
+      <div className="hero-box" style={{ marginTop: "12px" }}>
+        <div className="hero-box-label">{side} cohort key</div>
         <code>{cleanCohortLabel(cohort.cohortKey)}</code>
       </div>
     </section>
   );
 }
 
-function SideCohortSection({
+function renderObject(value: Record<string, unknown>, maxItems = 14): string {
+  const entries = Object.entries(value).slice(0, maxItems);
+
+  if (!entries.length) return "—";
+
+  return entries
+    .map(([key, val]) => `${key}=${String(val)}`)
+    .join(" | ");
+}
+
+function renderMixed(
+  value: Record<string, Record<string, number>>,
+  maxDims = 8
+): string {
+  const dims = Object.entries(value).slice(0, maxDims);
+
+  if (!dims.length) return "—";
+
+  return dims
+    .map(([key, dist]) => {
+      const top = Object.entries(dist)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([v, count]) => `${v}:${count}`)
+        .join(",");
+
+      return `${key}[${top}]`;
+    })
+    .join(" | ");
+}
+
+function ExclusiveGroupTable({ rows }: { rows: ExclusiveGroupRow[] }) {
+  if (!rows.length) {
+    return (
+      <div className="panel">
+        <p>Geen exclusive groups gevonden.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Group</th>
+            <th>Score</th>
+            <th>Trades</th>
+            <th>Winrate</th>
+            <th>Wilson</th>
+            <th>Total R</th>
+            <th>Avg R</th>
+            <th>PF</th>
+            <th>Near TP</th>
+            <th>Direct SL</th>
+            <th>Fixed filters</th>
+            <th>Mixed filters</th>
+            <th>Group key</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={row.groupId}>
+              <td>{index + 1}</td>
+              <td>
+                <strong>{row.groupId}</strong>
+                <br />
+                <small>{row.patternName}</small>
+              </td>
+              <td>{compactNumber(row.score, 2)}</td>
+              <td>{compactNumber(row.trades, 0)}</td>
+              <td>{pct(row.winrate)}</td>
+              <td>{pct(row.wilson)}</td>
+              <td>{r(row.totalR)}</td>
+              <td>{r(row.avgR)}</td>
+              <td>{profitFactorText(row.profitFactor)}</td>
+              <td>{pct(row.nearTpPct)}</td>
+              <td>{pct(row.directSlPct)}</td>
+              <td>
+                <code>{renderObject(row.fixedFilters)}</code>
+              </td>
+              <td>
+                <code>{renderMixed(row.mixedFilters)}</code>
+              </td>
+              <td>
+                <code>{cleanCohortLabel(row.cohortKey)}</code>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SideExclusiveGroupSection({
   title,
   side,
   rows
 }: {
   title: string;
   side: TradeSide;
-  rows: CohortRow[];
+  rows: ExclusiveGroupRow[];
 }) {
   return (
     <section className="panel">
       <header className="hero">
         <div>
-          <div className="eyebrow">Cohort analyse</div>
+          <div className="eyebrow">Exclusive group analyse</div>
           <h2>{title}</h2>
           <p>
-            Alleen {side}-cohorts. Gebruik deze tabel om de beste {side} filtergroep
-            te beoordelen op score, winrate, Wilson, total R, avg R, profit factor
-            en direct-SL.
+            Alleen {side}-trades. Elke closed {side}-trade valt exact in één groep.
+            De beste groep wordt gekozen, daarna worden die trades uit de resterende
+            sample gehaald. Zo krijg je geen dubbele telling.
           </p>
         </div>
 
         <div className="hero-box">
-          <div className="hero-box-label">{side} cohorts</div>
+          <div className="hero-box-label">{side} groups</div>
           <code>{compactNumber(rows.length, 0)}</code>
         </div>
       </header>
 
-      <CohortTable rows={rows} />
+      <ExclusiveGroupTable rows={rows} />
     </section>
   );
 }
@@ -285,17 +407,17 @@ export default async function Home({
 
   const bestCohortMinTrades = getBestCohortMinTrades(filters);
 
-  const longCohorts = cohortsForSide(data.cohorts, "LONG");
-  const shortCohorts = cohortsForSide(data.cohorts, "SHORT");
+  const longCohorts = data.exclusiveGroupsLong;
+  const shortCohorts = data.exclusiveGroupsShort;
 
   const bestLongCohort = getBestCohortForSide(
-    data.cohorts,
+    longCohorts,
     "LONG",
     bestCohortMinTrades
   );
 
   const bestShortCohort = getBestCohortForSide(
-    data.cohorts,
+    shortCohorts,
     "SHORT",
     bestCohortMinTrades
   );
@@ -313,8 +435,8 @@ export default async function Home({
           <h1>Trade Filter Optimizer</h1>
           <p>
             Alle entry, exit, path en filterwaardes worden opgeslagen. Doel:
-            aparte beste filter-combinaties vinden voor LONG en SHORT, met balans tussen
-            winrate, total R, PnL en lage direct-SL ratio.
+            aparte beste exclusive filter-combinaties vinden voor LONG en SHORT,
+            zonder dubbele telling per trade.
           </p>
         </div>
 
@@ -327,14 +449,14 @@ export default async function Home({
       <FilterForm filters={filters} options={data.options} />
 
       <BestSideFilterCombination
-        title="Beste LONG filter combinatie"
+        title="Beste LONG exclusive filter combinatie"
         side="LONG"
         cohort={bestLongCohort}
         minTrades={bestCohortMinTrades}
       />
 
       <BestSideFilterCombination
-        title="Beste SHORT filter combinatie"
+        title="Beste SHORT exclusive filter combinatie"
         side="SHORT"
         cohort={bestShortCohort}
         minTrades={bestCohortMinTrades}
@@ -394,14 +516,14 @@ export default async function Home({
         />
       </section>
 
-      <SideCohortSection
-        title="LONG cohort tabel"
+      <SideExclusiveGroupSection
+        title="LONG exclusive groups"
         side="LONG"
         rows={longCohorts}
       />
 
-      <SideCohortSection
-        title="SHORT cohort tabel"
+      <SideExclusiveGroupSection
+        title="SHORT exclusive groups"
         side="SHORT"
         rows={shortCohorts}
       />
