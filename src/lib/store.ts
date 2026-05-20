@@ -704,6 +704,11 @@ export async function clearTradeEventsForDebugOnly(): Promise<{
 
 export const addTradeEvent = appendTradeEvent;
 export const addTradeEvents = appendTradeEvents;
+
+export const saveTradeEvent = appendTradeEvent;
 export const saveTradeEvents = appendTradeEvents;
+
+export const storeTradeEvent = appendTradeEvent;
 export const storeTradeEvents = appendTradeEvents;
+
 export const setTradeEvents = replaceTradeEvents;
