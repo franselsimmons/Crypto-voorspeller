@@ -1,34 +1,63 @@
-export type TradeEvent = Record<string, any>;
+export type TradeEvent = Record<string, any> & {
+  eventId: string;
+  eventType: string;
+  action: string;
+  tradeId: string | null;
+  receivedAt: number;
+  ts: number;
+  storedAt: number;
+};
 
-type AnyRecord = Record<string, unknown>;
-type RedisCommand = unknown[];
+type AnyRecord = Record<string, any>;
 
 const MAX_STORED_ACTIONS = Number(process.env.MAX_STORED_ACTIONS || 5000);
 
-export const LATEST_KEYS = [
-  "tradesystem:analysis:latest",
-  "analysis:latest",
-  "ts:latest"
-];
+const PRIMARY_LIST_KEY =
+  process.env.TRADE_EVENTS_REDIS_LIST_KEY || "tradesystem:analysis:events";
 
-export const ACTION_KEYS = [
+const TRADE_EVENT_LIST_KEYS = Array.from(
+  new Set([
+    PRIMARY_LIST_KEY,
+    "tradesystem:analysis:events",
+    "tradesystem:analysis:actions:list",
+    "tradesystem:analysis:actions",
+    "analysis:actions:list",
+    "analysis:actions",
+    "ts:actions:list",
+    "ts:actions"
+  ])
+);
+
+const JSON_ACTION_KEYS = [
   "tradesystem:analysis:actions",
   "analysis:actions",
   "ts:actions"
 ];
 
-const MEMORY_KEY = "__TRADESYSTEM_TRADE_EVENTS__";
+const LATEST_KEYS = [
+  "tradesystem:analysis:latest",
+  "analysis:latest",
+  "ts:latest"
+];
 
-function getMemoryStore(): TradeEvent[] {
-  const globalStore = globalThis as typeof globalThis & {
-    [MEMORY_KEY]?: TradeEvent[];
-  };
+const CLEAR_KEYS = Array.from(
+  new Set([
+    ...TRADE_EVENT_LIST_KEYS,
+    ...JSON_ACTION_KEYS,
+    ...LATEST_KEYS
+  ])
+);
 
-  if (!Array.isArray(globalStore[MEMORY_KEY])) {
-    globalStore[MEMORY_KEY] = [];
+const globalForStore = globalThis as typeof globalThis & {
+  __tradeEventsMemory?: TradeEvent[];
+};
+
+function memoryEvents(): TradeEvent[] {
+  if (!globalForStore.__tradeEventsMemory) {
+    globalForStore.__tradeEventsMemory = [];
   }
 
-  return globalStore[MEMORY_KEY]!;
+  return globalForStore.__tradeEventsMemory;
 }
 
 export function getRedisUrl(): string {
@@ -51,7 +80,7 @@ export function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
 }
 
-export async function redisCommand<T = any>(command: RedisCommand): Promise<T> {
+async function redisCommand(command: unknown[]): Promise<any> {
   const url = getRedisUrl();
   const token = getRedisToken();
 
@@ -61,12 +90,12 @@ export async function redisCommand<T = any>(command: RedisCommand): Promise<T> {
 
   const res = await fetch(url, {
     method: "POST",
+    cache: "no-store",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(command),
-    cache: "no-store"
+    body: JSON.stringify(command)
   });
 
   const textBody = await res.text();
@@ -83,14 +112,14 @@ export async function redisCommand<T = any>(command: RedisCommand): Promise<T> {
     throw new Error(json?.error || textBody || `redis_error_${res.status}`);
   }
 
-  return json?.result as T;
+  return json?.result;
 }
 
 function isRecord(value: unknown): value is AnyRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function safeJsonParse(value: unknown): unknown {
+function safeJsonParse(value: unknown): any {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value !== "string") return value;
 
@@ -101,11 +130,44 @@ function safeJsonParse(value: unknown): unknown {
   }
 }
 
-function text(value: unknown, fallback = ""): string {
+function safeString(value: unknown, fallback = ""): string {
   if (value === null || value === undefined) return fallback;
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : fallback;
+  if (typeof value === "boolean") return value ? "true" : "false";
 
-  const result = String(value).trim();
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function text(value: unknown, fallback = ""): string {
+  const result = safeString(value, fallback).trim();
   return result || fallback;
+}
+
+function upper(value: unknown, fallback = ""): string {
+  const result = text(value, fallback).toUpperCase();
+  return result || fallback;
+}
+
+function lower(value: unknown, fallback = ""): string {
+  const result = text(value, fallback).toLowerCase();
+  return result || fallback;
+}
+
+function nullableNum(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+
+  const cleaned =
+    typeof value === "string"
+      ? value.replace("%", "").replace(",", ".").trim()
+      : value;
+
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
 function readPath(obj: unknown, path: string): unknown {
@@ -134,21 +196,24 @@ function firstValue(obj: unknown, paths: string[], fallback: unknown = null): un
   return fallback;
 }
 
+function parseJsonObject(value: unknown): AnyRecord {
+  const parsed = safeJsonParse(value);
+
+  if (isRecord(parsed)) return parsed;
+
+  return {};
+}
+
 function stableStringify(value: unknown): string {
   const seen = new WeakSet<object>();
 
   function walk(input: unknown): unknown {
     if (input === null || typeof input !== "object") return input;
 
-    if (seen.has(input as object)) {
-      return "[Circular]";
-    }
-
+    if (seen.has(input as object)) return "[Circular]";
     seen.add(input as object);
 
-    if (Array.isArray(input)) {
-      return input.map(walk);
-    }
+    if (Array.isArray(input)) return input.map(walk);
 
     const record = input as AnyRecord;
     const output: AnyRecord = {};
@@ -163,7 +228,7 @@ function stableStringify(value: unknown): string {
   try {
     return JSON.stringify(walk(value));
   } catch {
-    return String(value);
+    return safeString(value);
   }
 }
 
@@ -178,19 +243,116 @@ function hashString(input: string): string {
   return `fnv1a_${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function eventIdentity(event: TradeEvent): string {
-  const eventId = text(firstValue(event, ["eventId", "payload.eventId"]));
+function normalizeBaseSymbol(raw: unknown): string | null {
+  const symbol = upper(raw)
+    .replace(/_UMCBL$/, "")
+    .replace(/_DMCBL$/, "")
+    .replace(/_CMCBL$/, "")
+    .replace(/-UMCBL$/, "")
+    .replace(/-DMCBL$/, "")
+    .replace(/-CMCBL$/, "")
+    .replace(/USDT$/, "")
+    .replace(/USDC$/, "")
+    .replace(/USD$/, "");
 
-  if (eventId) return `eventId:${eventId}`;
+  return symbol || null;
+}
 
-  const payloadHash = text(
-    firstValue(event, ["payloadHash", "payload.payloadHash"])
+function normalizeEventTypeValue(raw: unknown, actionRaw: unknown = ""): string {
+  const rawType = upper(raw);
+  const action = upper(actionRaw);
+  const value = rawType || action || "SNAPSHOT";
+
+  if (value.includes("ENTRY")) return "ENTRY";
+  if (value.includes("ENTER")) return "ENTRY";
+  if (value.includes("OPEN_TRADE")) return "ENTRY";
+  if (value === "OPEN") return "ENTRY";
+
+  if (value.includes("EXIT")) return "EXIT";
+  if (value.includes("CLOSE")) return "EXIT";
+  if (value.includes("CLOSED")) return "EXIT";
+
+  if (value.includes("REJECT")) return "REJECT";
+  if (value.includes("WAIT")) return "REJECT";
+  if (value.includes("SKIP")) return "REJECT";
+  if (value.includes("FILTER_FAIL")) return "REJECT";
+
+  if (value.includes("SNAPSHOT")) return "SNAPSHOT";
+  if (value.includes("HOLD")) return "HOLD";
+
+  return value || "SNAPSHOT";
+}
+
+function normalizeMs(value: unknown, fallback = Date.now()): number {
+  const n = nullableNum(value);
+
+  if (n !== null) {
+    if (n > 1_000_000_000_000) return n;
+    if (n > 1_000_000_000) return n * 1000;
+    if (n > 0) return n;
+  }
+
+  const parsed = Date.parse(text(value));
+
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function looksLikeEvent(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+
+  return Boolean(
+    value.eventId ||
+      value.eventType ||
+      value.action ||
+      value.tradeId ||
+      value.signalId ||
+      value.symbol ||
+      value.rawBitgetSymbol ||
+      value.contractSymbol ||
+      value.filterSnapshot ||
+      value.exitR !== undefined ||
+      value.pnlPct !== undefined
   );
+}
 
-  if (payloadHash) return `payloadHash:${payloadHash}`;
+function extractEventsFromValue(value: unknown): unknown[] {
+  const parsed = safeJsonParse(value);
+
+  if (Array.isArray(parsed)) {
+    return parsed.flatMap(item => extractEventsFromValue(item));
+  }
+
+  if (!isRecord(parsed)) return [];
+
+  if (Array.isArray(parsed.actions)) return parsed.actions;
+  if (Array.isArray(parsed.data)) return parsed.data;
+  if (Array.isArray(parsed.events)) return parsed.events;
+  if (Array.isArray(parsed.payload?.actions)) return parsed.payload.actions;
+  if (Array.isArray(parsed.payload?.data)) return parsed.payload.data;
+  if (Array.isArray(parsed.payload?.events)) return parsed.payload.events;
+
+  if (looksLikeEvent(parsed)) return [parsed];
+
+  return [];
+}
+
+function fallbackEventId(body: AnyRecord, eventType: string): string {
+  const symbol =
+    normalizeBaseSymbol(
+      firstValue(body, [
+        "symbol",
+        "payload.symbol",
+        "rawBitgetSymbol",
+        "contractSymbol",
+        "payload.rawBitgetSymbol",
+        "payload.contractSymbol"
+      ])
+    ) || "UNKNOWN";
+
+  const side = lower(firstValue(body, ["side", "payload.side"]), "unknown");
 
   const tradeId = text(
-    firstValue(event, [
+    firstValue(body, [
       "tradeId",
       "id",
       "signalId",
@@ -200,322 +362,303 @@ function eventIdentity(event: TradeEvent): string {
     ])
   );
 
-  const eventType = text(
-    firstValue(event, [
-      "eventType",
-      "type",
-      "action",
-      "payload.eventType",
-      "payload.type",
-      "payload.action"
+  const runId = text(firstValue(body, ["runId", "payload.runId"]), "run_unknown");
+
+  const ts = text(
+    firstValue(body, [
+      "ts",
+      "createdAt",
+      "timestamp",
+      "receivedAt",
+      "payload.ts",
+      "payload.createdAt",
+      "payload.timestamp"
+    ]),
+    String(Date.now())
+  );
+
+  const hash = hashString(stableStringify(body));
+
+  return [
+    "ts",
+    runId,
+    eventType,
+    symbol,
+    side,
+    tradeId || hash,
+    ts
+  ]
+    .filter(Boolean)
+    .join("_")
+    .replace(/[^a-z0-9_-]+/gi, "_")
+    .slice(0, 260);
+}
+
+function normalizeStoredEvent(raw: unknown, index = 0): TradeEvent | null {
+  const parsed = safeJsonParse(raw);
+
+  if (!isRecord(parsed)) return null;
+
+  const payloadObj = parseJsonObject(parsed.payload);
+  const payloadJsonObj = parseJsonObject(parsed.payloadJson);
+  const rawJsonObj = parseJsonObject(parsed.rawJson);
+
+  const merged: AnyRecord = {
+    ...payloadObj,
+    ...payloadJsonObj,
+    ...rawJsonObj,
+    ...parsed
+  };
+
+  if (isRecord(parsed.payload)) {
+    merged.payload = parsed.payload;
+  } else if (Object.keys(payloadObj).length > 0) {
+    merged.payload = payloadObj;
+  }
+
+  const eventType = normalizeEventTypeValue(
+    firstValue(merged, ["eventType", "type", "payload.eventType", "payload.type"]),
+    firstValue(merged, ["action", "payload.action"])
+  );
+
+  const eventId =
+    text(firstValue(merged, ["eventId", "payload.eventId"])) ||
+    fallbackEventId(merged, eventType);
+
+  const symbol = normalizeBaseSymbol(
+    firstValue(merged, [
+      "symbol",
+      "payload.symbol",
+      "rawBitgetSymbol",
+      "contractSymbol",
+      "payload.rawBitgetSymbol",
+      "payload.contractSymbol"
     ])
   );
 
-  const symbol = text(firstValue(event, ["symbol", "payload.symbol"]));
+  const tradeId =
+    text(
+      firstValue(merged, [
+        "tradeId",
+        "id",
+        "signalId",
+        "payload.tradeId",
+        "payload.id",
+        "payload.signalId"
+      ])
+    ) || null;
 
-  const ts = text(
+  const receivedAt = normalizeMs(
+    firstValue(merged, ["receivedAt", "payload.receivedAt"]),
+    Date.now()
+  );
+
+  const ts = normalizeMs(
+    firstValue(merged, [
+      "ts",
+      "createdAt",
+      "timestamp",
+      "payload.ts",
+      "payload.createdAt",
+      "payload.timestamp"
+    ]),
+    receivedAt
+  );
+
+  const storedAt = normalizeMs(
+    firstValue(merged, ["storedAt", "payload.storedAt"]),
+    receivedAt
+  );
+
+  return {
+    ...merged,
+    eventId,
+    eventType,
+    action: text(firstValue(merged, ["action", "payload.action"]), eventType),
+    tradeId,
+    symbol: symbol || text(firstValue(merged, ["symbol", "payload.symbol"])) || null,
+    receivedAt,
+    ts,
+    storedAt,
+    _storeIndex: index
+  };
+}
+
+function eventSortTime(event: TradeEvent): number {
+  return normalizeMs(
     firstValue(event, [
       "ts",
       "createdAt",
+      "timestamp",
       "receivedAt",
       "storedAt",
       "payload.ts",
       "payload.createdAt"
-    ])
+    ]),
+    0
   );
-
-  const reason = text(
-    firstValue(event, [
-      "reason",
-      "entryReason",
-      "exitReason",
-      "rejectReason",
-      "payload.reason"
-    ])
-  );
-
-  if (tradeId || eventType || symbol || ts || reason) {
-    return `soft:${tradeId}|${eventType}|${symbol}|${ts}|${reason}`;
-  }
-
-  return `hash:${hashString(stableStringify(event))}`;
-}
-
-function extractEvents(value: unknown): TradeEvent[] {
-  const parsed = safeJsonParse(value);
-
-  if (Array.isArray(parsed)) {
-    return parsed.flatMap(item => extractEvents(item));
-  }
-
-  if (!isRecord(parsed)) {
-    return [];
-  }
-
-  if (Array.isArray(parsed.actions)) {
-    return parsed.actions.flatMap(item => extractEvents(item));
-  }
-
-  if (Array.isArray(parsed.data)) {
-    return parsed.data.flatMap(item => extractEvents(item));
-  }
-
-  if (isRecord(parsed.payload) && Array.isArray(parsed.payload.actions)) {
-    return parsed.payload.actions.flatMap(item => extractEvents(item));
-  }
-
-  const hasEventShape =
-    parsed.eventId ||
-    parsed.eventType ||
-    parsed.type ||
-    parsed.action ||
-    parsed.tradeId ||
-    parsed.signalId ||
-    parsed.symbol ||
-    parsed.payload;
-
-  if (!hasEventShape) {
-    return [];
-  }
-
-  return [parsed as TradeEvent];
-}
-
-function normalizeStoredEvent(event: TradeEvent): TradeEvent {
-  const now = Date.now();
-
-  const eventId = text(firstValue(event, ["eventId", "payload.eventId"]));
-  const payloadHash = text(
-    firstValue(event, ["payloadHash", "payload.payloadHash"])
-  );
-
-  const normalized: TradeEvent = {
-    ...event
-  };
-
-  if (!normalized.eventId) {
-    normalized.eventId = (
-      eventId ||
-      eventIdentity(event).replace(/[^a-z0-9:_|-]+/gi, "_")
-    ).slice(0, 260);
-  }
-
-  if (!normalized.payloadHash) {
-    normalized.payloadHash = payloadHash || hashString(stableStringify(event));
-  }
-
-  if (!normalized.receivedAt) {
-    normalized.receivedAt = now;
-  }
-
-  if (!normalized.storedAt) {
-    normalized.storedAt = now;
-  }
-
-  return normalized;
 }
 
 function dedupeEvents(events: TradeEvent[]): TradeEvent[] {
   const map = new Map<string, TradeEvent>();
 
   for (const event of events) {
-    map.set(eventIdentity(event), event);
+    const key =
+      text(event.eventId) ||
+      text(event.payloadHash) ||
+      hashString(stableStringify(event));
+
+    const existing = map.get(key);
+
+    if (!existing) {
+      map.set(key, event);
+      continue;
+    }
+
+    if (eventSortTime(event) >= eventSortTime(existing)) {
+      map.set(key, event);
+    }
   }
 
-  return Array.from(map.values());
+  return Array.from(map.values())
+    .sort((a, b) => eventSortTime(a) - eventSortTime(b))
+    .slice(-MAX_STORED_ACTIONS);
 }
 
-function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
-  return [...events].sort((a, b) => {
-    const aTs = Number(
-      firstValue(
-        a,
-        ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"],
-        0
-      )
-    );
+async function readEventsFromListKey(key: string): Promise<TradeEvent[]> {
+  const rows = await redisCommand(["LRANGE", key, 0, -1]).catch(() => []);
 
-    const bTs = Number(
-      firstValue(
-        b,
-        ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"],
-        0
-      )
-    );
+  if (!Array.isArray(rows)) return [];
 
-    return aTs - bTs;
-  });
+  return rows
+    .flatMap((row, index) => extractEventsFromValue(row).map(item => ({ item, index })))
+    .map(({ item, index }) => normalizeStoredEvent(item, index))
+    .filter((event): event is TradeEvent => Boolean(event));
 }
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
+async function readEventsFromJsonKey(key: string): Promise<TradeEvent[]> {
+  const raw = await redisCommand(["GET", key]).catch(() => null);
 
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
+  if (!raw) return [];
 
-  return chunks;
+  return extractEventsFromValue(raw)
+    .map((item, index) => normalizeStoredEvent(item, index))
+    .filter((event): event is TradeEvent => Boolean(event));
 }
 
-async function readRedisListKey(key: string): Promise<TradeEvent[]> {
-  const raw = await redisCommand<unknown[]>([
-    "LRANGE",
-    key,
-    -MAX_STORED_ACTIONS,
-    -1
-  ]).catch(() => []);
-
-  if (!Array.isArray(raw)) return [];
-
-  return raw
-    .flatMap(item => extractEvents(item))
-    .map(normalizeStoredEvent);
-}
-
-export async function readRedisJsonKey(key: string): Promise<TradeEvent[]> {
-  const raw = await redisCommand<unknown>(["GET", key]).catch(() => null);
-  return extractEvents(raw).map(normalizeStoredEvent);
-}
-
-export async function listTradeEvents(limit = MAX_STORED_ACTIONS): Promise<TradeEvent[]> {
+export async function listTradeEvents(): Promise<TradeEvent[]> {
   if (!hasRedis()) {
-    return sortEventsAsc(getMemoryStore()).slice(-limit);
+    return dedupeEvents(memoryEvents());
   }
 
-  const listEvents = await readRedisListKey(ACTION_KEYS[0]);
-
-  if (listEvents.length > 0) {
-    return sortEventsAsc(dedupeEvents(listEvents)).slice(-limit);
-  }
-
-  const fallbackGroups = await Promise.all([
-    ...ACTION_KEYS.map(key => readRedisJsonKey(key)),
-    ...LATEST_KEYS.map(key => readRedisJsonKey(key))
+  const [listResults, jsonResults] = await Promise.all([
+    Promise.all(TRADE_EVENT_LIST_KEYS.map(readEventsFromListKey)),
+    Promise.all(JSON_ACTION_KEYS.map(readEventsFromJsonKey))
   ]);
 
-  return sortEventsAsc(dedupeEvents(fallbackGroups.flat())).slice(-limit);
+  return dedupeEvents([...listResults.flat(), ...jsonResults.flat()]);
 }
 
-export async function getTradeEvents(limit = MAX_STORED_ACTIONS): Promise<TradeEvent[]> {
-  return listTradeEvents(limit);
+export async function getTradeEvents(): Promise<TradeEvent[]> {
+  return listTradeEvents();
 }
 
 export async function getTradeEventCount(): Promise<number> {
-  if (!hasRedis()) {
-    return getMemoryStore().length;
-  }
-
-  const listCount = await redisCommand<number>(["LLEN", ACTION_KEYS[0]]).catch(() => 0);
-
-  if (Number(listCount || 0) > 0) {
-    return Number(listCount || 0);
-  }
-
-  for (const key of ACTION_KEYS) {
-    const events = await readRedisJsonKey(key);
-
-    if (events.length) {
-      return events.length;
-    }
-  }
-
-  for (const key of LATEST_KEYS) {
-    const events = await readRedisJsonKey(key);
-
-    if (events.length) {
-      return events.length;
-    }
-  }
-
-  return 0;
+  const events = await listTradeEvents();
+  return events.length;
 }
 
-export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promise<{
+export async function appendTradeEvents(events: unknown[]): Promise<{
   ok: boolean;
   redis: boolean;
   persistent: boolean;
-  stored: number;
+  added: number;
   total: number;
+  key: string;
 }> {
-  const events = extractEvents(input).map(normalizeStoredEvent);
+  const normalized = events
+    .map((event, index) => normalizeStoredEvent(event, index))
+    .filter((event): event is TradeEvent => Boolean(event));
 
-  if (!events.length) {
+  if (!normalized.length) {
     return {
       ok: true,
       redis: hasRedis(),
       persistent: hasRedis(),
-      stored: 0,
-      total: await getTradeEventCount()
+      added: 0,
+      total: await getTradeEventCount(),
+      key: PRIMARY_LIST_KEY
     };
   }
 
   if (!hasRedis()) {
-    const store = getMemoryStore();
-
-    store.push(...events);
-
-    const trimmed = dedupeEvents(store).slice(-MAX_STORED_ACTIONS);
-
-    store.length = 0;
-    store.push(...trimmed);
+    const memory = memoryEvents();
+    memory.push(...normalized);
+    globalForStore.__tradeEventsMemory = dedupeEvents(memory);
 
     return {
       ok: true,
       redis: false,
       persistent: false,
-      stored: events.length,
-      total: store.length
+      added: normalized.length,
+      total: globalForStore.__tradeEventsMemory.length,
+      key: "memory"
     };
   }
 
-  for (const group of chunk(events, 50)) {
-    await redisCommand([
-      "RPUSH",
-      ACTION_KEYS[0],
-      ...group.map(event => JSON.stringify(event))
-    ]);
-  }
+  const serialized = normalized.map(event => JSON.stringify(event));
 
-  await redisCommand([
-    "LTRIM",
-    ACTION_KEYS[0],
-    -MAX_STORED_ACTIONS,
-    -1
-  ]);
+  await redisCommand(["RPUSH", PRIMARY_LIST_KEY, ...serialized]);
+  await redisCommand(["LTRIM", PRIMARY_LIST_KEY, -MAX_STORED_ACTIONS, -1]);
 
   const latestPayload = {
     ok: true,
     storage: "redis-list",
-    persistent: true,
-    receivedAt: Date.now(),
-    count: events.length,
-    actionsPreviewCount: Math.min(events.length, 25),
-    actions: events.slice(-25)
+    key: PRIMARY_LIST_KEY,
+    count: normalized.length,
+    actions: normalized,
+    receivedAt: Date.now()
   };
 
-  await Promise.allSettled(
+  await Promise.all(
     LATEST_KEYS.map(key =>
-      redisCommand(["SET", key, JSON.stringify(latestPayload)])
+      redisCommand(["SET", key, JSON.stringify(latestPayload)]).catch(() => null)
     )
   );
+
+  const total = await getTradeEventCount();
 
   return {
     ok: true,
     redis: true,
     persistent: true,
-    stored: events.length,
-    total: await getTradeEventCount()
+    added: normalized.length,
+    total,
+    key: PRIMARY_LIST_KEY
   };
 }
 
-export async function appendTradeEvent(event: TradeEvent): Promise<{
+export async function appendTradeEvent(event: unknown): Promise<{
   ok: boolean;
   redis: boolean;
   persistent: boolean;
-  stored: number;
+  added: number;
   total: number;
+  key: string;
 }> {
   return appendTradeEvents([event]);
+}
+
+export async function replaceTradeEvents(events: unknown[]): Promise<{
+  ok: boolean;
+  redis: boolean;
+  persistent: boolean;
+  added: number;
+  total: number;
+  key: string;
+}> {
+  await clearTradeEvents();
+  return appendTradeEvents(events);
 }
 
 export async function clearTradeEvents(): Promise<{
@@ -525,35 +668,31 @@ export async function clearTradeEvents(): Promise<{
   deleted: number;
   keys: string[];
 }> {
-  const keys = Array.from(new Set([...ACTION_KEYS, ...LATEST_KEYS]));
-
   if (!hasRedis()) {
-    const store = getMemoryStore();
-    const deleted = store.length;
-
-    store.length = 0;
+    const deleted = memoryEvents().length;
+    globalForStore.__tradeEventsMemory = [];
 
     return {
       ok: true,
       redis: false,
       persistent: false,
       deleted,
-      keys: []
+      keys: ["memory"]
     };
   }
 
-  const deleted = await redisCommand<number>(["DEL", ...keys]).catch(() => 0);
+  const deleted = await redisCommand(["DEL", ...CLEAR_KEYS]).catch(() => 0);
 
   return {
     ok: true,
     redis: true,
     persistent: true,
     deleted: Number(deleted || 0),
-    keys
+    keys: CLEAR_KEYS
   };
 }
 
-export async function resetTradeEvents(): Promise<{
+export async function clearTradeEventsForDebugOnly(): Promise<{
   ok: boolean;
   redis: boolean;
   persistent: boolean;
@@ -561,35 +700,6 @@ export async function resetTradeEvents(): Promise<{
   keys: string[];
 }> {
   return clearTradeEvents();
-}
-
-export async function replaceTradeEvents(input: TradeEvent[] | TradeEvent): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  stored: number;
-  total: number;
-}> {
-  await clearTradeEvents();
-  return appendTradeEvents(input);
-}
-
-export async function getRedisStatus(): Promise<{
-  redis: boolean;
-  persistent: boolean;
-  count: number;
-  storage: string;
-  maxStoredActions: number;
-}> {
-  const redis = hasRedis();
-
-  return {
-    redis,
-    persistent: redis,
-    count: await getTradeEventCount(),
-    storage: redis ? "redis-list" : "memory",
-    maxStoredActions: MAX_STORED_ACTIONS
-  };
 }
 
 export const addTradeEvent = appendTradeEvent;
