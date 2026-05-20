@@ -482,10 +482,6 @@ function isExit(event: TradeEvent): boolean {
   return normalizeEventType(event) === "EXIT";
 }
 
-function eventString(event: TradeEvent, paths: string[], fallback = "UNKNOWN"): string {
-  return upper(firstValue(event, paths), fallback);
-}
-
 function eventFilterSnapshot(event: TradeEvent): AnyRecord | null {
   const snapshot = firstValue(event, ["filterSnapshot", "payload.filterSnapshot"], null);
   return isRecord(snapshot) ? snapshot : null;
@@ -1943,6 +1939,26 @@ type ExclusiveSide = "LONG" | "SHORT";
 
 const EXCLUSIVE_GROUP_LIMIT = 10;
 
+const BAD_EXCLUSIVE_VALUES = new Set([
+  "",
+  "UNKNOWN",
+  "NA",
+  "N/A",
+  "NULL",
+  "UNDEFINED",
+  "ANY",
+  "FUNDING_NA",
+  "TF_NA",
+  "CH1H_NA",
+  "CH24H_NA",
+  "PULLBACK_NA",
+  "SPREAD_NA",
+  "DEPTH_NA",
+  "RR_NA",
+  "CONF_NA",
+  "SNIPER_NA"
+]);
+
 const EXCLUSIVE_FILTER_KEYS = [
   "setupClass",
   "side",
@@ -2070,6 +2086,27 @@ const EXCLUSIVE_LABELS: Record<ExclusiveFilterKey, string> = {
   bullishMidTrendProbe: "BULL_MID_PROBE",
   btcBullishBearException: "BTC_SHORT_EXCEPTION"
 };
+
+function isBadExclusiveValue(value: unknown): boolean {
+  const raw = String(value ?? "").trim().toUpperCase();
+
+  if (BAD_EXCLUSIVE_VALUES.has(raw)) return true;
+  if (raw.endsWith("_NA")) return true;
+  if (raw.includes("UNKNOWN")) return true;
+
+  return false;
+}
+
+function isBadExclusiveValueForKey(key: ExclusiveFilterKey, value: unknown): boolean {
+  const raw = String(value ?? "").trim().toUpperCase();
+
+  if (isBadExclusiveValue(raw)) return true;
+
+  if (key === "baseRRBucket" && raw === "RR_LT_0P20") return true;
+  if (key === "finalRRBucket" && raw === "RR_LT_0P20") return true;
+
+  return false;
+}
 
 function yesNo(value: unknown): string {
   return bool(value) ? "YES" : "NO";
@@ -2217,6 +2254,13 @@ function exclusiveFilterValue(trade: ClosedTrade, key: ExclusiveFilterKey): stri
   }
 }
 
+function hasUsablePatternValues(trade: ClosedTrade, pattern: ExclusivePattern): boolean {
+  return pattern.keys.every(key => {
+    const value = exclusiveFilterValue(trade, key);
+    return !isBadExclusiveValueForKey(key, value);
+  });
+}
+
 function buildExclusiveKey(pattern: ExclusivePattern, trade: ClosedTrade): string {
   return [
     "MODE=EXCLUSIVE",
@@ -2237,6 +2281,9 @@ function distributionForKey(trades: ClosedTrade[], key: ExclusiveFilterKey): Rec
 
   for (const trade of trades) {
     const value = exclusiveFilterValue(trade, key);
+
+    if (isBadExclusiveValueForKey(key, value)) continue;
+
     dist[value] = Number(dist[value] || 0) + 1;
   }
 
@@ -2245,16 +2292,21 @@ function distributionForKey(trades: ClosedTrade[], key: ExclusiveFilterKey): Rec
   );
 }
 
-function buildFixedAndMixedFilters(trades: ClosedTrade[]): {
+function buildFixedAndMixedFilters(
+  trades: ClosedTrade[],
+  activeKeys: ExclusiveFilterKey[]
+): {
   fixedFilters: Record<string, string | number | boolean | null>;
   mixedFilters: Record<string, Record<string, number>>;
 } {
   const fixedFilters: Record<string, string | number | boolean | null> = {};
   const mixedFilters: Record<string, Record<string, number>> = {};
 
-  for (const key of EXCLUSIVE_FILTER_KEYS) {
+  for (const key of activeKeys) {
     const dist = distributionForKey(trades, key);
     const values = Object.keys(dist);
+
+    if (!values.length) continue;
 
     if (values.length === 1) {
       fixedFilters[key] = values[0];
@@ -2289,7 +2341,15 @@ function buildExclusiveRow({
 }): ExclusiveGroupRow {
   const metrics = summarizeTrades(rows);
   const first = rows[0];
-  const { fixedFilters, mixedFilters } = buildFixedAndMixedFilters(rows);
+
+  const patternName = extractPatternNameFromKey(cohortKey);
+  const pattern = EXCLUSIVE_PATTERNS.find(item => item.name === patternName);
+  const activeKeys = pattern?.keys ?? [];
+
+  const { fixedFilters, mixedFilters } = buildFixedAndMixedFilters(
+    rows,
+    activeKeys
+  );
 
   const symbols = uniqueSorted(
     rows
@@ -2300,7 +2360,7 @@ function buildExclusiveRow({
   return {
     groupId,
     groupRank,
-    patternName: extractPatternNameFromKey(cohortKey),
+    patternName,
     fixedFilters,
     mixedFilters,
     tradeIds: rows.map(row => row.tradeId),
@@ -2352,6 +2412,8 @@ function buildExclusiveCandidateRows(
 
   for (const trade of sideTrades) {
     for (const pattern of EXCLUSIVE_PATTERNS) {
+      if (!hasUsablePatternValues(trade, pattern)) continue;
+
       const key = buildExclusiveKey(pattern, trade);
 
       if (!map.has(key)) {
