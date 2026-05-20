@@ -98,11 +98,14 @@ async function redisSetJson(key: string, value: unknown) {
   return redisCommand(["SET", key, JSON.stringify(value)]);
 }
 
-function extractActions(body: any) {
+function extractActions(body: any): any[] {
   if (Array.isArray(body)) return body;
   if (Array.isArray(body?.actions)) return body.actions;
   if (Array.isArray(body?.data)) return body.data;
   if (Array.isArray(body?.payload?.actions)) return body.payload.actions;
+
+  // Voor losse ENTRY/EXIT payloads vanuit tradeSystem.js
+  if (body?.action || body?.eventType) return [body];
 
   return [];
 }
@@ -176,7 +179,7 @@ export async function POST(req: NextRequest) {
     discoveryMode: body?.discoveryMode ?? body?.meta?.discoveryMode ?? null
   };
 
-  const normalizedActions = actions.map((action: Record<string, unknown>) =>
+  const normalizedActions = actions.map((action: any) =>
   normalizeAction(action, meta)
 );
 
