@@ -284,6 +284,18 @@ function isRecord(value: unknown): value is AnyRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function safeJsonParse(value: unknown): unknown {
+  if (!value) return null;
+  if (isRecord(value) || Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 function readPath(obj: unknown, path: string): unknown {
   if (!isRecord(obj)) return undefined;
 
@@ -305,22 +317,6 @@ function firstValue(obj: unknown, paths: string[], fallback: unknown = null): un
     if (value !== undefined && value !== null && value !== "") {
       return value;
     }
-  }
-
-  return fallback;
-}
-
-function tradeValue(trade: ClosedTrade, paths: string[], fallback: unknown = null): unknown {
-  const fromEntry = trade.entry ? firstValue(trade.entry, paths, undefined) : undefined;
-
-  if (fromEntry !== undefined && fromEntry !== null && fromEntry !== "") {
-    return fromEntry;
-  }
-
-  const fromExit = firstValue(trade.exit, paths, undefined);
-
-  if (fromExit !== undefined && fromExit !== null && fromExit !== "") {
-    return fromExit;
   }
 
   return fallback;
@@ -358,14 +354,6 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function percentInputToRatio(value: unknown, fallback = 0): number {
-  const n = num(value, fallback);
-
-  if (!Number.isFinite(n) || n <= 0) return 0;
-
-  return n > 1 ? n / 100 : n;
-}
-
 function nullableNum(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
 
@@ -378,8 +366,16 @@ function nullableNum(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function percentInputToRatio(value: unknown, fallback = 0): number {
+  const n = num(value, fallback);
+
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n > 1 ? n / 100 : n;
+}
+
 function bool(value: unknown): boolean {
   if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
 
   const v = lower(value);
   return ["true", "1", "yes", "y", "on"].includes(v);
@@ -414,15 +410,102 @@ function parseDateMs(value: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function normalizeBaseSymbol(raw: unknown): string {
+  const value = upper(raw, "UNKNOWN")
+    .replace(/_UMCBL$/, "")
+    .replace(/_DMCBL$/, "")
+    .replace(/_CMCBL$/, "")
+    .replace(/-UMCBL$/, "")
+    .replace(/-DMCBL$/, "")
+    .replace(/-CMCBL$/, "")
+    .replace(/USDT$/, "")
+    .replace(/USDC$/, "");
+
+  return value || "UNKNOWN";
+}
+
+function mergeEventPayloads(event: unknown): TradeEvent | null {
+  if (!isRecord(event)) return null;
+
+  const payload = safeJsonParse(event.payload);
+  const payloadJson = safeJsonParse(event.payloadJson);
+  const rawJson = safeJsonParse(event.rawJson);
+
+  const merged: AnyRecord = {
+    ...(isRecord(payload) ? payload : {}),
+    ...(isRecord(payloadJson) ? payloadJson : {}),
+    ...(isRecord(rawJson) ? rawJson : {}),
+    ...event
+  };
+
+  return merged as TradeEvent;
+}
+
+function extractTradeEvents(input: unknown, depth = 0): TradeEvent[] {
+  if (depth > 4) return [];
+
+  if (Array.isArray(input)) {
+    return input.flatMap(item => extractTradeEvents(item, depth + 1));
+  }
+
+  if (!isRecord(input)) return [];
+
+  const nestedActions = firstValue(input, [
+    "actions",
+    "data",
+    "events",
+    "payload.actions",
+    "payload.data",
+    "payload.events"
+  ]);
+
+  if (Array.isArray(nestedActions)) {
+    return nestedActions.flatMap(item => extractTradeEvents(item, depth + 1));
+  }
+
+  const merged = mergeEventPayloads(input);
+  return merged ? [merged] : [];
+}
+
+function normalizeDashboardEvents(events: unknown): TradeEvent[] {
+  const extracted = extractTradeEvents(events);
+
+  const seen = new Set<string>();
+  const result: TradeEvent[] = [];
+
+  for (const event of extracted) {
+    const id = text(
+      firstValue(event, [
+        "eventId",
+        "payload.eventId",
+        "payloadHash",
+        "tradeId",
+        "id"
+      ])
+    );
+
+    const dedupeKey = id || JSON.stringify(event).slice(0, 500);
+
+    if (seen.has(dedupeKey)) continue;
+
+    seen.add(dedupeKey);
+    result.push(event);
+  }
+
+  return result;
+}
+
 function eventTime(event: TradeEvent): number {
   const value = firstValue(event, [
     "ts",
     "createdAt",
     "receivedAt",
     "storedAt",
+    "timestamp",
     "payload.ts",
     "payload.createdAt",
-    "payload.receivedAt"
+    "payload.receivedAt",
+    "payload.timestamp"
   ]);
 
   const n = nullableNum(value);
@@ -481,13 +564,23 @@ function getTradeId(event: TradeEvent): string | null {
     "tradeId",
     "id",
     "signalId",
+    "eventId",
     "payload.tradeId",
     "payload.id",
-    "payload.signalId"
+    "payload.signalId",
+    "payload.eventId"
   ]);
 
   const id = text(value);
   return id || null;
+}
+
+function getEventId(event: TradeEvent): string {
+  return (
+    text(firstValue(event, ["eventId", "payload.eventId"])) ||
+    getTradeId(event) ||
+    `event_${eventTime(event)}_${normalizeEventType(event)}`
+  );
 }
 
 function isEntry(event: TradeEvent): boolean {
@@ -501,6 +594,42 @@ function isExit(event: TradeEvent): boolean {
 function eventFilterSnapshot(event: TradeEvent): AnyRecord | null {
   const snapshot = firstValue(event, ["filterSnapshot", "payload.filterSnapshot"], null);
   return isRecord(snapshot) ? snapshot : null;
+}
+
+function eventSnapshotFirstValue(
+  event: TradeEvent,
+  paths: string[],
+  fallback: unknown = null
+): unknown {
+  const snapshot = eventFilterSnapshot(event);
+
+  if (snapshot) {
+    for (const path of paths) {
+      const value = readPath(snapshot, path);
+
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function tradeValue(trade: ClosedTrade, paths: string[], fallback: unknown = null): unknown {
+  const fromEntry = trade.entry ? firstValue(trade.entry, paths, undefined) : undefined;
+
+  if (fromEntry !== undefined && fromEntry !== null && fromEntry !== "") {
+    return fromEntry;
+  }
+
+  const fromExit = firstValue(trade.exit, paths, undefined);
+
+  if (fromExit !== undefined && fromExit !== null && fromExit !== "") {
+    return fromExit;
+  }
+
+  return fallback;
 }
 
 function filterSnapshotOf(trade: ClosedTrade): AnyRecord | null {
@@ -535,30 +664,10 @@ function snapshotFirstValue(
   return fallback;
 }
 
-function eventSnapshotFirstValue(
-  event: TradeEvent,
-  paths: string[],
-  fallback: unknown = null
-): unknown {
-  const snapshot = eventFilterSnapshot(event);
-
-  if (snapshot) {
-    for (const path of paths) {
-      const value = readPath(snapshot, path);
-
-      if (value !== undefined && value !== null && value !== "") {
-        return value;
-      }
-    }
-  }
-
-  return fallback;
-}
-
 export function parseDashboardFilters(params: SearchParams = {}): DashboardFilters {
   return {
     strategyVersion: one(params.strategyVersion || params.strategy || params.version),
-    symbol: upper(one(params.symbol)),
+    symbol: normalizeBaseSymbol(one(params.symbol)),
     side: lower(one(params.side)),
     eventType: upper(one(params.eventType || params.type)),
     reason: upper(one(params.reason)),
@@ -615,7 +724,7 @@ function buildClosedTrades(events: TradeEvent[]): ClosedTrade[] {
   return events
     .filter(isExit)
     .map(exit => {
-      const tradeId = getTradeId(exit) || text(exit.eventId);
+      const tradeId = getTradeId(exit) || getEventId(exit);
       const entry = tradeId ? entryIndex.get(tradeId) || null : null;
 
       return {
@@ -627,13 +736,12 @@ function buildClosedTrades(events: TradeEvent[]): ClosedTrade[] {
 }
 
 function symbolOf(trade: ClosedTrade): string {
-  return upper(
+  return normalizeBaseSymbol(
     snapshotFirstValue(
       trade,
       ["identity.symbol"],
-      tradeValue(trade, ["symbol", "payload.symbol"])
-    ),
-    "UNKNOWN"
+      tradeValue(trade, ["symbol", "payload.symbol", "rawBitgetSymbol", "payload.rawBitgetSymbol"])
+    )
   );
 }
 
@@ -677,14 +785,18 @@ function entryReasonOf(trade: ClosedTrade): string {
       trade.entry
         ? firstValue(trade.entry, [
             "entryReason",
+            "entryType",
             "payload.entryReason",
+            "payload.entryType",
             "payload.setup.entryReason",
             "reason",
             "payload.reason"
           ])
         : firstValue(trade.exit, [
             "entryReason",
+            "entryType",
             "payload.entryReason",
+            "payload.entryType",
             "payload.setup.entryReason"
           ])
     ),
@@ -902,6 +1014,206 @@ function depthBucketOf(trade: ClosedTrade): string {
   if (depth < 1_000_000) return "DEPTH_500K_1M";
 
   return "DEPTH_GTE_1M";
+}
+
+function eventReasonValue(event: TradeEvent): string {
+  const eventType = normalizeEventType(event);
+
+  if (eventType === "ENTRY") {
+    return upper(
+      firstValue(event, [
+        "entryReason",
+        "entryType",
+        "payload.entryReason",
+        "payload.entryType",
+        "reason",
+        "payload.reason"
+      ]),
+      "UNKNOWN"
+    );
+  }
+
+  if (eventType === "EXIT") {
+    return upper(
+      firstValue(event, [
+        "exitReason",
+        "payload.exitReason",
+        "reason",
+        "payload.reason"
+      ]),
+      "UNKNOWN"
+    );
+  }
+
+  if (eventType === "REJECT") {
+    return upper(
+      firstValue(event, [
+        "rejectReason",
+        "payload.rejectReason",
+        "reason",
+        "payload.reason"
+      ]),
+      "UNKNOWN"
+    );
+  }
+
+  return upper(firstValue(event, ["reason", "payload.reason"]), "UNKNOWN");
+}
+
+function eventDimensionValue(event: TradeEvent, dimension: string): string {
+  if (dimension === "eventType") return normalizeEventType(event);
+
+  if (dimension === "symbol") {
+    return normalizeBaseSymbol(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.symbol"],
+        firstValue(event, ["symbol", "payload.symbol", "rawBitgetSymbol", "payload.rawBitgetSymbol"])
+      )
+    );
+  }
+
+  if (dimension === "side") {
+    return normalizedSide(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.side"],
+        firstValue(event, ["side", "payload.side"])
+      )
+    );
+  }
+
+  if (dimension === "setupClass") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.setupClass"],
+        firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "grade") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.grade"],
+        firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "reason") return eventReasonValue(event);
+
+  if (dimension === "flow") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.flow"],
+        firstValue(event, ["flow", "payload.flow", "payload.market.flow"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "btcState") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.btcState"],
+        firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "regime") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.regime"],
+        firstValue(event, ["regime", "payload.regime", "payload.market.regime"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "rsiZone") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiZone"],
+        firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "rsiEdge") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiEdge"],
+        firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "obBias") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obBias"],
+        firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "obRelation") {
+    const explicit = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obRelation"],
+        firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])
+      ),
+      ""
+    );
+
+    if (explicit && !["BULLISH", "BEARISH"].includes(explicit)) return explicit;
+
+    const side = eventDimensionValue(event, "side");
+    const obBias = eventDimensionValue(event, "obBias");
+
+    return deriveObRelation(side, obBias, explicit || obBias);
+  }
+
+  if (dimension === "spreadBucket") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.spreadBucket"],
+        firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "depthBucket") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.depthBucket"],
+        firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  return "UNKNOWN";
 }
 
 function scoreBucket(value: unknown, label: string): string {
@@ -1329,6 +1641,8 @@ function optimizerScore(metrics: Metrics, filters: DashboardFilters): number {
 }
 
 function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): boolean {
+  if (filters.eventType && filters.eventType !== "EXIT") return false;
+
   if (filters.strategyVersion) {
     const version = text(
       snapshotFirstValue(
@@ -1381,187 +1695,6 @@ function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): bool
   return true;
 }
 
-function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): boolean {
-  if (filters.strategyVersion) {
-    const version = text(
-      eventSnapshotFirstValue(
-        event,
-        ["strategyVersion"],
-        firstValue(event, ["strategyVersion", "payload.strategyVersion"])
-      )
-    );
-
-    if (version !== filters.strategyVersion) return false;
-  }
-
-  if (filters.symbol) {
-    const symbol = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.symbol"],
-        firstValue(event, ["symbol", "payload.symbol"])
-      )
-    );
-
-    if (symbol !== filters.symbol) return false;
-  }
-
-  if (filters.side) {
-    const side = lower(
-      normalizedSide(
-        eventSnapshotFirstValue(
-          event,
-          ["identity.side"],
-          firstValue(event, ["side", "payload.side"])
-        )
-      )
-    );
-
-    if (side !== filters.side) return false;
-  }
-
-  if (filters.setupClass) {
-    const setupClass = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.setupClass"],
-        firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
-      )
-    );
-
-    if (setupClass !== filters.setupClass) return false;
-  }
-
-  if (filters.grade) {
-    const grade = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.grade"],
-        firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])
-      )
-    );
-
-    if (grade !== filters.grade) return false;
-  }
-
-  if (filters.regime) {
-    const regime = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.regime"],
-        firstValue(event, ["regime", "payload.regime", "payload.market.regime"])
-      )
-    );
-
-    if (regime !== filters.regime) return false;
-  }
-
-  if (filters.flow) {
-    const flow = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.flow"],
-        firstValue(event, ["flow", "payload.flow", "payload.market.flow"])
-      )
-    );
-
-    if (flow !== filters.flow) return false;
-  }
-
-  if (filters.btcState) {
-    const btcState = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.btcState"],
-        firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])
-      )
-    );
-
-    if (btcState !== filters.btcState) return false;
-  }
-
-  if (filters.rsiZone) {
-    const rsiZone = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["rsi.rsiZone"],
-        firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
-      )
-    );
-
-    if (rsiZone !== filters.rsiZone) return false;
-  }
-
-  if (filters.rsiEdge) {
-    const rsiEdge = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["rsi.rsiEdge"],
-        firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
-      )
-    );
-
-    if (rsiEdge !== filters.rsiEdge) return false;
-  }
-
-  if (filters.obBias) {
-    const obBias = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.obBias"],
-        firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])
-      )
-    );
-
-    if (obBias !== filters.obBias) return false;
-  }
-
-  if (filters.obRelation) {
-    const obRelation = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.obRelation"],
-        firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])
-      )
-    );
-
-    if (obRelation !== filters.obRelation) return false;
-  }
-
-  if (filters.spreadBucket) {
-    const spreadBucket = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.spreadBucket"],
-        firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")
-      )
-    );
-
-    if (spreadBucket !== filters.spreadBucket) return false;
-  }
-
-  if (filters.depthBucket) {
-    const depthBucket = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.depthBucket"],
-        firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")
-      )
-    );
-
-    if (depthBucket !== filters.depthBucket) return false;
-  }
-
-  const fromMs = parseDateMs(filters.from);
-  const toMs = parseDateMs(filters.to);
-  const ts = eventTime(event);
-
-  if (fromMs !== null && ts < fromMs) return false;
-  if (toMs !== null && ts > toMs) return false;
-
-  return true;
-}
-
 function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): boolean {
   if (filters.strategyVersion) {
     const version = text(
@@ -1576,32 +1709,21 @@ function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): bo
   }
 
   if (filters.eventType && normalizeEventType(event) !== filters.eventType) return false;
-
-  if (filters.symbol) {
-    const symbol = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.symbol"],
-        firstValue(event, ["symbol", "payload.symbol"])
-      )
-    );
-
-    if (symbol !== filters.symbol) return false;
-  }
-
-  if (filters.side) {
-    const side = lower(
-      normalizedSide(
-        eventSnapshotFirstValue(
-          event,
-          ["identity.side"],
-          firstValue(event, ["side", "payload.side"])
-        )
-      )
-    );
-
-    if (side !== filters.side) return false;
-  }
+  if (filters.symbol && eventDimensionValue(event, "symbol") !== filters.symbol) return false;
+  if (filters.side && lower(eventDimensionValue(event, "side")) !== filters.side) return false;
+  if (filters.reason && eventDimensionValue(event, "reason") !== filters.reason) return false;
+  if (filters.setupClass && eventDimensionValue(event, "setupClass") !== filters.setupClass) return false;
+  if (filters.grade && eventDimensionValue(event, "grade") !== filters.grade) return false;
+  if (filters.regime && eventDimensionValue(event, "regime") !== filters.regime) return false;
+  if (filters.flow && eventDimensionValue(event, "flow") !== filters.flow) return false;
+  if (filters.btcState && eventDimensionValue(event, "btcState") !== filters.btcState) return false;
+  if (filters.rsiZone && eventDimensionValue(event, "rsiZone") !== filters.rsiZone) return false;
+  if (filters.rsiEdge && eventDimensionValue(event, "rsiEdge") !== filters.rsiEdge) return false;
+  if (filters.obBias && eventDimensionValue(event, "obBias") !== filters.obBias) return false;
+  if (filters.obRelation && eventDimensionValue(event, "obRelation") !== filters.obRelation) return false;
+  if (filters.spreadBucket && eventDimensionValue(event, "spreadBucket") !== filters.spreadBucket) return false;
+  if (filters.depthBucket && eventDimensionValue(event, "depthBucket") !== filters.depthBucket) return false;
+  if (filters.outcome) return false;
 
   const fromMs = parseDateMs(filters.from);
   const toMs = parseDateMs(filters.to);
@@ -1611,6 +1733,13 @@ function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): bo
   if (toMs !== null && ts > toMs) return false;
 
   return true;
+}
+
+function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): boolean {
+  if (!isEntry(event)) return false;
+
+  if (filters.eventType && filters.eventType !== "ENTRY") return false;
+  return rawEventPassesFilters(event, { ...filters, eventType: "" });
 }
 
 function buildOverview(
@@ -1639,10 +1768,9 @@ function buildOverview(
 
   if (!filters.outcome) {
     for (const event of events) {
-      if (!isEntry(event)) continue;
       if (!eventPassesEntryFilters(event, filters)) continue;
 
-      const tradeId = getTradeId(event) || text(event.eventId);
+      const tradeId = getTradeId(event) || getEventId(event);
       if (!tradeId) continue;
 
       entryIds.add(tradeId);
@@ -1658,7 +1786,7 @@ function buildOverview(
     : [...entryIds].filter(tradeId => !closedIds.has(tradeId)).length;
 
   return {
-    entries: totalEvents,
+    entries: entryIds.size,
     events: totalEvents,
     entryEvents,
     exitEvents,
@@ -1712,174 +1840,74 @@ function buildOptions(events: TradeEvent[]): DashboardOptions {
     ),
 
     symbols: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.symbol"],
-            firstValue(event, ["symbol", "payload.symbol"])
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "symbol")),
       ...closedTrades.map(symbolOf)
     ]),
 
     sides: uniqueSorted([
-      ...events.map(event =>
-        normalizedSide(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.side"],
-            firstValue(event, ["side", "payload.side"])
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "side")),
       ...closedTrades.map(sideOf)
     ]),
 
     eventTypes: uniqueSorted(events.map(normalizeEventType)),
-    reasons: uniqueSorted(closedTrades.map(exitReasonOf)),
+
+    reasons: uniqueSorted([
+      ...events.map(eventReasonValue),
+      ...closedTrades.map(exitReasonOf)
+    ]),
 
     setupClasses: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.setupClass"],
-            firstValue(event, ["setupClass", "payload.setupClass"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "setupClass")),
       ...closedTrades.map(setupClassOf)
     ]),
 
     grades: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.grade"],
-            firstValue(event, ["grade", "payload.grade"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "grade")),
       ...closedTrades.map(gradeOf)
     ]),
 
     regimes: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["market.regime"],
-            firstValue(event, ["regime", "payload.regime", "payload.market.regime"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "regime")),
       ...closedTrades.map(regimeOf)
     ]),
 
     flows: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["market.flow"],
-            firstValue(event, ["flow", "payload.flow", "payload.market.flow"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "flow")),
       ...closedTrades.map(flowOf)
     ]),
 
     btcStates: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["market.btcState"],
-            firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "btcState")),
       ...closedTrades.map(btcStateOf)
     ]),
 
     rsiZones: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["rsi.rsiZone"],
-            firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "rsiZone")),
       ...closedTrades.map(rsiZoneOf)
     ]),
 
     rsiEdges: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["rsi.rsiEdge"],
-            firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "rsiEdge")),
       ...closedTrades.map(rsiEdgeOf)
     ]),
 
     obBiases: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.obBias"],
-            firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "obBias")),
       ...closedTrades.map(obBiasOf)
     ]),
 
     obRelations: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.obRelation"],
-            firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "obRelation")),
       ...closedTrades.map(obRelationOf)
     ]),
 
     spreadBuckets: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.spreadBucket"],
-            firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "spreadBucket")),
       ...closedTrades.map(spreadBucketOf)
     ]),
 
     depthBuckets: uniqueSorted([
-      ...events.map(event =>
-        upper(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.depthBucket"],
-            firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")
-          )
-        )
-      ),
+      ...events.map(event => eventDimensionValue(event, "depthBucket")),
       ...closedTrades.map(depthBucketOf)
     ])
   };
@@ -2592,165 +2620,6 @@ function buildExclusiveGroupsForSide(
   return groups;
 }
 
-function eventDimensionValue(event: TradeEvent, dimension: string): string {
-  if (dimension === "eventType") return normalizeEventType(event);
-
-  if (dimension === "side") {
-    return normalizedSide(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.side"],
-        firstValue(event, ["side", "payload.side"])
-      )
-    );
-  }
-
-  if (dimension === "symbol") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.symbol"],
-        firstValue(event, ["symbol", "payload.symbol"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "setupClass") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.setupClass"],
-        firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "grade") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["identity.grade"],
-        firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "reason") {
-    return upper(firstValue(event, ["reason", "payload.reason"]), "UNKNOWN");
-  }
-
-  if (dimension === "flow") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.flow"],
-        firstValue(event, ["flow", "payload.flow", "payload.market.flow"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "btcState") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.btcState"],
-        firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "regime") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["market.regime"],
-        firstValue(event, ["regime", "payload.regime", "payload.market.regime"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "rsiZone") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["rsi.rsiZone"],
-        firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "rsiEdge") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["rsi.rsiEdge"],
-        firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "obBias") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.obBias"],
-        firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "obRelation") {
-    const explicit = upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.obRelation"],
-        firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])
-      ),
-      ""
-    );
-
-    if (explicit && !["BULLISH", "BEARISH"].includes(explicit)) return explicit;
-
-    const side = eventDimensionValue(event, "side");
-    const obBias = eventDimensionValue(event, "obBias");
-
-    return deriveObRelation(side, obBias, explicit || obBias);
-  }
-
-  if (dimension === "spreadBucket") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.spreadBucket"],
-        firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  if (dimension === "depthBucket") {
-    return upper(
-      eventSnapshotFirstValue(
-        event,
-        ["orderbook.depthBucket"],
-        firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"])
-      ),
-      "UNKNOWN"
-    );
-  }
-
-  return "UNKNOWN";
-}
-
 function tradeDimensionValue(trade: ClosedTrade, dimension: string): string {
   if (dimension === "eventType") return "EXIT";
   if (dimension === "symbol") return symbolOf(trade);
@@ -2897,57 +2766,33 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
     .slice(0, 150)
     .map(event => {
       const ts = eventTime(event);
+      const eventType = normalizeEventType(event);
+      const eventId = getEventId(event);
 
       return {
-        id: text(event.eventId),
-        eventId: text(event.eventId),
-        tradeId: nullableText(firstValue(event, ["tradeId", "payload.tradeId"])),
+        id: eventId,
+        eventId,
+        tradeId: nullableText(firstValue(event, ["tradeId", "payload.tradeId", "id", "payload.id"])),
 
         ts,
-        receivedAt: nullableNum(firstValue(event, ["receivedAt"])),
+        receivedAt: nullableNum(firstValue(event, ["receivedAt", "payload.receivedAt"])),
         date: new Date(ts || Date.now()).toISOString(),
 
-        eventType: normalizeEventType(event),
-        action: text(firstValue(event, ["action", "payload.action"])),
-        reason: text(firstValue(event, ["reason", "payload.reason"])),
+        eventType,
+        action: text(firstValue(event, ["action", "payload.action"]), eventType),
+        reason: eventReasonValue(event),
 
-        symbol: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.symbol"],
-            firstValue(event, ["symbol", "payload.symbol"])
-          )
-        ),
+        symbol: nullableText(eventDimensionValue(event, "symbol")),
+        side: nullableText(eventDimensionValue(event, "side")),
 
-        side: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.side"],
-            firstValue(event, ["side", "payload.side"])
-          )
-        ),
+        setupClass: nullableText(eventDimensionValue(event, "setupClass")),
+        grade: nullableText(eventDimensionValue(event, "grade")),
 
-        setupClass: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.setupClass"],
-            firstValue(event, ["setupClass", "payload.setupClass"])
-          )
-        ),
-
-        grade: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["identity.grade"],
-            firstValue(event, ["grade", "payload.grade"])
-          )
-        ),
-
-        entry: nullableNum(firstValue(event, ["entry", "price", "payload.entry", "payload.price", "filterSnapshot.riskGeometry.entry", "payload.filterSnapshot.riskGeometry.entry"])),
-        sl: nullableNum(firstValue(event, ["sl", "payload.sl", "filterSnapshot.riskGeometry.sl", "payload.filterSnapshot.riskGeometry.sl"])),
+        entry: nullableNum(firstValue(event, ["entry", "price", "entryPrice", "payload.entry", "payload.price", "payload.entryPrice", "filterSnapshot.riskGeometry.entry", "payload.filterSnapshot.riskGeometry.entry"])),
+        sl: nullableNum(firstValue(event, ["sl", "slPrice", "payload.sl", "payload.slPrice", "filterSnapshot.riskGeometry.sl", "payload.filterSnapshot.riskGeometry.sl"])),
         initialSl: nullableNum(firstValue(event, ["initialSl", "payload.initialSl"])),
-        tp: nullableNum(firstValue(event, ["tp", "payload.tp", "filterSnapshot.riskGeometry.tp", "payload.filterSnapshot.riskGeometry.tp"])),
-        exit: nullableNum(firstValue(event, ["exit", "executionPrice", "payload.exit", "payload.executionPrice"])),
+        tp: nullableNum(firstValue(event, ["tp", "tpPrice", "payload.tp", "payload.tpPrice", "filterSnapshot.riskGeometry.tp", "payload.filterSnapshot.riskGeometry.tp"])),
+        exit: nullableNum(firstValue(event, ["exit", "exitPrice", "executionPrice", "payload.exit", "payload.exitPrice", "payload.executionPrice"])),
 
         rr: nullableNum(firstValue(event, ["rr", "payload.rr"])),
         plannedRR: nullableNum(firstValue(event, ["plannedRR", "payload.plannedRR", "filterSnapshot.rr.plannedRR", "payload.filterSnapshot.rr.plannedRR"])),
@@ -2956,89 +2801,29 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
         exitR: nullableNum(firstValue(event, ["exitR", "payload.exitR"])),
         pnlPct: nullableNum(firstValue(event, ["pnlPct", "payload.pnlPct"])),
 
-        score: nullableNum(firstValue(event, ["score", "payload.score", "filterSnapshot.scanner.score", "payload.filterSnapshot.scanner.score"])),
-        confluence: nullableNum(firstValue(event, ["confluence", "payload.confluence", "filterSnapshot.confluence.effectiveConfluence", "payload.filterSnapshot.confluence.effectiveConfluence"])),
+        score: nullableNum(firstValue(event, ["score", "moveScore", "payload.score", "payload.moveScore", "filterSnapshot.scanner.score", "payload.filterSnapshot.scanner.score"])),
+        confluence: nullableNum(firstValue(event, ["confluence", "effectiveConfluence", "payload.confluence", "payload.effectiveConfluence", "filterSnapshot.confluence.effectiveConfluence", "payload.filterSnapshot.confluence.effectiveConfluence"])),
         sniperScore: nullableNum(firstValue(event, ["sniperScore", "payload.sniperScore", "filterSnapshot.sniper.sniperScore", "payload.filterSnapshot.sniper.sniperScore"])),
 
         rsi: nullableNum(firstValue(event, ["rsi", "payload.rsi", "filterSnapshot.rsi.rsi", "payload.filterSnapshot.rsi.rsi"])),
         rsiHTF: nullableNum(firstValue(event, ["rsiHTF", "payload.rsiHTF", "filterSnapshot.rsi.rsiHTF", "payload.filterSnapshot.rsi.rsiHTF"])),
 
-        rsiZone: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["rsi.rsiZone"],
-            firstValue(event, ["rsiZone", "payload.rsiZone"])
-          )
-        ),
+        rsiZone: nullableText(eventDimensionValue(event, "rsiZone")),
+        rsiEdge: nullableText(eventDimensionValue(event, "rsiEdge")),
 
-        rsiEdge: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["rsi.rsiEdge"],
-            firstValue(event, ["rsiEdge", "payload.rsiEdge"])
-          )
-        ),
-
-        obBias: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.obBias"],
-            firstValue(event, ["obBias", "payload.obBias"])
-          )
-        ),
-
-        obRelation: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.obRelation"],
-            firstValue(event, ["obRelation", "payload.obRelation"])
-          )
-        ),
+        obBias: nullableText(eventDimensionValue(event, "obBias")),
+        obRelation: nullableText(eventDimensionValue(event, "obRelation")),
 
         spreadPct: nullableNum(firstValue(event, ["spreadPct", "payload.spreadPct", "filterSnapshot.orderbook.spreadPct", "payload.filterSnapshot.orderbook.spreadPct"])),
         spreadBps: nullableNum(firstValue(event, ["spreadBps", "payload.spreadBps", "filterSnapshot.orderbook.spreadBps", "payload.filterSnapshot.orderbook.spreadBps"])),
+        spreadBucket: nullableText(eventDimensionValue(event, "spreadBucket")),
 
-        spreadBucket: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.spreadBucket"],
-            firstValue(event, ["spreadBucket", "payload.spreadBucket"])
-          )
-        ),
+        depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "depthUsd1p", "payload.depthMinUsd1p", "payload.depthUsd1p", "filterSnapshot.orderbook.depthMinUsd1p", "payload.filterSnapshot.orderbook.depthMinUsd1p"])),
+        depthBucket: nullableText(eventDimensionValue(event, "depthBucket")),
 
-        depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p", "filterSnapshot.orderbook.depthMinUsd1p", "payload.filterSnapshot.orderbook.depthMinUsd1p"])),
-
-        depthBucket: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["orderbook.depthBucket"],
-            firstValue(event, ["depthBucket", "payload.depthBucket"])
-          )
-        ),
-
-        flow: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["market.flow"],
-            firstValue(event, ["flow", "payload.flow"])
-          )
-        ),
-
-        btcState: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["market.btcState"],
-            firstValue(event, ["btcState", "payload.btcState"])
-          )
-        ),
-
-        regime: nullableText(
-          eventSnapshotFirstValue(
-            event,
-            ["market.regime"],
-            firstValue(event, ["regime", "payload.regime"])
-          )
-        ),
+        flow: nullableText(eventDimensionValue(event, "flow")),
+        btcState: nullableText(eventDimensionValue(event, "btcState")),
+        regime: nullableText(eventDimensionValue(event, "regime")),
 
         mfeR: nullableNum(firstValue(event, ["mfeR", "payload.mfeR"])),
         maeR: nullableNum(firstValue(event, ["maeR", "payload.maeR"])),
@@ -3065,7 +2850,8 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
 }
 
 export async function getDashboardData(filters: DashboardFilters): Promise<DashboardData> {
-  const allEvents = await listTradeEvents();
+  const storedEvents = await listTradeEvents();
+  const allEvents = normalizeDashboardEvents(storedEvents);
 
   const filteredRawEvents = allEvents.filter(event =>
     rawEventPassesFilters(event, filters)
