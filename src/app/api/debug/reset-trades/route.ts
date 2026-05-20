@@ -1,39 +1,34 @@
-import { NextRequest, NextResponse } from "next/server";
-
+import { NextResponse } from "next/server";
 import { clearTradeEvents } from "@/lib/store";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-const RESET_SECRET =
-  process.env.RESET_SECRET ||
-  process.env.ANALYSIS_WEBHOOK_SECRET ||
-  process.env.WEBHOOK_SECRET ||
-  process.env.TRADE_WEBHOOK_SECRET ||
-  "";
-
-function readSecret(req: NextRequest): string {
-  const bearer = req.headers.get("authorization") || "";
-
-  if (bearer.toLowerCase().startsWith("bearer ")) {
-    return bearer.slice(7).trim();
-  }
+function getSecret(req: Request): string {
+  const url = new URL(req.url);
 
   return (
+    url.searchParams.get("secret") ||
     req.headers.get("x-reset-secret") ||
-    req.headers.get("x-webhook-secret") ||
-    req.nextUrl.searchParams.get("secret") ||
     ""
-  ).trim();
+  );
 }
 
-function isAuthorized(req: NextRequest): boolean {
-  if (!RESET_SECRET) return true;
-  return readSecret(req) === RESET_SECRET;
-}
+function assertResetSecret(req: Request): NextResponse | null {
+  const expected = process.env.TRADE_RESET_SECRET || "";
+  const received = getSecret(req);
 
-export async function POST(req: NextRequest) {
-  if (!isAuthorized(req)) {
+  if (!expected) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "TRADE_RESET_SECRET_MISSING"
+      },
+      { status: 500 }
+    );
+  }
+
+  if (received !== expected) {
     return NextResponse.json(
       {
         ok: false,
@@ -43,33 +38,36 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = await clearTradeEvents();
-
-  return NextResponse.json({
-    ok: true,
-    reset: true,
-    persistent: result.persistent,
-    ts: Date.now()
-  });
+  return null;
 }
 
-export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "UNAUTHORIZED"
-      },
-      { status: 401 }
-    );
-  }
+async function resetTrades(req: Request) {
+  const unauthorized = assertResetSecret(req);
+
+  if (unauthorized) return unauthorized;
 
   const result = await clearTradeEvents();
 
-  return NextResponse.json({
-    ok: true,
-    reset: true,
-    persistent: result.persistent,
-    ts: Date.now()
-  });
+  return NextResponse.json(
+    {
+      ok: true,
+      reset: true,
+      persistent: result.persistent,
+      message: "TRADE_EVENTS_CLEARED"
+    },
+    {
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store"
+      }
+    }
+  );
+}
+
+export async function GET(req: Request) {
+  return resetTrades(req);
+}
+
+export async function POST(req: Request) {
+  return resetTrades(req);
 }
