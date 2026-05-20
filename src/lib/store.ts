@@ -8,6 +8,28 @@ export type TradeEvent = Record<string, any> & {
   storedAt: number;
 };
 
+export type SaveTradeEventResult = {
+  ok: boolean;
+  redis: boolean;
+  persistent: boolean;
+  added: number;
+  total: number;
+  key: string;
+  eventId?: string | null;
+  error?: string | null;
+};
+
+export type SaveTradeEventsResult = SaveTradeEventResult;
+
+export type ClearTradeEventsResult = {
+  ok: boolean;
+  redis: boolean;
+  persistent: boolean;
+  deleted: number;
+  keys: string[];
+  error?: string | null;
+};
+
 type AnyRecord = Record<string, any>;
 
 const MAX_STORED_ACTIONS = Number(process.env.MAX_STORED_ACTIONS || 5000);
@@ -20,11 +42,8 @@ const TRADE_EVENT_LIST_KEYS = Array.from(
     PRIMARY_LIST_KEY,
     "tradesystem:analysis:events",
     "tradesystem:analysis:actions:list",
-    "tradesystem:analysis:actions",
     "analysis:actions:list",
-    "analysis:actions",
-    "ts:actions:list",
-    "ts:actions"
+    "ts:actions:list"
   ])
 );
 
@@ -198,10 +217,7 @@ function firstValue(obj: unknown, paths: string[], fallback: unknown = null): un
 
 function parseJsonObject(value: unknown): AnyRecord {
   const parsed = safeJsonParse(value);
-
-  if (isRecord(parsed)) return parsed;
-
-  return {};
+  return isRecord(parsed) ? parsed : {};
 }
 
 function stableStringify(value: unknown): string {
@@ -293,7 +309,6 @@ function normalizeMs(value: unknown, fallback = Date.now()): number {
   }
 
   const parsed = Date.parse(text(value));
-
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
@@ -531,7 +546,9 @@ async function readEventsFromListKey(key: string): Promise<TradeEvent[]> {
   if (!Array.isArray(rows)) return [];
 
   return rows
-    .flatMap((row, index) => extractEventsFromValue(row).map(item => ({ item, index })))
+    .flatMap((row, index) =>
+      extractEventsFromValue(row).map(item => ({ item, index }))
+    )
     .map(({ item, index }) => normalizeStoredEvent(item, index))
     .filter((event): event is TradeEvent => Boolean(event));
 }
@@ -568,14 +585,7 @@ export async function getTradeEventCount(): Promise<number> {
   return events.length;
 }
 
-export async function appendTradeEvents(events: unknown[]): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  added: number;
-  total: number;
-  key: string;
-}> {
+export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEventsResult> {
   const normalized = events
     .map((event, index) => normalizeStoredEvent(event, index))
     .filter((event): event is TradeEvent => Boolean(event));
@@ -587,7 +597,9 @@ export async function appendTradeEvents(events: unknown[]): Promise<{
       persistent: hasRedis(),
       added: 0,
       total: await getTradeEventCount(),
-      key: PRIMARY_LIST_KEY
+      key: hasRedis() ? PRIMARY_LIST_KEY : "memory",
+      eventId: null,
+      error: null
     };
   }
 
@@ -602,7 +614,9 @@ export async function appendTradeEvents(events: unknown[]): Promise<{
       persistent: false,
       added: normalized.length,
       total: globalForStore.__tradeEventsMemory.length,
-      key: "memory"
+      key: "memory",
+      eventId: normalized[normalized.length - 1]?.eventId || null,
+      error: null
     };
   }
 
@@ -634,40 +648,30 @@ export async function appendTradeEvents(events: unknown[]): Promise<{
     persistent: true,
     added: normalized.length,
     total,
-    key: PRIMARY_LIST_KEY
+    key: PRIMARY_LIST_KEY,
+    eventId: normalized[normalized.length - 1]?.eventId || null,
+    error: null
   };
 }
 
-export async function appendTradeEvent(event: unknown): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  added: number;
-  total: number;
-  key: string;
-}> {
-  return appendTradeEvents([event]);
+export async function appendTradeEvent(event: unknown): Promise<SaveTradeEventResult> {
+  const result = await appendTradeEvents([event]);
+
+  return {
+    ...result,
+    eventId:
+      normalizeStoredEvent(event)?.eventId ||
+      result.eventId ||
+      null
+  };
 }
 
-export async function replaceTradeEvents(events: unknown[]): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  added: number;
-  total: number;
-  key: string;
-}> {
+export async function replaceTradeEvents(events: unknown[]): Promise<SaveTradeEventsResult> {
   await clearTradeEvents();
   return appendTradeEvents(events);
 }
 
-export async function clearTradeEvents(): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  deleted: number;
-  keys: string[];
-}> {
+export async function clearTradeEvents(): Promise<ClearTradeEventsResult> {
   if (!hasRedis()) {
     const deleted = memoryEvents().length;
     globalForStore.__tradeEventsMemory = [];
@@ -677,7 +681,8 @@ export async function clearTradeEvents(): Promise<{
       redis: false,
       persistent: false,
       deleted,
-      keys: ["memory"]
+      keys: ["memory"],
+      error: null
     };
   }
 
@@ -688,17 +693,12 @@ export async function clearTradeEvents(): Promise<{
     redis: true,
     persistent: true,
     deleted: Number(deleted || 0),
-    keys: CLEAR_KEYS
+    keys: CLEAR_KEYS,
+    error: null
   };
 }
 
-export async function clearTradeEventsForDebugOnly(): Promise<{
-  ok: boolean;
-  redis: boolean;
-  persistent: boolean;
-  deleted: number;
-  keys: string[];
-}> {
+export async function clearTradeEventsForDebugOnly(): Promise<ClearTradeEventsResult> {
   return clearTradeEvents();
 }
 
