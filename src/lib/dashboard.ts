@@ -907,6 +907,26 @@ function groupedDepthLabel(trade: ClosedTrade): string {
   return "DEPTH>=200K";
 }
 
+function sideTotalCohortKeyOf(trade: ClosedTrade): string {
+  return [
+    "MODE=SIDE_TOTAL",
+    `SETUP=${setupClassOf(trade)}`,
+    `SIDE=${sideOf(trade)}`,
+    `GRADE=${gradeOf(trade)}`
+  ].join("|");
+}
+
+function setupSideCohortKeyOf(trade: ClosedTrade): string {
+  return [
+    "MODE=SETUP_SIDE",
+    `SETUP=${setupClassOf(trade)}`,
+    `SIDE=${sideOf(trade)}`,
+    `GRADE=${gradeOf(trade)}`,
+    `FLOW=${flowOf(trade)}`,
+    `OB=${obRelationOf(trade)}`
+  ].join("|");
+}
+
 function groupedCohortKeyOf(trade: ClosedTrade): string {
   return [
     "MODE=GROUPED",
@@ -923,6 +943,14 @@ function groupedCohortKeyOf(trade: ClosedTrade): string {
     groupedSpreadLabel(trade),
     groupedDepthLabel(trade)
   ].join("|");
+}
+
+function cohortKeysOf(trade: ClosedTrade): string[] {
+  return [
+    groupedCohortKeyOf(trade),
+    setupSideCohortKeyOf(trade),
+    sideTotalCohortKeyOf(trade)
+  ];
 }
 
 function keyPart(key: string, prefix: string, fallback = "UNKNOWN"): string {
@@ -1375,13 +1403,13 @@ function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortR
   const map = new Map<string, ClosedTrade[]>();
 
   for (const trade of trades) {
-    const key = groupedCohortKeyOf(trade);
+    for (const key of cohortKeysOf(trade)) {
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
 
-    if (!map.has(key)) {
-      map.set(key, []);
+      map.get(key)!.push(trade);
     }
-
-    map.get(key)!.push(trade);
   }
 
   return Array.from(map.entries())
@@ -1410,7 +1438,7 @@ function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortR
         entryReason: "GROUPED",
         reason: "GROUPED",
         grade: keyPart(cohortKey, "GRADE=", gradeOf(first)),
-        regime: "GROUPED",
+        regime: keyPart(cohortKey, "REGIME=", "GROUPED"),
         flow: keyPart(cohortKey, "FLOW=", flowOf(first)),
         btcState: keyPart(cohortKey, "BTC=", btcStateOf(first)),
         rsiZone: keyPart(cohortKey, "RSI=", rsiZoneOf(first)),
@@ -1446,7 +1474,7 @@ function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortR
 
       return b.trades - a.trades;
     })
-    .slice(0, 100);
+    .slice(0, 150);
 }
 
 function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
