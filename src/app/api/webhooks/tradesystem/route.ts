@@ -103,6 +103,18 @@ async function redisGetJson<T>(key: string, fallback: T): Promise<T> {
   return parsed ?? fallback;
 }
 
+async function redisGetFirstJson<T>(keys: string[], fallback: T): Promise<T> {
+  for (const key of keys) {
+    const value = await redisGetJson<T | null>(key, null);
+
+    if (value !== null && value !== undefined) {
+      return value as T;
+    }
+  }
+
+  return fallback;
+}
+
 async function redisSetJson(key: string, value: unknown): Promise<any> {
   return redisCommand(["SET", key, JSON.stringify(value)]);
 }
@@ -137,6 +149,95 @@ function checkSecret(req: NextRequest): boolean {
   return urlSecret === WEBHOOK_SECRET || headerSecret === WEBHOOK_SECRET;
 }
 
+function asArray(value: unknown): TradeAction[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function getActionType(row: TradeAction): string {
+  return String(row?.action || row?.eventType || "UNKNOWN").toUpperCase();
+}
+
+function getNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function countBy(
+  rows: TradeAction[],
+  getter: (row: TradeAction) => string
+): Record<string, number> {
+  return rows.reduce<Record<string, number>>((acc, row) => {
+    const key = getter(row) || "UNKNOWN";
+    acc[key] = Number(acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function buildFrontendStats(actions: TradeAction[], latest: any) {
+  const rows = actions.length ? actions : asArray(latest?.actions);
+
+  const entries = rows.filter(row => getActionType(row) === "ENTRY");
+  const exits = rows.filter(row => getActionType(row) === "EXIT");
+  const waits = rows.filter(row => getActionType(row) === "WAIT");
+  const holds = rows.filter(row => getActionType(row) === "HOLD");
+
+  const wins = exits.filter(row => getNumber(row?.exitR) > 0).length;
+  const losses = exits.filter(row => getNumber(row?.exitR) < 0).length;
+  const completed = wins + losses;
+
+  const totalR = exits.reduce((sum, row) => sum + getNumber(row?.exitR), 0);
+  const totalPnlPct = exits.reduce((sum, row) => sum + getNumber(row?.pnlPct), 0);
+
+  return {
+    totalActions: rows.length,
+    latestBatchCount: asArray(latest?.actions).length,
+
+    entries: entries.length,
+    exits: exits.length,
+    waits: waits.length,
+    holds: holds.length,
+
+    wins,
+    losses,
+    completed,
+    winratePct: completed > 0 ? Number(((wins / completed) * 100).toFixed(1)) : 0,
+
+    totalR: Number(totalR.toFixed(3)),
+    avgR: exits.length > 0 ? Number((totalR / exits.length).toFixed(3)) : 0,
+
+    totalPnlPct: Number(totalPnlPct.toFixed(3)),
+    avgPnlPct: exits.length > 0 ? Number((totalPnlPct / exits.length).toFixed(3)) : 0,
+
+    actionCounts: countBy(rows, row => getActionType(row)),
+    reasonCounts: countBy(rows, row =>
+      String(row?.reason || "NO_REASON").toUpperCase()
+    ),
+    setupClassCounts: countBy(entries, row =>
+      String(row?.setupClass || "UNKNOWN").toUpperCase()
+    ),
+    sideCounts: countBy(rows, row =>
+      String(row?.side || "UNKNOWN").toUpperCase()
+    ),
+    btcStateCounts: countBy(rows, row =>
+      String(row?.btcState || "UNKNOWN").toUpperCase()
+    ),
+
+    lastReceivedAt: latest?.receivedAt || null,
+    strategyVersion:
+      latest?.meta?.strategyVersion ||
+      rows[rows.length - 1]?.strategyVersion ||
+      null,
+    runId:
+      latest?.meta?.runId ||
+      rows[rows.length - 1]?.runId ||
+      null,
+    btcState:
+      latest?.meta?.btcState ||
+      rows[rows.length - 1]?.btcState ||
+      null
+  };
+}
+
 export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!checkSecret(req)) {
     return NextResponse.json(
@@ -145,12 +246,59 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  return NextResponse.json({
-    ok: true,
-    route: "app-api-webhooks-tradesystem-online",
-    redis: hasRedis(),
-    ts: Date.now()
-  });
+  if (!hasRedis()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "redis_env_missing",
+        route: "app-api-webhooks-tradesystem-online"
+      },
+      { status: 500 }
+    );
+  }
+
+  const limit = Math.max(
+    1,
+    Math.min(
+      Number(req.nextUrl.searchParams.get("limit") || MAX_STORED_ACTIONS),
+      MAX_STORED_ACTIONS
+    )
+  );
+
+  const [latest, storedActions] = await Promise.all([
+    redisGetFirstJson<any | null>(LATEST_KEYS, null),
+    redisGetFirstJson<TradeAction[]>(ACTION_KEYS, [])
+  ]);
+
+  const latestActions = asArray(latest?.actions);
+  const storedRows = asArray(storedActions);
+
+  const actions =
+    storedRows.length > 0
+      ? storedRows.slice(-limit)
+      : latestActions.slice(-limit);
+
+  const stats = buildFrontendStats(actions, latest);
+
+  return NextResponse.json(
+    {
+      ok: true,
+      route: "app-api-webhooks-tradesystem-online",
+      redis: true,
+
+      count: actions.length,
+      latest,
+      actions,
+      stats,
+
+      ts: Date.now()
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate"
+      }
+    }
+  );
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
