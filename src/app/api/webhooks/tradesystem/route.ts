@@ -22,7 +22,16 @@ const ACTION_KEYS = [
   "ts:actions"
 ];
 
-function getRedisUrl() {
+type WebhookMeta = {
+  runId: string | null;
+  btcState: string | null;
+  strategyVersion: string | null;
+  discoveryMode: unknown;
+};
+
+type TradeAction = Record<string, any>;
+
+function getRedisUrl(): string {
   return (
     process.env.KV_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
@@ -30,7 +39,7 @@ function getRedisUrl() {
   );
 }
 
-function getRedisToken() {
+function getRedisToken(): string {
   return (
     process.env.KV_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
@@ -38,11 +47,11 @@ function getRedisToken() {
   );
 }
 
-function hasRedis() {
+function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
 }
 
-async function redisCommand(command: unknown[]) {
+async function redisCommand(command: unknown[]): Promise<any> {
   const url = getRedisUrl();
   const token = getRedisToken();
 
@@ -76,7 +85,7 @@ async function redisCommand(command: unknown[]) {
   return json?.result;
 }
 
-function safeJsonParse(value: unknown) {
+function safeJsonParse(value: unknown): any {
   if (!value) return null;
   if (typeof value !== "string") return value;
 
@@ -94,40 +103,41 @@ async function redisGetJson<T>(key: string, fallback: T): Promise<T> {
   return parsed ?? fallback;
 }
 
-async function redisSetJson(key: string, value: unknown) {
+async function redisSetJson(key: string, value: unknown): Promise<any> {
   return redisCommand(["SET", key, JSON.stringify(value)]);
 }
 
-function extractActions(body: any): any[] {
+function extractActions(body: any): TradeAction[] {
   if (Array.isArray(body)) return body;
   if (Array.isArray(body?.actions)) return body.actions;
   if (Array.isArray(body?.data)) return body.data;
   if (Array.isArray(body?.payload?.actions)) return body.payload.actions;
 
-  // Voor losse ENTRY/EXIT payloads vanuit tradeSystem.js
+  // Losse ENTRY/EXIT payload vanuit tradeSystem.js
   if (body?.action || body?.eventType) return [body];
 
   return [];
 }
 
-function normalizeAction(action: any, meta: any) {
+function normalizeAction(action: TradeAction, meta: WebhookMeta): TradeAction {
   return {
     ...action,
     receivedAt: Date.now(),
-    runId: meta?.runId || action?.runId || null,
-    strategyVersion: meta?.strategyVersion || action?.strategyVersion || null,
-    btcState: meta?.btcState || action?.btcState || null
+    runId: meta.runId || action?.runId || null,
+    strategyVersion: meta.strategyVersion || action?.strategyVersion || null,
+    btcState: meta.btcState || action?.btcState || null,
+    discoveryMode: meta.discoveryMode ?? action?.discoveryMode ?? null
   };
 }
 
-function checkSecret(req: NextRequest) {
+function checkSecret(req: NextRequest): boolean {
   const urlSecret = req.nextUrl.searchParams.get("secret");
   const headerSecret = req.headers.get("x-webhook-secret");
 
   return urlSecret === WEBHOOK_SECRET || headerSecret === WEBHOOK_SECRET;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!checkSecret(req)) {
     return NextResponse.json(
       { ok: false, error: "unauthorized" },
@@ -143,7 +153,7 @@ export async function GET(req: NextRequest) {
   });
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!checkSecret(req)) {
     return NextResponse.json(
       { ok: false, error: "unauthorized" },
@@ -172,16 +182,17 @@ export async function POST(req: NextRequest) {
   }
 
   const actions = extractActions(body);
-  const meta = {
+
+  const meta: WebhookMeta = {
     runId: body?.runId || body?.meta?.runId || null,
     btcState: body?.btcState || body?.meta?.btcState || null,
     strategyVersion: body?.strategyVersion || body?.meta?.strategyVersion || null,
     discoveryMode: body?.discoveryMode ?? body?.meta?.discoveryMode ?? null
   };
 
-  const normalizedActions = actions.map((action: any) =>
-  normalizeAction(action, meta)
-);
+  const normalizedActions = actions.map((action: TradeAction) =>
+    normalizeAction(action, meta)
+  );
 
   const latestPayload = {
     ok: true,
@@ -193,15 +204,16 @@ export async function POST(req: NextRequest) {
     rawKeys: Object.keys(body || {})
   };
 
-  const previousActions = await redisGetJson<any[]>(ACTION_KEYS[0], []);
+  const previousActions = await redisGetJson<TradeAction[]>(ACTION_KEYS[0], []);
+
   const mergedActions = [
     ...previousActions,
     ...normalizedActions
   ].slice(-MAX_STORED_ACTIONS);
 
   await Promise.all([
-    ...LATEST_KEYS.map(key => redisSetJson(key, latestPayload)),
-    ...ACTION_KEYS.map(key => redisSetJson(key, mergedActions))
+    ...LATEST_KEYS.map((key: string) => redisSetJson(key, latestPayload)),
+    ...ACTION_KEYS.map((key: string) => redisSetJson(key, mergedActions))
   ]);
 
   return NextResponse.json({
