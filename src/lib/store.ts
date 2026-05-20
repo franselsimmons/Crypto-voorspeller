@@ -12,14 +12,33 @@ export type SaveTradeEventResult = {
   ok: boolean;
   redis: boolean;
   persistent: boolean;
+
+  stored: boolean;
+  deduped: boolean;
+
   added: number;
   total: number;
   key: string;
+
   eventId?: string | null;
   error?: string | null;
 };
 
-export type SaveTradeEventsResult = SaveTradeEventResult;
+export type SaveTradeEventsResult = {
+  ok: boolean;
+  redis: boolean;
+  persistent: boolean;
+
+  stored: number;
+  deduped: number;
+
+  added: number;
+  total: number;
+  key: string;
+
+  eventId?: string | null;
+  error?: string | null;
+};
 
 export type ClearTradeEventsResult = {
   ok: boolean;
@@ -32,9 +51,9 @@ export type ClearTradeEventsResult = {
 
 type AnyRecord = Record<string, any>;
 
-const MAX_STORED_ACTIONS = Number(process.env.MAX_STORED_ACTIONS || 5000);
+export const MAX_STORED_ACTIONS = Number(process.env.MAX_STORED_ACTIONS || 5000);
 
-const PRIMARY_LIST_KEY =
+export const PRIMARY_LIST_KEY =
   process.env.TRADE_EVENTS_REDIS_LIST_KEY || "tradesystem:analysis:events";
 
 const TRADE_EVENT_LIST_KEYS = Array.from(
@@ -99,7 +118,7 @@ export function hasRedis(): boolean {
   return Boolean(getRedisUrl() && getRedisToken());
 }
 
-async function redisCommand(command: unknown[]): Promise<any> {
+export async function redisCommand(command: unknown[]): Promise<any> {
   const url = getRedisUrl();
   const token = getRedisToken();
 
@@ -227,9 +246,12 @@ function stableStringify(value: unknown): string {
     if (input === null || typeof input !== "object") return input;
 
     if (seen.has(input as object)) return "[Circular]";
+
     seen.add(input as object);
 
-    if (Array.isArray(input)) return input.map(walk);
+    if (Array.isArray(input)) {
+      return input.map(walk);
+    }
 
     const record = input as AnyRecord;
     const output: AnyRecord = {};
@@ -342,6 +364,7 @@ function extractEventsFromValue(value: unknown): unknown[] {
   if (Array.isArray(parsed.actions)) return parsed.actions;
   if (Array.isArray(parsed.data)) return parsed.data;
   if (Array.isArray(parsed.events)) return parsed.events;
+
   if (Array.isArray(parsed.payload?.actions)) return parsed.payload.actions;
   if (Array.isArray(parsed.payload?.data)) return parsed.payload.data;
   if (Array.isArray(parsed.payload?.events)) return parsed.payload.events;
@@ -514,15 +537,19 @@ function eventSortTime(event: TradeEvent): number {
   );
 }
 
+function eventDedupeKey(event: TradeEvent): string {
+  return (
+    text(event.eventId) ||
+    text(event.payloadHash) ||
+    hashString(stableStringify(event))
+  );
+}
+
 function dedupeEvents(events: TradeEvent[]): TradeEvent[] {
   const map = new Map<string, TradeEvent>();
 
   for (const event of events) {
-    const key =
-      text(event.eventId) ||
-      text(event.payloadHash) ||
-      hashString(stableStringify(event));
-
+    const key = eventDedupeKey(event);
     const existing = map.get(key);
 
     if (!existing) {
@@ -595,6 +622,8 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
       ok: true,
       redis: hasRedis(),
       persistent: hasRedis(),
+      stored: 0,
+      deduped: 0,
       added: 0,
       total: await getTradeEventCount(),
       key: hasRedis() ? PRIMARY_LIST_KEY : "memory",
@@ -604,16 +633,31 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
   }
 
   if (!hasRedis()) {
-    const memory = memoryEvents();
-    memory.push(...normalized);
-    globalForStore.__tradeEventsMemory = dedupeEvents(memory);
+    const before = memoryEvents();
+    const beforeKeys = new Set(before.map(eventDedupeKey));
+
+    let stored = 0;
+    let deduped = 0;
+
+    for (const event of normalized) {
+      if (beforeKeys.has(eventDedupeKey(event))) {
+        deduped += 1;
+      } else {
+        stored += 1;
+      }
+    }
+
+    const merged = dedupeEvents([...before, ...normalized]);
+    globalForStore.__tradeEventsMemory = merged;
 
     return {
       ok: true,
       redis: false,
       persistent: false,
+      stored,
+      deduped,
       added: normalized.length,
-      total: globalForStore.__tradeEventsMemory.length,
+      total: merged.length,
       key: "memory",
       eventId: normalized[normalized.length - 1]?.eventId || null,
       error: null
@@ -646,6 +690,8 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
     ok: true,
     redis: true,
     persistent: true,
+    stored: normalized.length,
+    deduped: 0,
     added: normalized.length,
     total,
     key: PRIMARY_LIST_KEY,
@@ -655,14 +701,39 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
 }
 
 export async function appendTradeEvent(event: unknown): Promise<SaveTradeEventResult> {
-  const result = await appendTradeEvents([event]);
+  const normalized = normalizeStoredEvent(event);
+
+  if (!normalized) {
+    return {
+      ok: false,
+      redis: hasRedis(),
+      persistent: hasRedis(),
+      stored: false,
+      deduped: false,
+      added: 0,
+      total: await getTradeEventCount(),
+      key: hasRedis() ? PRIMARY_LIST_KEY : "memory",
+      eventId: null,
+      error: "invalid_event"
+    };
+  }
+
+  const result = await appendTradeEvents([normalized]);
 
   return {
-    ...result,
-    eventId:
-      normalizeStoredEvent(event)?.eventId ||
-      result.eventId ||
-      null
+    ok: result.ok,
+    redis: result.redis,
+    persistent: result.persistent,
+
+    stored: result.stored > 0,
+    deduped: result.deduped > 0,
+
+    added: result.added,
+    total: result.total,
+    key: result.key,
+
+    eventId: normalized.eventId,
+    error: result.error || null
   };
 }
 
@@ -702,6 +773,10 @@ export async function clearTradeEventsForDebugOnly(): Promise<ClearTradeEventsRe
   return clearTradeEvents();
 }
 
+export async function resetTradeEvents(): Promise<ClearTradeEventsResult> {
+  return clearTradeEvents();
+}
+
 export const addTradeEvent = appendTradeEvent;
 export const addTradeEvents = appendTradeEvents;
 
@@ -712,3 +787,6 @@ export const storeTradeEvent = appendTradeEvent;
 export const storeTradeEvents = appendTradeEvents;
 
 export const setTradeEvents = replaceTradeEvents;
+
+export const deleteAllTradeEvents = clearTradeEvents;
+export const clearAllTradeEvents = clearTradeEvents;
