@@ -14,6 +14,15 @@ import {
   type TradeEvent
 } from "./store";
 
+type SaveManyResult = {
+  ok: boolean;
+  total: number;
+  stored: number;
+  deduped: number;
+  failed: number;
+  results: SaveTradeEventResult[];
+};
+
 function withEventType<T extends NormalizedWebhookEvent>(
   event: T,
   eventType: string
@@ -22,6 +31,27 @@ function withEventType<T extends NormalizedWebhookEvent>(
     ...event,
     eventType,
     action: eventType
+  };
+}
+
+function failedSaveResult(
+  event: NormalizedWebhookEvent,
+  error: unknown
+): SaveTradeEventResult {
+  return {
+    ok: false,
+    redis: false,
+    persistent: false,
+
+    stored: false,
+    deduped: false,
+
+    added: 0,
+    total: 0,
+    key: "repository",
+
+    eventId: String(event?.eventId || "UNKNOWN"),
+    error: error instanceof Error ? error.message : String(error)
   };
 }
 
@@ -147,14 +177,7 @@ export async function saveTradeSnapshot(
 
 export async function saveNormalizedEvents(
   events: NormalizedWebhookEvent[]
-): Promise<{
-  ok: boolean;
-  total: number;
-  stored: number;
-  deduped: number;
-  failed: number;
-  results: SaveTradeEventResult[];
-}> {
+): Promise<SaveManyResult> {
   const results: SaveTradeEventResult[] = [];
 
   let stored = 0;
@@ -164,6 +187,7 @@ export async function saveNormalizedEvents(
   for (const event of events) {
     try {
       const result = await saveRepositoryEvent(event);
+
       results.push(result);
 
       if (result.stored) stored += 1;
@@ -171,15 +195,7 @@ export async function saveNormalizedEvents(
     } catch (error) {
       failed += 1;
 
-      results.push({
-        ok: false,
-        stored: false,
-        deduped: false,
-        persistent: false,
-        key: "repository",
-        eventId: String(event?.eventId || "UNKNOWN"),
-        count: null
-      });
+      results.push(failedSaveResult(event, error));
 
       console.warn("TRADE_REPOSITORY_SAVE_FAILED:", {
         eventId: event?.eventId || null,
@@ -200,14 +216,7 @@ export async function saveNormalizedEvents(
 
 export async function saveWebhookEvents(
   events: NormalizedWebhookEvent[]
-): Promise<{
-  ok: boolean;
-  total: number;
-  stored: number;
-  deduped: number;
-  failed: number;
-  results: SaveTradeEventResult[];
-}> {
+): Promise<SaveManyResult> {
   return saveNormalizedEvents(events);
 }
 
