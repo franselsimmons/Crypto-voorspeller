@@ -204,6 +204,8 @@ const CORE_FIELDS = new Set([
   "payloadHash",
   "storedCompact",
 
+  "filterSnapshot",
+
   "payload",
   "rawJson",
   "payloadJson"
@@ -304,6 +306,31 @@ function firstValue(obj: unknown, paths: string[], fallback: unknown = null): un
   }
 
   return fallback;
+}
+
+function compactObject<T extends AnyRecord>(input: T): AnyRecord {
+  const output: AnyRecord = {};
+
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null || value === "") continue;
+
+    if (Array.isArray(value)) {
+      if (!value.length) continue;
+      output[key] = value;
+      continue;
+    }
+
+    if (isRecord(value)) {
+      const nested = compactObject(value);
+      if (!Object.keys(nested).length) continue;
+      output[key] = nested;
+      continue;
+    }
+
+    output[key] = value;
+  }
+
+  return output;
 }
 
 function hashString(input: string): string {
@@ -492,6 +519,142 @@ async function trimTradeEventIndexBestEffort(): Promise<void> {
   );
 }
 
+function compactFilterSnapshot(event: TradeEvent): AnyRecord | null {
+  const rawSnapshot = firstValue(event, ["filterSnapshot", "payload.filterSnapshot"], null);
+  const snapshot = isRecord(rawSnapshot) ? rawSnapshot : {};
+
+  const snap = (
+    snapshotPaths: string[],
+    eventPaths: string[] = [],
+    fallback: unknown = null
+  ): unknown => {
+    for (const path of snapshotPaths) {
+      const value = readPath(snapshot, path);
+
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+
+    return eventPaths.length ? firstValue(event, eventPaths, fallback) : fallback;
+  };
+
+  const result = compactObject({
+    strategyVersion: snap(
+      ["strategyVersion"],
+      ["strategyVersion", "payload.strategyVersion"],
+      null
+    ),
+
+    identity: {
+      symbol: snap(["identity.symbol"], ["symbol", "payload.symbol"], null),
+      side: snap(["identity.side"], ["side", "payload.side"], null),
+      setupClass: snap(
+        ["identity.setupClass"],
+        ["setupClass", "payload.setupClass", "payload.setup.setupClass"],
+        null
+      ),
+      entryReason: snap(
+        ["identity.entryReason"],
+        ["entryReason", "payload.entryReason", "payload.setup.entryReason", "reason", "payload.reason"],
+        null
+      ),
+      grade: snap(["identity.grade"], ["grade", "payload.grade", "payload.setup.grade"], null),
+      stage: snap(["identity.stage"], ["stage", "payload.stage"], null)
+    },
+
+    market: {
+      regime: snap(["market.regime"], ["regime", "payload.regime", "payload.market.regime"], null),
+      flow: snap(["market.flow"], ["flow", "payload.flow", "payload.market.flow"], null),
+      btcState: snap(["market.btcState"], ["btcState", "payload.btcState", "payload.market.btcState"], null),
+      counterBtc: snap(["market.counterBtc"], ["counterBtc", "payload.counterBtc"], null),
+      counterBtcLabel: snap(["market.counterBtcLabel"], ["counterBtcLabel", "payload.counterBtcLabel"], null),
+      funding: snap(["market.funding"], ["funding", "payload.funding", "payload.market.funding"], null),
+      fundingBucket: snap(["market.fundingBucket"], ["fundingBucket", "payload.fundingBucket"], null)
+    },
+
+    rsi: {
+      rsi: snap(["rsi.rsi"], ["rsi", "payload.rsi"], null),
+      rsiHTF: snap(["rsi.rsiHTF"], ["rsiHTF", "payload.rsiHTF"], null),
+      rsiZone: snap(["rsi.rsiZone"], ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], null),
+      rsiEdge: snap(["rsi.rsiEdge"], ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], null)
+    },
+
+    orderbook: {
+      obBias: snap(["orderbook.obBias"], ["obBias", "payload.obBias", "payload.ob.bias", "payload.orderbook.bias"], null),
+      obRelation: snap(["orderbook.obRelation"], ["obRelation", "payload.obRelation", "payload.ob.relation", "payload.orderbook.relation"], null),
+      spreadPct: snap(["orderbook.spreadPct"], ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"], null),
+      spreadBps: snap(["orderbook.spreadBps"], ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"], null),
+      spreadBucket: snap(["orderbook.spreadBucket"], ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], null),
+      depthMinUsd1p: snap(["orderbook.depthMinUsd1p"], ["depthMinUsd1p", "payload.depthMinUsd1p", "payload.ob.depthMinUsd1p"], null),
+      depthBucket: snap(["orderbook.depthBucket"], ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], null)
+    },
+
+    confluence: {
+      effectiveConfluence: snap(
+        ["confluence.effectiveConfluence"],
+        ["effectiveConfluence", "confluence", "payload.effectiveConfluence", "payload.confluence", "payload.scores.confluence"],
+        null
+      ),
+      confluenceBucket: snap(["confluence.confluenceBucket"], ["confluenceBucket", "payload.confluenceBucket"], null)
+    },
+
+    sniper: {
+      sniperScore: snap(
+        ["sniper.sniperScore"],
+        ["sniperScore", "fallbackSniperScore", "payload.sniperScore", "payload.fallbackSniperScore", "payload.scores.sniperScore"],
+        null
+      ),
+      sniperBucket: snap(["sniper.sniperBucket"], ["sniperBucket", "payload.sniperBucket"], null)
+    },
+
+    rr: {
+      baseRR: snap(["rr.baseRR"], ["baseRR", "payload.baseRR", "payload.rr.baseRR"], null),
+      plannedRR: snap(["rr.plannedRR"], ["plannedRR", "payload.plannedRR"], null),
+      finalRr: snap(["rr.finalRr"], ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR", "payload.rr.finalRr"], null),
+      baseRRBucket: snap(["rr.baseRRBucket"], ["baseRRBucket", "payload.baseRRBucket"], null),
+      finalRRBucket: snap(["rr.finalRRBucket"], ["finalRRBucket", "payload.finalRRBucket"], null)
+    },
+
+    riskGeometry: {
+      entry: snap(["riskGeometry.entry"], ["entry", "entryPrice", "price", "payload.entry", "payload.entryPrice", "payload.price"], null),
+      sl: snap(["riskGeometry.sl"], ["sl", "slPrice", "payload.sl", "payload.slPrice"], null),
+      tp: snap(["riskGeometry.tp"], ["tp", "tpPrice", "payload.tp", "payload.tpPrice"], null)
+    },
+
+    structure: {
+      distanceFromLocalHighBucket: snap(
+        ["structure.distanceFromLocalHighBucket"],
+        ["distanceFromLocalHighBucket", "payload.distanceFromLocalHighBucket"],
+        null
+      ),
+      sweepConfirmed: snap(["structure.sweepConfirmed"], ["sweepConfirmed", "payload.sweepConfirmed"], null),
+      sweepConfirmedLabel: snap(["structure.sweepConfirmedLabel"], ["sweepConfirmedLabel", "payload.sweepConfirmedLabel"], null),
+      retestConfirmed: snap(["structure.retestConfirmed"], ["retestConfirmed", "payload.retestConfirmed"], null),
+      retestConfirmedLabel: snap(["structure.retestConfirmedLabel"], ["retestConfirmedLabel", "payload.retestConfirmedLabel"], null)
+    },
+
+    timeframe: {
+      tfStrengthBucket: snap(["timeframe.tfStrengthBucket"], ["tfStrengthBucket", "payload.tfStrengthBucket"], null),
+      change1hBucket: snap(["timeframe.change1hBucket"], ["change1hBucket", "payload.change1hBucket"], null),
+      change24hBucket: snap(["timeframe.change24hBucket"], ["change24hBucket", "payload.change24hBucket"], null)
+    },
+
+    exceptions: {
+      bullishMidTrendProbe: snap(["exceptions.bullishMidTrendProbe"], ["bullishMidTrendProbe", "payload.bullishMidTrendProbe"], null),
+      bullishMidTrendProbeLabel: snap(["exceptions.bullishMidTrendProbeLabel"], ["bullishMidTrendProbeLabel", "payload.bullishMidTrendProbeLabel"], null),
+      btcBullishBearException: snap(["exceptions.btcBullishBearException"], ["btcBullishBearException", "payload.btcBullishBearException"], null),
+      btcBullishBearExceptionLabel: snap(["exceptions.btcBullishBearExceptionLabel"], ["btcBullishBearExceptionLabel", "payload.btcBullishBearExceptionLabel"], null)
+    },
+
+    scanner: {
+      score: snap(["scanner.score"], ["score", "payload.score", "payload.scores.score"], null)
+    }
+  });
+
+  return Object.keys(result).length ? result : null;
+}
+
 function compactPayload(event: TradeEvent): AnyRecord {
   return {
     eventId: firstValue(event, ["eventId"], null),
@@ -609,6 +772,13 @@ function compactPayload(event: TradeEvent): AnyRecord {
     scannerStage: firstValue(event, ["scannerStage", "payload.scannerStage"], null),
     stageSource: firstValue(event, ["stageSource", "payload.stageSource"], null),
 
+    bullishMidTrendProbe: firstValue(event, ["bullishMidTrendProbe", "payload.bullishMidTrendProbe"], null),
+    bullishMidTrendProbeReason: firstValue(event, ["bullishMidTrendProbeReason", "payload.bullishMidTrendProbeReason"], null),
+    btcBullishBearException: firstValue(event, ["btcBullishBearException", "payload.btcBullishBearException"], null),
+    btcBullishBearExceptionReason: firstValue(event, ["btcBullishBearExceptionReason", "payload.btcBullishBearExceptionReason"], null),
+
+    filterSnapshot: compactFilterSnapshot(event),
+
     ts: firstValue(event, ["ts", "payload.ts"], Date.now()),
     createdAt: firstValue(event, ["createdAt", "payload.createdAt", "ts"], Date.now()),
     receivedAt: firstValue(event, ["receivedAt", "payload.receivedAt"], Date.now())
@@ -642,6 +812,8 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
     asString(firstValue(event, ["payloadHash"])) ||
     hashString(`${eventId}|${payloadSeed}`);
 
+  const filterSnapshot = compactFilterSnapshot(event);
+
   const record: AnyRecord = {
     ...compactPayload(event),
 
@@ -652,6 +824,8 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
     cohortKey:
       asString(firstValue(event, ["cohortKey", "payload.cohortKey"])) ||
       buildCohortKey(event),
+
+    filterSnapshot,
 
     rawJson: "{}",
     payloadJson: "{}",
@@ -702,6 +876,7 @@ function compactTradeEvent(input: NormalizedWebhookEvent): TradeEvent {
   minimal.eventType = eventType;
   minimal.action = eventType;
   minimal.cohortKey = asString(record.cohortKey) || buildCohortKey(record as TradeEvent);
+  minimal.filterSnapshot = filterSnapshot;
   minimal.payload = compactPayload(record as TradeEvent);
   minimal.rawJson = "{}";
   minimal.payloadJson = "{}";
