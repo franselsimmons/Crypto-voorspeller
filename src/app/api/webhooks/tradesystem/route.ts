@@ -176,7 +176,9 @@ export async function POST(req: NextRequest) {
     discoveryMode: body?.discoveryMode ?? body?.meta?.discoveryMode ?? null
   };
 
-  const normalizedActions = actions.map(action => normalizeAction(action, meta));
+  const normalizedActions = actions.map((action: Record<string, unknown>) =>
+  normalizeAction(action, meta)
+);
 
   const latestPayload = {
     ok: true,
