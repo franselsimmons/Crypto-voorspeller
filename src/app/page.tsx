@@ -21,10 +21,6 @@ const BEST_COHORT_MIN_TRADES_FLOOR = 5;
 type Tone = "good" | "bad" | "warn" | "default";
 type TradeSide = "LONG" | "SHORT";
 
-// ==========================================
-// HELPER FUNCTIES
-// ==========================================
-
 function toneFromNumber(value: number): Tone {
   if (value > 0) return "good";
   if (value < 0) return "bad";
@@ -63,11 +59,18 @@ function normalizeSide(value: unknown): TradeSide | null {
   if (["LONG", "BULL", "BUY", "BULLISH"].includes(side)) return "LONG";
   if (["SHORT", "BEAR", "SELL", "BEARISH"].includes(side)) return "SHORT";
 
+  if (side.includes("SIDE=LONG")) return "LONG";
+  if (side.includes("SIDE=SHORT")) return "SHORT";
+
   return null;
 }
 
+function sideFromCohort(row: CohortRow): TradeSide | null {
+  return normalizeSide(row.side) || normalizeSide(row.cohortKey);
+}
+
 function cohortsForSide(rows: CohortRow[], side: TradeSide): CohortRow[] {
-  return rows.filter(row => normalizeSide(row.side) === side);
+  return rows.filter(row => sideFromCohort(row) === side);
 }
 
 function isValidBestCohort(row: CohortRow, minTrades: number): boolean {
@@ -80,20 +83,40 @@ function isValidBestCohort(row: CohortRow, minTrades: number): boolean {
   );
 }
 
+function modeRank(row: CohortRow): number {
+  const key = row.cohortKey.toUpperCase();
+
+  if (key.includes("MODE=GROUPED")) return 3;
+  if (key.includes("MODE=SETUP_SIDE")) return 2;
+  if (key.includes("MODE=SIDE_TOTAL")) return 1;
+
+  return 0;
+}
+
 function getBestCohortForSide(
   rows: CohortRow[],
   side: TradeSide,
   minTrades: number
 ): CohortRow | null {
-  const sideRows = cohortsForSide(rows, side);
-  const validRows = sideRows.filter(row => isValidBestCohort(row, minTrades));
+  const validRows = cohortsForSide(rows, side).filter(row =>
+    isValidBestCohort(row, minTrades)
+  );
 
-  return validRows.length > 0 ? validRows[0] : null;
+  if (!validRows.length) return null;
+
+  return [...validRows].sort((a, b) => {
+    const scoreDiff = b.score - a.score;
+    if (scoreDiff !== 0) return scoreDiff;
+
+    const modeDiff = modeRank(b) - modeRank(a);
+    if (modeDiff !== 0) return modeDiff;
+
+    const rDiff = b.totalR - a.totalR;
+    if (rDiff !== 0) return rDiff;
+
+    return b.trades - a.trades;
+  })[0];
 }
-
-// ==========================================
-// SUB-COMPONENTEN
-// ==========================================
 
 function BestSideFilterCombination({
   title,
@@ -141,7 +164,7 @@ function BestSideFilterCombination({
             {cohort.setupClass} {cohort.side}
           </h2>
           <p>
-            Deze {side} combinatie voldoet aan de minimum sample van {minTrades} closed trades
+            Deze {side} combinatie voldoet aan minimaal {minTrades} closed trades
             en staat bovenaan binnen alleen {side}-cohorts op basis van score,
             winrate/Wilson, total R, avg R, PnL, profit factor, near-TP en direct-SL penalty.
           </p>
@@ -251,10 +274,6 @@ function SideCohortSection({
   );
 }
 
-// ==========================================
-// HOOFDPAGINA
-// ==========================================
-
 export default async function Home({
   searchParams
 }: {
@@ -356,11 +375,7 @@ export default async function Home({
 
         <MetricCard
           label="Profit factor"
-          value={
-            data.overview.profitFactor === null
-              ? "—"
-              : compactNumber(data.overview.profitFactor, 2)
-          }
+          value={profitFactorText(data.overview.profitFactor)}
           sub="Gross win / gross loss"
         />
 
