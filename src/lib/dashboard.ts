@@ -115,6 +115,15 @@ export type CohortRow = {
   symbols: string[];
 };
 
+export type ExclusiveGroupRow = CohortRow & {
+  groupId: string;
+  groupRank: number;
+  patternName: string;
+  fixedFilters: Record<string, string | number | boolean | null>;
+  mixedFilters: Record<string, Record<string, number>>;
+  tradeIds: string[];
+};
+
 export type BreakdownRow = {
   dimension: string;
   value: string;
@@ -225,6 +234,10 @@ export type DashboardData = {
   overview: Overview;
   options: DashboardOptions;
   cohorts: CohortRow[];
+
+  exclusiveGroupsLong: ExclusiveGroupRow[];
+  exclusiveGroupsShort: ExclusiveGroupRow[];
+
   breakdown: BreakdownRow[];
   recentTrades: RecentTradeRow[];
   rawEvents: TradeEvent[];
@@ -473,6 +486,63 @@ function eventString(event: TradeEvent, paths: string[], fallback = "UNKNOWN"): 
   return upper(firstValue(event, paths), fallback);
 }
 
+function eventFilterSnapshot(event: TradeEvent): AnyRecord | null {
+  const snapshot = firstValue(event, ["filterSnapshot", "payload.filterSnapshot"], null);
+  return isRecord(snapshot) ? snapshot : null;
+}
+
+function filterSnapshotOf(trade: ClosedTrade): AnyRecord | null {
+  const fromEntry = trade.entry
+    ? firstValue(trade.entry, ["filterSnapshot", "payload.filterSnapshot"], null)
+    : null;
+
+  if (isRecord(fromEntry)) return fromEntry;
+
+  const fromExit = firstValue(trade.exit, ["filterSnapshot", "payload.filterSnapshot"], null);
+
+  return isRecord(fromExit) ? fromExit : null;
+}
+
+function snapshotFirstValue(
+  trade: ClosedTrade,
+  paths: string[],
+  fallback: unknown = null
+): unknown {
+  const snapshot = filterSnapshotOf(trade);
+
+  if (snapshot) {
+    for (const path of paths) {
+      const value = readPath(snapshot, path);
+
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function eventSnapshotFirstValue(
+  event: TradeEvent,
+  paths: string[],
+  fallback: unknown = null
+): unknown {
+  const snapshot = eventFilterSnapshot(event);
+
+  if (snapshot) {
+    for (const path of paths) {
+      const value = readPath(snapshot, path);
+
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+
+  return fallback;
+}
+
 export function parseDashboardFilters(params: SearchParams = {}): DashboardFilters {
   return {
     strategyVersion: one(params.strategyVersion || params.strategy || params.version),
@@ -545,42 +615,67 @@ function buildClosedTrades(events: TradeEvent[]): ClosedTrade[] {
 }
 
 function symbolOf(trade: ClosedTrade): string {
-  return upper(tradeValue(trade, ["symbol", "payload.symbol"]), "UNKNOWN");
+  return upper(
+    snapshotFirstValue(
+      trade,
+      ["identity.symbol"],
+      tradeValue(trade, ["symbol", "payload.symbol"])
+    ),
+    "UNKNOWN"
+  );
 }
 
 function sideOf(trade: ClosedTrade): string {
-  return normalizedSide(tradeValue(trade, ["side", "payload.side"]));
+  return normalizedSide(
+    snapshotFirstValue(
+      trade,
+      ["identity.side"],
+      tradeValue(trade, ["side", "payload.side"])
+    )
+  );
 }
 
 function setupClassOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["setupClass", "payload.setupClass", "payload.setup.setupClass"]),
+    snapshotFirstValue(
+      trade,
+      ["identity.setupClass"],
+      tradeValue(trade, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
+    ),
     "UNKNOWN"
   );
 }
 
 function gradeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["grade", "payload.grade", "payload.setup.grade"]),
+    snapshotFirstValue(
+      trade,
+      ["identity.grade"],
+      tradeValue(trade, ["grade", "payload.grade", "payload.setup.grade"])
+    ),
     "UNKNOWN"
   );
 }
 
 function entryReasonOf(trade: ClosedTrade): string {
   const value = upper(
-    trade.entry
-      ? firstValue(trade.entry, [
-          "entryReason",
-          "payload.entryReason",
-          "payload.setup.entryReason",
-          "reason",
-          "payload.reason"
-        ])
-      : firstValue(trade.exit, [
-          "entryReason",
-          "payload.entryReason",
-          "payload.setup.entryReason"
-        ]),
+    snapshotFirstValue(
+      trade,
+      ["identity.entryReason"],
+      trade.entry
+        ? firstValue(trade.entry, [
+            "entryReason",
+            "payload.entryReason",
+            "payload.setup.entryReason",
+            "reason",
+            "payload.reason"
+          ])
+        : firstValue(trade.exit, [
+            "entryReason",
+            "payload.entryReason",
+            "payload.setup.entryReason"
+          ])
+    ),
     "UNKNOWN"
   );
 
@@ -600,65 +695,112 @@ function exitReasonOf(trade: ClosedTrade): string {
 
 function rsiZoneOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"]),
+    snapshotFirstValue(
+      trade,
+      ["rsi.rsiZone"],
+      tradeValue(trade, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
+    ),
     "UNKNOWN"
   );
 }
 
 function rsiEdgeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]),
+    snapshotFirstValue(
+      trade,
+      ["rsi.rsiEdge"],
+      tradeValue(trade, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
+    ),
     "UNKNOWN"
   );
 }
 
 function flowOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["flow", "payload.flow", "payload.market.flow"]),
+    snapshotFirstValue(
+      trade,
+      ["market.flow"],
+      tradeValue(trade, ["flow", "payload.flow", "payload.market.flow"])
+    ),
     "UNKNOWN"
   );
 }
 
 function btcStateOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["btcState", "payload.btcState", "payload.market.btcState"]),
+    snapshotFirstValue(
+      trade,
+      ["market.btcState"],
+      tradeValue(trade, ["btcState", "payload.btcState", "payload.market.btcState"])
+    ),
     "UNKNOWN"
   );
 }
 
 function regimeOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["regime", "payload.regime", "payload.market.regime"]),
+    snapshotFirstValue(
+      trade,
+      ["market.regime"],
+      tradeValue(trade, ["regime", "payload.regime", "payload.market.regime"])
+    ),
     "UNKNOWN"
   );
 }
 
 function obBiasOf(trade: ClosedTrade): string {
   return upper(
-    tradeValue(trade, ["obBias", "payload.obBias", "payload.ob.bias", "payload.orderbook.bias"]),
+    snapshotFirstValue(
+      trade,
+      ["orderbook.obBias"],
+      tradeValue(trade, ["obBias", "payload.obBias", "payload.ob.bias", "payload.orderbook.bias"])
+    ),
     "UNKNOWN"
   );
 }
 
+function deriveObRelation(side: string, obBias: string, fallback = "UNKNOWN"): string {
+  const s = upper(side);
+  const ob = upper(obBias);
+
+  if (ob === "NEUTRAL" || ob === "UNKNOWN") return "NEUTRAL";
+  if (s === "LONG" && ob === "BULLISH") return "WITH";
+  if (s === "SHORT" && ob === "BEARISH") return "WITH";
+  if (s === "LONG" && ob === "BEARISH") return "AGAINST";
+  if (s === "SHORT" && ob === "BULLISH") return "AGAINST";
+
+  return fallback || ob || "UNKNOWN";
+}
+
 function obRelationOf(trade: ClosedTrade): string {
-  return upper(
-    tradeValue(trade, [
-      "obRelation",
-      "payload.obRelation",
-      "payload.ob.relation",
-      "payload.orderbook.relation"
-    ]),
-    obBiasOf(trade)
+  const explicit = upper(
+    snapshotFirstValue(
+      trade,
+      ["orderbook.obRelation"],
+      tradeValue(trade, [
+        "obRelation",
+        "payload.obRelation",
+        "payload.ob.relation",
+        "payload.orderbook.relation"
+      ])
+    ),
+    ""
   );
+
+  if (explicit && !["BULLISH", "BEARISH"].includes(explicit)) return explicit;
+
+  return deriveObRelation(sideOf(trade), obBiasOf(trade), explicit || obBiasOf(trade));
 }
 
 function spreadBpsFromBucket(bucket: string): number | null {
   if (bucket === "SPREAD_LT_2BPS") return 2;
+  if (bucket === "SPREAD_LE_5BPS") return 5;
   if (bucket === "SPREAD_2_5BPS") return 5;
   if (bucket === "SPREAD_5_8BPS") return 8;
   if (bucket === "SPREAD_8_12BPS") return 12;
   if (bucket === "SPREAD_12_25BPS") return 25;
   if (bucket === "SPREAD_GTE_25BPS") return 999;
+  if (bucket === "SPREAD_GT_25BPS") return 999;
 
   return null;
 }
@@ -676,18 +818,30 @@ function depthUsdFromBucket(bucket: string): number | null {
 
 function spreadBucketOf(trade: ClosedTrade): string {
   const explicit = upper(
-    tradeValue(trade, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"]),
+    snapshotFirstValue(
+      trade,
+      ["orderbook.spreadBucket"],
+      tradeValue(trade, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"])
+    ),
     ""
   );
 
   if (explicit) return explicit;
 
   const spreadBps = nullableNum(
-    tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.spreadBps"],
+      tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
+    )
   );
 
   const spreadPct = nullableNum(
-    tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.spreadPct"],
+      tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
+    )
   );
 
   const bps = spreadBps ?? (spreadPct !== null ? spreadPct * 10000 : null);
@@ -704,20 +858,28 @@ function spreadBucketOf(trade: ClosedTrade): string {
 
 function depthBucketOf(trade: ClosedTrade): string {
   const explicit = upper(
-    tradeValue(trade, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"]),
+    snapshotFirstValue(
+      trade,
+      ["orderbook.depthBucket"],
+      tradeValue(trade, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"])
+    ),
     ""
   );
 
   if (explicit) return explicit;
 
   const depth = nullableNum(
-    tradeValue(trade, [
-      "depthMinUsd1p",
-      "depthUsd1p",
-      "payload.depthMinUsd1p",
-      "payload.depthUsd1p",
-      "payload.ob.depthMinUsd1p"
-    ])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.depthMinUsd1p"],
+      tradeValue(trade, [
+        "depthMinUsd1p",
+        "depthUsd1p",
+        "payload.depthMinUsd1p",
+        "payload.depthUsd1p",
+        "payload.ob.depthMinUsd1p"
+      ])
+    )
   );
 
   if (depth === null) return "DEPTH_NA";
@@ -765,11 +927,21 @@ function rrBucket(value: unknown): string {
   if (n >= 1.5) return "RR_1P50_1P75";
   if (n >= 1.25) return "RR_1P25_1P50";
   if (n >= 1) return "RR_1P00_1P25";
+  if (n >= 0.75) return "RR_0P75_1P00";
+  if (n >= 0.5) return "RR_0P50_0P75";
+  if (n >= 0.2) return "RR_0P20_0P50";
 
-  return "RR_LT_1";
+  return "RR_LT_0P20";
 }
 
 function confluenceBucketOf(trade: ClosedTrade): string {
+  const explicit = upper(
+    snapshotFirstValue(trade, ["confluence.confluenceBucket"], ""),
+    ""
+  );
+
+  if (explicit) return explicit;
+
   return scoreBucket(
     tradeValue(trade, [
       "confluence",
@@ -782,6 +954,13 @@ function confluenceBucketOf(trade: ClosedTrade): string {
 }
 
 function sniperBucketOf(trade: ClosedTrade): string {
+  const explicit = upper(
+    snapshotFirstValue(trade, ["sniper.sniperBucket"], ""),
+    ""
+  );
+
+  if (explicit) return explicit;
+
   return scoreBucket(
     tradeValue(trade, [
       "sniperScore",
@@ -794,6 +973,13 @@ function sniperBucketOf(trade: ClosedTrade): string {
 }
 
 function rrBucketOf(trade: ClosedTrade): string {
+  const explicit = upper(
+    snapshotFirstValue(trade, ["rr.finalRRBucket"], ""),
+    ""
+  );
+
+  if (explicit) return explicit;
+
   return rrBucket(
     tradeValue(trade, [
       "finalRr",
@@ -810,12 +996,16 @@ function rrBucketOf(trade: ClosedTrade): string {
 
 function confluenceValueOf(trade: ClosedTrade): number | null {
   const explicit = nullableNum(
-    tradeValue(trade, [
-      "confluence",
-      "effectiveConfluence",
-      "payload.confluence",
-      "payload.scores.confluence"
-    ])
+    snapshotFirstValue(
+      trade,
+      ["confluence.effectiveConfluence"],
+      tradeValue(trade, [
+        "confluence",
+        "effectiveConfluence",
+        "payload.confluence",
+        "payload.scores.confluence"
+      ])
+    )
   );
 
   if (explicit !== null) return explicit;
@@ -824,12 +1014,16 @@ function confluenceValueOf(trade: ClosedTrade): number | null {
 
 function sniperValueOf(trade: ClosedTrade): number | null {
   const explicit = nullableNum(
-    tradeValue(trade, [
-      "sniperScore",
-      "fallbackSniperScore",
-      "payload.sniperScore",
-      "payload.scores.sniperScore"
-    ])
+    snapshotFirstValue(
+      trade,
+      ["sniper.sniperScore"],
+      tradeValue(trade, [
+        "sniperScore",
+        "fallbackSniperScore",
+        "payload.sniperScore",
+        "payload.scores.sniperScore"
+      ])
+    )
   );
 
   if (explicit !== null) return explicit;
@@ -838,13 +1032,21 @@ function sniperValueOf(trade: ClosedTrade): number | null {
 
 function spreadBpsOf(trade: ClosedTrade): number | null {
   const spreadBps = nullableNum(
-    tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.spreadBps"],
+      tradeValue(trade, ["spreadBps", "payload.spreadBps", "payload.ob.spreadBps"])
+    )
   );
 
   if (spreadBps !== null) return spreadBps;
 
   const spreadPct = nullableNum(
-    tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.spreadPct"],
+      tradeValue(trade, ["spreadPct", "payload.spreadPct", "payload.ob.spreadPct"])
+    )
   );
 
   if (spreadPct !== null) return spreadPct * 10000;
@@ -854,13 +1056,17 @@ function spreadBpsOf(trade: ClosedTrade): number | null {
 
 function depthUsdOf(trade: ClosedTrade): number | null {
   const depth = nullableNum(
-    tradeValue(trade, [
-      "depthMinUsd1p",
-      "depthUsd1p",
-      "payload.depthMinUsd1p",
-      "payload.depthUsd1p",
-      "payload.ob.depthMinUsd1p"
-    ])
+    snapshotFirstValue(
+      trade,
+      ["orderbook.depthMinUsd1p"],
+      tradeValue(trade, [
+        "depthMinUsd1p",
+        "depthUsd1p",
+        "payload.depthMinUsd1p",
+        "payload.depthUsd1p",
+        "payload.ob.depthMinUsd1p"
+      ])
+    )
   );
 
   if (depth !== null) return depth;
@@ -1112,7 +1318,14 @@ function optimizerScore(metrics: Metrics, filters: DashboardFilters): number {
 
 function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): boolean {
   if (filters.strategyVersion) {
-    const version = text(tradeValue(trade, ["strategyVersion", "payload.strategyVersion"]));
+    const version = text(
+      snapshotFirstValue(
+        trade,
+        ["strategyVersion"],
+        tradeValue(trade, ["strategyVersion", "payload.strategyVersion"])
+      )
+    );
+
     if (version !== filters.strategyVersion) return false;
   }
 
@@ -1158,94 +1371,173 @@ function tradePassesFilters(trade: ClosedTrade, filters: DashboardFilters): bool
 
 function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): boolean {
   if (filters.strategyVersion) {
-    const version = text(firstValue(event, ["strategyVersion", "payload.strategyVersion"]));
+    const version = text(
+      eventSnapshotFirstValue(
+        event,
+        ["strategyVersion"],
+        firstValue(event, ["strategyVersion", "payload.strategyVersion"])
+      )
+    );
+
     if (version !== filters.strategyVersion) return false;
   }
 
-  if (filters.symbol && eventString(event, ["symbol", "payload.symbol"]) !== filters.symbol) {
-    return false;
+  if (filters.symbol) {
+    const symbol = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.symbol"],
+        firstValue(event, ["symbol", "payload.symbol"])
+      )
+    );
+
+    if (symbol !== filters.symbol) return false;
   }
 
   if (filters.side) {
-    const side = lower(normalizedSide(firstValue(event, ["side", "payload.side"])));
+    const side = lower(
+      normalizedSide(
+        eventSnapshotFirstValue(
+          event,
+          ["identity.side"],
+          firstValue(event, ["side", "payload.side"])
+        )
+      )
+    );
+
     if (side !== filters.side) return false;
   }
 
-  if (
-    filters.setupClass &&
-    eventString(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"]) !== filters.setupClass
-  ) {
-    return false;
+  if (filters.setupClass) {
+    const setupClass = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.setupClass"],
+        firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
+      )
+    );
+
+    if (setupClass !== filters.setupClass) return false;
   }
 
-  if (
-    filters.grade &&
-    eventString(event, ["grade", "payload.grade", "payload.setup.grade"]) !== filters.grade
-  ) {
-    return false;
+  if (filters.grade) {
+    const grade = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.grade"],
+        firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])
+      )
+    );
+
+    if (grade !== filters.grade) return false;
   }
 
-  if (
-    filters.regime &&
-    eventString(event, ["regime", "payload.regime", "payload.market.regime"]) !== filters.regime
-  ) {
-    return false;
+  if (filters.regime) {
+    const regime = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.regime"],
+        firstValue(event, ["regime", "payload.regime", "payload.market.regime"])
+      )
+    );
+
+    if (regime !== filters.regime) return false;
   }
 
-  if (
-    filters.flow &&
-    eventString(event, ["flow", "payload.flow", "payload.market.flow"]) !== filters.flow
-  ) {
-    return false;
+  if (filters.flow) {
+    const flow = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.flow"],
+        firstValue(event, ["flow", "payload.flow", "payload.market.flow"])
+      )
+    );
+
+    if (flow !== filters.flow) return false;
   }
 
-  if (
-    filters.btcState &&
-    eventString(event, ["btcState", "payload.btcState", "payload.market.btcState"]) !== filters.btcState
-  ) {
-    return false;
+  if (filters.btcState) {
+    const btcState = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.btcState"],
+        firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])
+      )
+    );
+
+    if (btcState !== filters.btcState) return false;
   }
 
-  if (
-    filters.rsiZone &&
-    eventString(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"]) !== filters.rsiZone
-  ) {
-    return false;
+  if (filters.rsiZone) {
+    const rsiZone = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiZone"],
+        firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
+      )
+    );
+
+    if (rsiZone !== filters.rsiZone) return false;
   }
 
-  if (
-    filters.rsiEdge &&
-    eventString(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"]) !== filters.rsiEdge
-  ) {
-    return false;
+  if (filters.rsiEdge) {
+    const rsiEdge = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiEdge"],
+        firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
+      )
+    );
+
+    if (rsiEdge !== filters.rsiEdge) return false;
   }
 
-  if (
-    filters.obBias &&
-    eventString(event, ["obBias", "payload.obBias", "payload.ob.bias"]) !== filters.obBias
-  ) {
-    return false;
+  if (filters.obBias) {
+    const obBias = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obBias"],
+        firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])
+      )
+    );
+
+    if (obBias !== filters.obBias) return false;
   }
 
-  if (
-    filters.obRelation &&
-    eventString(event, ["obRelation", "payload.obRelation", "payload.ob.relation"]) !== filters.obRelation
-  ) {
-    return false;
+  if (filters.obRelation) {
+    const obRelation = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obRelation"],
+        firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])
+      )
+    );
+
+    if (obRelation !== filters.obRelation) return false;
   }
 
-  if (
-    filters.spreadBucket &&
-    eventString(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "") !== filters.spreadBucket
-  ) {
-    return false;
+  if (filters.spreadBucket) {
+    const spreadBucket = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.spreadBucket"],
+        firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")
+      )
+    );
+
+    if (spreadBucket !== filters.spreadBucket) return false;
   }
 
-  if (
-    filters.depthBucket &&
-    eventString(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "") !== filters.depthBucket
-  ) {
-    return false;
+  if (filters.depthBucket) {
+    const depthBucket = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.depthBucket"],
+        firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")
+      )
+    );
+
+    if (depthBucket !== filters.depthBucket) return false;
   }
 
   const fromMs = parseDateMs(filters.from);
@@ -1259,14 +1551,43 @@ function eventPassesEntryFilters(event: TradeEvent, filters: DashboardFilters): 
 }
 
 function rawEventPassesFilters(event: TradeEvent, filters: DashboardFilters): boolean {
+  if (filters.strategyVersion) {
+    const version = text(
+      eventSnapshotFirstValue(
+        event,
+        ["strategyVersion"],
+        firstValue(event, ["strategyVersion", "payload.strategyVersion"])
+      )
+    );
+
+    if (version !== filters.strategyVersion) return false;
+  }
+
   if (filters.eventType && normalizeEventType(event) !== filters.eventType) return false;
 
-  if (filters.symbol && eventString(event, ["symbol", "payload.symbol"]) !== filters.symbol) {
-    return false;
+  if (filters.symbol) {
+    const symbol = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.symbol"],
+        firstValue(event, ["symbol", "payload.symbol"])
+      )
+    );
+
+    if (symbol !== filters.symbol) return false;
   }
 
   if (filters.side) {
-    const side = lower(normalizedSide(firstValue(event, ["side", "payload.side"])));
+    const side = lower(
+      normalizedSide(
+        eventSnapshotFirstValue(
+          event,
+          ["identity.side"],
+          firstValue(event, ["side", "payload.side"])
+        )
+      )
+    );
+
     if (side !== filters.side) return false;
   }
 
@@ -1338,58 +1659,199 @@ function buildOptions(events: TradeEvent[]): DashboardOptions {
   const closedTrades = buildClosedTrades(events);
 
   return {
-    strategies: uniqueSorted(events.map(event => text(firstValue(event, ["strategyVersion"])))),
-    strategyVersions: uniqueSorted(events.map(event => text(firstValue(event, ["strategyVersion"])))),
+    strategies: uniqueSorted(
+      events.map(event =>
+        text(
+          eventSnapshotFirstValue(
+            event,
+            ["strategyVersion"],
+            firstValue(event, ["strategyVersion", "payload.strategyVersion"])
+          )
+        )
+      )
+    ),
 
-    symbols: uniqueSorted(events.map(event => upper(firstValue(event, ["symbol", "payload.symbol"])))),
+    strategyVersions: uniqueSorted(
+      events.map(event =>
+        text(
+          eventSnapshotFirstValue(
+            event,
+            ["strategyVersion"],
+            firstValue(event, ["strategyVersion", "payload.strategyVersion"])
+          )
+        )
+      )
+    ),
+
+    symbols: uniqueSorted([
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.symbol"],
+            firstValue(event, ["symbol", "payload.symbol"])
+          )
+        )
+      ),
+      ...closedTrades.map(symbolOf)
+    ]),
+
     sides: uniqueSorted([
-      ...events.map(event => normalizedSide(firstValue(event, ["side", "payload.side"]))),
+      ...events.map(event =>
+        normalizedSide(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.side"],
+            firstValue(event, ["side", "payload.side"])
+          )
+        )
+      ),
       ...closedTrades.map(sideOf)
     ]),
+
     eventTypes: uniqueSorted(events.map(normalizeEventType)),
     reasons: uniqueSorted(closedTrades.map(exitReasonOf)),
+
     setupClasses: uniqueSorted([
-      ...events.map(event => eventString(event, ["setupClass", "payload.setupClass"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.setupClass"],
+            firstValue(event, ["setupClass", "payload.setupClass"], "")
+          )
+        )
+      ),
       ...closedTrades.map(setupClassOf)
     ]),
+
     grades: uniqueSorted([
-      ...events.map(event => eventString(event, ["grade", "payload.grade"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.grade"],
+            firstValue(event, ["grade", "payload.grade"], "")
+          )
+        )
+      ),
       ...closedTrades.map(gradeOf)
     ]),
+
     regimes: uniqueSorted([
-      ...events.map(event => eventString(event, ["regime", "payload.regime", "payload.market.regime"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["market.regime"],
+            firstValue(event, ["regime", "payload.regime", "payload.market.regime"], "")
+          )
+        )
+      ),
       ...closedTrades.map(regimeOf)
     ]),
+
     flows: uniqueSorted([
-      ...events.map(event => eventString(event, ["flow", "payload.flow", "payload.market.flow"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["market.flow"],
+            firstValue(event, ["flow", "payload.flow", "payload.market.flow"], "")
+          )
+        )
+      ),
       ...closedTrades.map(flowOf)
     ]),
+
     btcStates: uniqueSorted([
-      ...events.map(event => eventString(event, ["btcState", "payload.btcState", "payload.market.btcState"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["market.btcState"],
+            firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"], "")
+          )
+        )
+      ),
       ...closedTrades.map(btcStateOf)
     ]),
+
     rsiZones: uniqueSorted([
-      ...events.map(event => eventString(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["rsi.rsiZone"],
+            firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"], "")
+          )
+        )
+      ),
       ...closedTrades.map(rsiZoneOf)
     ]),
+
     rsiEdges: uniqueSorted([
-      ...events.map(event => eventString(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["rsi.rsiEdge"],
+            firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"], "")
+          )
+        )
+      ),
       ...closedTrades.map(rsiEdgeOf)
     ]),
+
     obBiases: uniqueSorted([
-      ...events.map(event => eventString(event, ["obBias", "payload.obBias", "payload.ob.bias"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.obBias"],
+            firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"], "")
+          )
+        )
+      ),
       ...closedTrades.map(obBiasOf)
     ]),
+
     obRelations: uniqueSorted([
-      ...events.map(event => eventString(event, ["obRelation", "payload.obRelation", "payload.ob.relation"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.obRelation"],
+            firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"], "")
+          )
+        )
+      ),
       ...closedTrades.map(obRelationOf)
     ]),
+
     spreadBuckets: uniqueSorted([
-      ...events.map(event => eventString(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.spreadBucket"],
+            firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"], "")
+          )
+        )
+      ),
       ...closedTrades.map(spreadBucketOf)
     ]),
+
     depthBuckets: uniqueSorted([
-      ...events.map(event => eventString(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")),
+      ...events.map(event =>
+        upper(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.depthBucket"],
+            firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"], "")
+          )
+        )
+      ),
       ...closedTrades.map(depthBucketOf)
     ])
   };
@@ -1475,6 +1937,565 @@ function buildCohorts(trades: ClosedTrade[], filters: DashboardFilters): CohortR
       return b.trades - a.trades;
     })
     .slice(0, 150);
+}
+
+type ExclusiveSide = "LONG" | "SHORT";
+
+const EXCLUSIVE_GROUP_LIMIT = 10;
+
+const EXCLUSIVE_FILTER_KEYS = [
+  "setupClass",
+  "side",
+  "entryReason",
+  "grade",
+  "stage",
+  "flow",
+  "btcState",
+  "regime",
+  "counterBtc",
+  "rsiZone",
+  "rsiEdge",
+  "obBias",
+  "obRelation",
+  "confluenceBucket",
+  "sniperBucket",
+  "baseRRBucket",
+  "finalRRBucket",
+  "spreadBucket",
+  "depthBucket",
+  "fundingBucket",
+  "tfStrengthBucket",
+  "change1hBucket",
+  "change24hBucket",
+  "pullbackBucket",
+  "sweepConfirmed",
+  "retestConfirmed",
+  "bullishMidTrendProbe",
+  "btcBullishBearException"
+] as const;
+
+type ExclusiveFilterKey = typeof EXCLUSIVE_FILTER_KEYS[number];
+
+type ExclusivePattern = {
+  name: string;
+  keys: ExclusiveFilterKey[];
+};
+
+const EXCLUSIVE_PATTERNS: ExclusivePattern[] = [
+  {
+    name: "SETUP_SIDE_MARKET_OB",
+    keys: ["setupClass", "side", "grade", "flow", "obRelation"]
+  },
+  {
+    name: "SETUP_SIDE_RSI_FLOW_OB",
+    keys: ["setupClass", "side", "grade", "rsiZone", "flow", "obRelation"]
+  },
+  {
+    name: "SETUP_SIDE_RSI_FLOW_OB_RR",
+    keys: ["setupClass", "side", "grade", "rsiZone", "flow", "obRelation", "baseRRBucket", "finalRRBucket"]
+  },
+  {
+    name: "SETUP_SIDE_RSI_EDGE_OB_RR",
+    keys: ["setupClass", "side", "grade", "rsiZone", "rsiEdge", "obRelation", "baseRRBucket", "finalRRBucket"]
+  },
+  {
+    name: "SETUP_SIDE_SCORE_RR_EXECUTION",
+    keys: ["setupClass", "side", "grade", "confluenceBucket", "sniperBucket", "baseRRBucket", "finalRRBucket", "spreadBucket", "depthBucket"]
+  },
+  {
+    name: "SETUP_SIDE_BTC_FLOW_RSI_OB",
+    keys: ["setupClass", "side", "grade", "btcState", "flow", "rsiZone", "obRelation"]
+  },
+  {
+    name: "SETUP_SIDE_ENTRY_RSI_FLOW_OB",
+    keys: ["setupClass", "side", "entryReason", "grade", "rsiZone", "flow", "obRelation"]
+  },
+  {
+    name: "SETUP_SIDE_STRUCTURE",
+    keys: ["setupClass", "side", "grade", "flow", "rsiZone", "pullbackBucket", "sweepConfirmed", "retestConfirmed"]
+  },
+  {
+    name: "SETUP_SIDE_EXCEPTIONS",
+    keys: ["setupClass", "side", "grade", "flow", "btcState", "bullishMidTrendProbe", "btcBullishBearException"]
+  },
+  {
+    name: "SETUP_SIDE_FULL_CORE",
+    keys: [
+      "setupClass",
+      "side",
+      "entryReason",
+      "grade",
+      "flow",
+      "btcState",
+      "rsiZone",
+      "rsiEdge",
+      "obRelation",
+      "confluenceBucket",
+      "sniperBucket",
+      "baseRRBucket",
+      "finalRRBucket",
+      "spreadBucket",
+      "depthBucket"
+    ]
+  }
+];
+
+const EXCLUSIVE_LABELS: Record<ExclusiveFilterKey, string> = {
+  setupClass: "SETUP",
+  side: "SIDE",
+  entryReason: "ENTRY",
+  grade: "GRADE",
+  stage: "STAGE",
+  flow: "FLOW",
+  btcState: "BTC",
+  regime: "REGIME",
+  counterBtc: "COUNTER_BTC",
+  rsiZone: "RSI",
+  rsiEdge: "EDGE",
+  obBias: "OB_BIAS",
+  obRelation: "OB_REL",
+  confluenceBucket: "CONF",
+  sniperBucket: "SNIPER",
+  baseRRBucket: "BASE_RR",
+  finalRRBucket: "FINAL_RR",
+  spreadBucket: "SPREAD",
+  depthBucket: "DEPTH",
+  fundingBucket: "FUNDING",
+  tfStrengthBucket: "TF",
+  change1hBucket: "CH1H",
+  change24hBucket: "CH24H",
+  pullbackBucket: "PULLBACK",
+  sweepConfirmed: "SWEEP",
+  retestConfirmed: "RETEST",
+  bullishMidTrendProbe: "BULL_MID_PROBE",
+  btcBullishBearException: "BTC_SHORT_EXCEPTION"
+};
+
+function yesNo(value: unknown): string {
+  return bool(value) ? "YES" : "NO";
+}
+
+function normalizedTradeSideForGroups(trade: ClosedTrade): ExclusiveSide | "UNKNOWN" {
+  const side = sideOf(trade);
+
+  if (side === "LONG") return "LONG";
+  if (side === "SHORT") return "SHORT";
+
+  return "UNKNOWN";
+}
+
+function exclusiveFilterValue(trade: ClosedTrade, key: ExclusiveFilterKey): string {
+  switch (key) {
+    case "setupClass":
+      return setupClassOf(trade);
+
+    case "side":
+      return sideOf(trade);
+
+    case "entryReason":
+      return entryReasonOf(trade);
+
+    case "grade":
+      return gradeOf(trade);
+
+    case "stage":
+      return upper(snapshotFirstValue(trade, ["identity.stage"], tradeValue(trade, ["stage", "payload.stage"])), "UNKNOWN");
+
+    case "flow":
+      return flowOf(trade);
+
+    case "btcState":
+      return btcStateOf(trade);
+
+    case "regime":
+      return regimeOf(trade);
+
+    case "counterBtc":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["market.counterBtcLabel"],
+          yesNo(snapshotFirstValue(trade, ["market.counterBtc"], false))
+        ),
+        "NO"
+      );
+
+    case "rsiZone":
+      return rsiZoneOf(trade);
+
+    case "rsiEdge":
+      return rsiEdgeOf(trade);
+
+    case "obBias":
+      return obBiasOf(trade);
+
+    case "obRelation":
+      return obRelationOf(trade);
+
+    case "confluenceBucket":
+      return confluenceBucketOf(trade);
+
+    case "sniperBucket":
+      return sniperBucketOf(trade);
+
+    case "baseRRBucket":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["rr.baseRRBucket"],
+          rrBucket(tradeValue(trade, ["baseRR", "payload.baseRR", "payload.rr.baseRR"]))
+        ),
+        "RR_NA"
+      );
+
+    case "finalRRBucket":
+      return rrBucketOf(trade);
+
+    case "spreadBucket":
+      return spreadBucketOf(trade);
+
+    case "depthBucket":
+      return depthBucketOf(trade);
+
+    case "fundingBucket":
+      return upper(snapshotFirstValue(trade, ["market.fundingBucket"], "FUNDING_NA"), "FUNDING_NA");
+
+    case "tfStrengthBucket":
+      return upper(snapshotFirstValue(trade, ["timeframe.tfStrengthBucket"], "TF_NA"), "TF_NA");
+
+    case "change1hBucket":
+      return upper(snapshotFirstValue(trade, ["timeframe.change1hBucket"], "CH1H_NA"), "CH1H_NA");
+
+    case "change24hBucket":
+      return upper(snapshotFirstValue(trade, ["timeframe.change24hBucket"], "CH24H_NA"), "CH24H_NA");
+
+    case "pullbackBucket":
+      return upper(snapshotFirstValue(trade, ["structure.distanceFromLocalHighBucket"], "PULLBACK_NA"), "PULLBACK_NA");
+
+    case "sweepConfirmed":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["structure.sweepConfirmedLabel"],
+          yesNo(snapshotFirstValue(trade, ["structure.sweepConfirmed"], false))
+        ),
+        "NO"
+      );
+
+    case "retestConfirmed":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["structure.retestConfirmedLabel"],
+          yesNo(snapshotFirstValue(trade, ["structure.retestConfirmed"], false))
+        ),
+        "NO"
+      );
+
+    case "bullishMidTrendProbe":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["exceptions.bullishMidTrendProbeLabel"],
+          yesNo(snapshotFirstValue(trade, ["exceptions.bullishMidTrendProbe"], false))
+        ),
+        "NO"
+      );
+
+    case "btcBullishBearException":
+      return upper(
+        snapshotFirstValue(
+          trade,
+          ["exceptions.btcBullishBearExceptionLabel"],
+          yesNo(snapshotFirstValue(trade, ["exceptions.btcBullishBearException"], false))
+        ),
+        "NO"
+      );
+
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function buildExclusiveKey(pattern: ExclusivePattern, trade: ClosedTrade): string {
+  return [
+    "MODE=EXCLUSIVE",
+    `PATTERN=${pattern.name}`,
+    ...EXCLUSIVE_FILTER_KEYS.map(key => {
+      const label = EXCLUSIVE_LABELS[key];
+      const value = pattern.keys.includes(key)
+        ? exclusiveFilterValue(trade, key)
+        : "ANY";
+
+      return `${label}=${value}`;
+    })
+  ].join("|");
+}
+
+function distributionForKey(trades: ClosedTrade[], key: ExclusiveFilterKey): Record<string, number> {
+  const dist: Record<string, number> = {};
+
+  for (const trade of trades) {
+    const value = exclusiveFilterValue(trade, key);
+    dist[value] = Number(dist[value] || 0) + 1;
+  }
+
+  return Object.fromEntries(
+    Object.entries(dist).sort((a, b) => b[1] - a[1])
+  );
+}
+
+function buildFixedAndMixedFilters(trades: ClosedTrade[]): {
+  fixedFilters: Record<string, string | number | boolean | null>;
+  mixedFilters: Record<string, Record<string, number>>;
+} {
+  const fixedFilters: Record<string, string | number | boolean | null> = {};
+  const mixedFilters: Record<string, Record<string, number>> = {};
+
+  for (const key of EXCLUSIVE_FILTER_KEYS) {
+    const dist = distributionForKey(trades, key);
+    const values = Object.keys(dist);
+
+    if (values.length === 1) {
+      fixedFilters[key] = values[0];
+      continue;
+    }
+
+    mixedFilters[key] = dist;
+  }
+
+  return {
+    fixedFilters,
+    mixedFilters
+  };
+}
+
+function extractPatternNameFromKey(cohortKey: string): string {
+  return keyPart(cohortKey, "PATTERN=", "UNKNOWN");
+}
+
+function buildExclusiveRow({
+  cohortKey,
+  rows,
+  filters,
+  groupId,
+  groupRank
+}: {
+  cohortKey: string;
+  rows: ClosedTrade[];
+  filters: DashboardFilters;
+  groupId: string;
+  groupRank: number;
+}): ExclusiveGroupRow {
+  const metrics = summarizeTrades(rows);
+  const first = rows[0];
+  const { fixedFilters, mixedFilters } = buildFixedAndMixedFilters(rows);
+
+  const symbols = uniqueSorted(
+    rows
+      .map(symbolOf)
+      .filter(symbol => symbol !== "UNKNOWN")
+  );
+
+  return {
+    groupId,
+    groupRank,
+    patternName: extractPatternNameFromKey(cohortKey),
+    fixedFilters,
+    mixedFilters,
+    tradeIds: rows.map(row => row.tradeId),
+
+    score: optimizerScore(metrics, filters),
+    cohortKey,
+    label: cohortKey,
+
+    sample: rows.length,
+    count: rows.length,
+
+    ...metrics,
+
+    setupClass: keyPart(cohortKey, "SETUP=", setupClassOf(first)),
+    side: keyPart(cohortKey, "SIDE=", sideOf(first)),
+    entryReason: keyPart(cohortKey, "ENTRY=", entryReasonOf(first)),
+    reason: keyPart(cohortKey, "ENTRY=", entryReasonOf(first)),
+    grade: keyPart(cohortKey, "GRADE=", gradeOf(first)),
+    regime: keyPart(cohortKey, "REGIME=", regimeOf(first)),
+    flow: keyPart(cohortKey, "FLOW=", flowOf(first)),
+    btcState: keyPart(cohortKey, "BTC=", btcStateOf(first)),
+    rsiZone: keyPart(cohortKey, "RSI=", rsiZoneOf(first)),
+    rsiEdge: keyPart(cohortKey, "EDGE=", rsiEdgeOf(first)),
+    obBias: keyPart(cohortKey, "OB_BIAS=", obBiasOf(first)),
+    obRelation: keyPart(cohortKey, "OB_REL=", obRelationOf(first)),
+    spreadBucket: keyPart(cohortKey, "SPREAD=", spreadBucketOf(first)),
+    depthBucket: keyPart(cohortKey, "DEPTH=", depthBucketOf(first)),
+
+    symbols
+  };
+}
+
+function buildExclusiveCandidateRows(
+  trades: ClosedTrade[],
+  filters: DashboardFilters,
+  side: ExclusiveSide,
+  minTrades: number,
+  allowOversized: boolean
+): ExclusiveGroupRow[] {
+  const sideTrades = trades.filter(trade => normalizedTradeSideForGroups(trade) === side);
+
+  if (!sideTrades.length) return [];
+
+  const minWilson = percentInputToRatio(filters.minWilson, 0);
+  const minWinrate = percentInputToRatio(filters.minWinrate, 0);
+  const maxShare = sideTrades.length >= minTrades * 4 ? 0.45 : 1;
+
+  const map = new Map<string, ClosedTrade[]>();
+
+  for (const trade of sideTrades) {
+    for (const pattern of EXCLUSIVE_PATTERNS) {
+      const key = buildExclusiveKey(pattern, trade);
+
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+
+      map.get(key)!.push(trade);
+    }
+  }
+
+  return Array.from(map.entries())
+    .map(([cohortKey, rows]) => {
+      return buildExclusiveRow({
+        cohortKey,
+        rows,
+        filters,
+        groupId: `${side}_CANDIDATE`,
+        groupRank: 0
+      });
+    })
+    .filter(row => {
+      if (row.trades < minTrades) return false;
+      if (minWilson > 0 && row.wilson < minWilson) return false;
+      if (minWinrate > 0 && row.winrate < minWinrate) return false;
+
+      if (!allowOversized && row.trades / sideTrades.length > maxShare) {
+        return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const aPositive = a.totalR > 0 && a.avgR > 0 ? 1 : 0;
+      const bPositive = b.totalR > 0 && b.avgR > 0 ? 1 : 0;
+
+      if (aPositive !== bPositive) return bPositive - aPositive;
+
+      const scoreDiff = b.score - a.score;
+      if (scoreDiff !== 0) return scoreDiff;
+
+      const totalRDiff = b.totalR - a.totalR;
+      if (totalRDiff !== 0) return totalRDiff;
+
+      const wilsonDiff = b.wilson - a.wilson;
+      if (wilsonDiff !== 0) return wilsonDiff;
+
+      return b.trades - a.trades;
+    });
+}
+
+function buildOtherExclusiveKey(side: ExclusiveSide): string {
+  return [
+    "MODE=EXCLUSIVE",
+    "PATTERN=OTHER",
+    ...EXCLUSIVE_FILTER_KEYS.map(key => {
+      const label = EXCLUSIVE_LABELS[key];
+
+      if (key === "side") return `${label}=${side}`;
+
+      return `${label}=ANY`;
+    })
+  ].join("|");
+}
+
+function buildExclusiveGroupsForSide(
+  trades: ClosedTrade[],
+  filters: DashboardFilters,
+  side: ExclusiveSide
+): ExclusiveGroupRow[] {
+  const minTrades = Math.max(1, num(filters.minTrades, 5));
+
+  const remaining = new Map(
+    trades
+      .filter(trade => normalizedTradeSideForGroups(trade) === side)
+      .map(trade => [trade.tradeId, trade])
+  );
+
+  const groups: ExclusiveGroupRow[] = [];
+
+  for (let rank = 1; rank <= EXCLUSIVE_GROUP_LIMIT; rank++) {
+    const rows = Array.from(remaining.values());
+
+    if (rows.length < minTrades) break;
+
+    let candidates = buildExclusiveCandidateRows(
+      rows,
+      filters,
+      side,
+      minTrades,
+      false
+    );
+
+    if (!candidates.length) {
+      candidates = buildExclusiveCandidateRows(
+        rows,
+        filters,
+        side,
+        minTrades,
+        true
+      );
+    }
+
+    const best = candidates[0];
+
+    if (!best) break;
+
+    const selectedTrades = best.tradeIds
+      .map(tradeId => remaining.get(tradeId))
+      .filter((trade): trade is ClosedTrade => Boolean(trade));
+
+    if (!selectedTrades.length) break;
+
+    const groupId = `${side}_${String(rank).padStart(2, "0")}`;
+
+    groups.push(
+      buildExclusiveRow({
+        cohortKey: best.cohortKey,
+        rows: selectedTrades,
+        filters,
+        groupId,
+        groupRank: rank
+      })
+    );
+
+    for (const trade of selectedTrades) {
+      remaining.delete(trade.tradeId);
+    }
+  }
+
+  const otherTrades = Array.from(remaining.values());
+
+  if (otherTrades.length > 0) {
+    groups.push(
+      buildExclusiveRow({
+        cohortKey: buildOtherExclusiveKey(side),
+        rows: otherTrades,
+        filters,
+        groupId: `${side}_OTHER`,
+        groupRank: 999
+      })
+    );
+  }
+
+  return groups;
 }
 
 function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
@@ -1579,50 +2600,137 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
         date: new Date(ts || Date.now()).toISOString(),
 
         eventType: normalizeEventType(event),
-        action: text(firstValue(event, ["action"])),
+        action: text(firstValue(event, ["action", "payload.action"])),
         reason: text(firstValue(event, ["reason", "payload.reason"])),
 
-        symbol: nullableText(firstValue(event, ["symbol", "payload.symbol"])),
-        side: nullableText(firstValue(event, ["side", "payload.side"])),
+        symbol: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.symbol"],
+            firstValue(event, ["symbol", "payload.symbol"])
+          )
+        ),
 
-        setupClass: nullableText(firstValue(event, ["setupClass", "payload.setupClass"])),
-        grade: nullableText(firstValue(event, ["grade", "payload.grade"])),
+        side: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.side"],
+            firstValue(event, ["side", "payload.side"])
+          )
+        ),
 
-        entry: nullableNum(firstValue(event, ["entry", "price", "payload.entry", "payload.price"])),
-        sl: nullableNum(firstValue(event, ["sl", "payload.sl"])),
+        setupClass: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.setupClass"],
+            firstValue(event, ["setupClass", "payload.setupClass"])
+          )
+        ),
+
+        grade: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["identity.grade"],
+            firstValue(event, ["grade", "payload.grade"])
+          )
+        ),
+
+        entry: nullableNum(firstValue(event, ["entry", "price", "payload.entry", "payload.price", "filterSnapshot.riskGeometry.entry", "payload.filterSnapshot.riskGeometry.entry"])),
+        sl: nullableNum(firstValue(event, ["sl", "payload.sl", "filterSnapshot.riskGeometry.sl", "payload.filterSnapshot.riskGeometry.sl"])),
         initialSl: nullableNum(firstValue(event, ["initialSl", "payload.initialSl"])),
-        tp: nullableNum(firstValue(event, ["tp", "payload.tp"])),
+        tp: nullableNum(firstValue(event, ["tp", "payload.tp", "filterSnapshot.riskGeometry.tp", "payload.filterSnapshot.riskGeometry.tp"])),
         exit: nullableNum(firstValue(event, ["exit", "executionPrice", "payload.exit", "payload.executionPrice"])),
 
         rr: nullableNum(firstValue(event, ["rr", "payload.rr"])),
-        plannedRR: nullableNum(firstValue(event, ["plannedRR", "payload.plannedRR"])),
-        baseRR: nullableNum(firstValue(event, ["baseRR", "payload.baseRR"])),
-        finalRr: nullableNum(firstValue(event, ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR"])),
+        plannedRR: nullableNum(firstValue(event, ["plannedRR", "payload.plannedRR", "filterSnapshot.rr.plannedRR", "payload.filterSnapshot.rr.plannedRR"])),
+        baseRR: nullableNum(firstValue(event, ["baseRR", "payload.baseRR", "filterSnapshot.rr.baseRR", "payload.filterSnapshot.rr.baseRR"])),
+        finalRr: nullableNum(firstValue(event, ["finalRr", "finalRR", "payload.finalRr", "payload.finalRR", "filterSnapshot.rr.finalRr", "payload.filterSnapshot.rr.finalRr"])),
         exitR: nullableNum(firstValue(event, ["exitR", "payload.exitR"])),
         pnlPct: nullableNum(firstValue(event, ["pnlPct", "payload.pnlPct"])),
 
-        score: nullableNum(firstValue(event, ["score", "payload.score"])),
-        confluence: nullableNum(firstValue(event, ["confluence", "payload.confluence"])),
-        sniperScore: nullableNum(firstValue(event, ["sniperScore", "payload.sniperScore"])),
+        score: nullableNum(firstValue(event, ["score", "payload.score", "filterSnapshot.scanner.score", "payload.filterSnapshot.scanner.score"])),
+        confluence: nullableNum(firstValue(event, ["confluence", "payload.confluence", "filterSnapshot.confluence.effectiveConfluence", "payload.filterSnapshot.confluence.effectiveConfluence"])),
+        sniperScore: nullableNum(firstValue(event, ["sniperScore", "payload.sniperScore", "filterSnapshot.sniper.sniperScore", "payload.filterSnapshot.sniper.sniperScore"])),
 
-        rsi: nullableNum(firstValue(event, ["rsi", "payload.rsi"])),
-        rsiHTF: nullableNum(firstValue(event, ["rsiHTF", "payload.rsiHTF"])),
-        rsiZone: nullableText(firstValue(event, ["rsiZone", "payload.rsiZone"])),
-        rsiEdge: nullableText(firstValue(event, ["rsiEdge", "payload.rsiEdge"])),
+        rsi: nullableNum(firstValue(event, ["rsi", "payload.rsi", "filterSnapshot.rsi.rsi", "payload.filterSnapshot.rsi.rsi"])),
+        rsiHTF: nullableNum(firstValue(event, ["rsiHTF", "payload.rsiHTF", "filterSnapshot.rsi.rsiHTF", "payload.filterSnapshot.rsi.rsiHTF"])),
 
-        obBias: nullableText(firstValue(event, ["obBias", "payload.obBias"])),
-        obRelation: nullableText(firstValue(event, ["obRelation", "payload.obRelation"])),
+        rsiZone: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["rsi.rsiZone"],
+            firstValue(event, ["rsiZone", "payload.rsiZone"])
+          )
+        ),
 
-        spreadPct: nullableNum(firstValue(event, ["spreadPct", "payload.spreadPct"])),
-        spreadBps: nullableNum(firstValue(event, ["spreadBps", "payload.spreadBps"])),
-        spreadBucket: nullableText(firstValue(event, ["spreadBucket", "payload.spreadBucket"])),
+        rsiEdge: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["rsi.rsiEdge"],
+            firstValue(event, ["rsiEdge", "payload.rsiEdge"])
+          )
+        ),
 
-        depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p"])),
-        depthBucket: nullableText(firstValue(event, ["depthBucket", "payload.depthBucket"])),
+        obBias: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.obBias"],
+            firstValue(event, ["obBias", "payload.obBias"])
+          )
+        ),
 
-        flow: nullableText(firstValue(event, ["flow", "payload.flow"])),
-        btcState: nullableText(firstValue(event, ["btcState", "payload.btcState"])),
-        regime: nullableText(firstValue(event, ["regime", "payload.regime"])),
+        obRelation: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.obRelation"],
+            firstValue(event, ["obRelation", "payload.obRelation"])
+          )
+        ),
+
+        spreadPct: nullableNum(firstValue(event, ["spreadPct", "payload.spreadPct", "filterSnapshot.orderbook.spreadPct", "payload.filterSnapshot.orderbook.spreadPct"])),
+        spreadBps: nullableNum(firstValue(event, ["spreadBps", "payload.spreadBps", "filterSnapshot.orderbook.spreadBps", "payload.filterSnapshot.orderbook.spreadBps"])),
+
+        spreadBucket: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.spreadBucket"],
+            firstValue(event, ["spreadBucket", "payload.spreadBucket"])
+          )
+        ),
+
+        depthMinUsd1p: nullableNum(firstValue(event, ["depthMinUsd1p", "payload.depthMinUsd1p", "filterSnapshot.orderbook.depthMinUsd1p", "payload.filterSnapshot.orderbook.depthMinUsd1p"])),
+
+        depthBucket: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["orderbook.depthBucket"],
+            firstValue(event, ["depthBucket", "payload.depthBucket"])
+          )
+        ),
+
+        flow: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["market.flow"],
+            firstValue(event, ["flow", "payload.flow"])
+          )
+        ),
+
+        btcState: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["market.btcState"],
+            firstValue(event, ["btcState", "payload.btcState"])
+          )
+        ),
+
+        regime: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["market.regime"],
+            firstValue(event, ["regime", "payload.regime"])
+          )
+        ),
 
         mfeR: nullableNum(firstValue(event, ["mfeR", "payload.mfeR"])),
         maeR: nullableNum(firstValue(event, ["maeR", "payload.maeR"])),
@@ -1635,8 +2743,15 @@ function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
         breakEvenActivated: bool(firstValue(event, ["breakEvenActivated", "payload.breakEvenActivated"])),
         breakEvenStop: bool(firstValue(event, ["breakEvenStop", "payload.breakEvenStop"])),
 
-        strategyVersion: nullableText(firstValue(event, ["strategyVersion"])),
-        runId: nullableText(firstValue(event, ["runId"]))
+        strategyVersion: nullableText(
+          eventSnapshotFirstValue(
+            event,
+            ["strategyVersion"],
+            firstValue(event, ["strategyVersion", "payload.strategyVersion"])
+          )
+        ),
+
+        runId: nullableText(firstValue(event, ["runId", "payload.runId"]))
       };
     });
 }
@@ -1658,6 +2773,19 @@ export async function getDashboardData(filters: DashboardFilters): Promise<Dashb
     overview: buildOverview(allEvents, filteredClosedTrades, filters),
     options: buildOptions(allEvents),
     cohorts: buildCohorts(filteredClosedTrades, filters),
+
+    exclusiveGroupsLong: buildExclusiveGroupsForSide(
+      filteredClosedTrades,
+      filters,
+      "LONG"
+    ),
+
+    exclusiveGroupsShort: buildExclusiveGroupsForSide(
+      filteredClosedTrades,
+      filters,
+      "SHORT"
+    ),
+
     breakdown: buildBreakdown(filteredClosedTrades),
     recentTrades: buildRecentTrades(filteredRawEvents),
     rawEvents: filteredRawEvents
