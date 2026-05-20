@@ -69,18 +69,18 @@ export async function redisCommand<T = any>(command: RedisCommand): Promise<T> {
     cache: "no-store"
   });
 
-  const text = await res.text();
+  const textBody = await res.text();
 
   let json: any = null;
 
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(textBody);
   } catch {
     json = null;
   }
 
   if (!res.ok || json?.error) {
-    throw new Error(json?.error || text || `redis_error_${res.status}`);
+    throw new Error(json?.error || textBody || `redis_error_${res.status}`);
   }
 
   return json?.result as T;
@@ -179,9 +179,7 @@ function hashString(input: string): string {
 }
 
 function eventIdentity(event: TradeEvent): string {
-  const eventId = text(
-    firstValue(event, ["eventId", "payload.eventId"])
-  );
+  const eventId = text(firstValue(event, ["eventId", "payload.eventId"]));
 
   if (eventId) return `eventId:${eventId}`;
 
@@ -192,23 +190,48 @@ function eventIdentity(event: TradeEvent): string {
   if (payloadHash) return `payloadHash:${payloadHash}`;
 
   const tradeId = text(
-    firstValue(event, ["tradeId", "id", "signalId", "payload.tradeId", "payload.id", "payload.signalId"])
+    firstValue(event, [
+      "tradeId",
+      "id",
+      "signalId",
+      "payload.tradeId",
+      "payload.id",
+      "payload.signalId"
+    ])
   );
 
   const eventType = text(
-    firstValue(event, ["eventType", "type", "action", "payload.eventType", "payload.type", "payload.action"])
+    firstValue(event, [
+      "eventType",
+      "type",
+      "action",
+      "payload.eventType",
+      "payload.type",
+      "payload.action"
+    ])
   );
 
-  const symbol = text(
-    firstValue(event, ["symbol", "payload.symbol"])
-  );
+  const symbol = text(firstValue(event, ["symbol", "payload.symbol"]));
 
   const ts = text(
-    firstValue(event, ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"])
+    firstValue(event, [
+      "ts",
+      "createdAt",
+      "receivedAt",
+      "storedAt",
+      "payload.ts",
+      "payload.createdAt"
+    ])
   );
 
   const reason = text(
-    firstValue(event, ["reason", "entryReason", "exitReason", "rejectReason", "payload.reason"])
+    firstValue(event, [
+      "reason",
+      "entryReason",
+      "exitReason",
+      "rejectReason",
+      "payload.reason"
+    ])
   );
 
   if (tradeId || eventType || symbol || ts || reason) {
@@ -261,10 +284,7 @@ function extractEvents(value: unknown): TradeEvent[] {
 function normalizeStoredEvent(event: TradeEvent): TradeEvent {
   const now = Date.now();
 
-  const eventId = text(
-    firstValue(event, ["eventId", "payload.eventId"])
-  );
-
+  const eventId = text(firstValue(event, ["eventId", "payload.eventId"]));
   const payloadHash = text(
     firstValue(event, ["payloadHash", "payload.payloadHash"])
   );
@@ -274,7 +294,10 @@ function normalizeStoredEvent(event: TradeEvent): TradeEvent {
   };
 
   if (!normalized.eventId) {
-    normalized.eventId = eventId || eventIdentity(event).replace(/[^a-z0-9:_|-]+/gi, "_").slice(0, 260);
+    normalized.eventId = (
+      eventId ||
+      eventIdentity(event).replace(/[^a-z0-9:_|-]+/gi, "_")
+    ).slice(0, 260);
   }
 
   if (!normalized.payloadHash) {
@@ -305,11 +328,19 @@ function dedupeEvents(events: TradeEvent[]): TradeEvent[] {
 function sortEventsAsc(events: TradeEvent[]): TradeEvent[] {
   return [...events].sort((a, b) => {
     const aTs = Number(
-      firstValue(a, ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"], 0)
+      firstValue(
+        a,
+        ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"],
+        0
+      )
     );
 
     const bTs = Number(
-      firstValue(b, ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"], 0)
+      firstValue(
+        b,
+        ["ts", "createdAt", "receivedAt", "storedAt", "payload.ts", "payload.createdAt"],
+        0
+      )
     );
 
     return aTs - bTs;
@@ -362,9 +393,7 @@ export async function listTradeEvents(limit = MAX_STORED_ACTIONS): Promise<Trade
     ...LATEST_KEYS.map(key => readRedisJsonKey(key))
   ]);
 
-  const fallbackEvents = fallbackGroups.flat();
-
-  return sortEventsAsc(dedupeEvents(fallbackEvents)).slice(-limit);
+  return sortEventsAsc(dedupeEvents(fallbackGroups.flat())).slice(-limit);
 }
 
 export async function getTradeEvents(limit = MAX_STORED_ACTIONS): Promise<TradeEvent[]> {
@@ -404,6 +433,7 @@ export async function getTradeEventCount(): Promise<number> {
 export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promise<{
   ok: boolean;
   redis: boolean;
+  persistent: boolean;
   stored: number;
   total: number;
 }> {
@@ -413,6 +443,7 @@ export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promi
     return {
       ok: true,
       redis: hasRedis(),
+      persistent: hasRedis(),
       stored: 0,
       total: await getTradeEventCount()
     };
@@ -431,6 +462,7 @@ export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promi
     return {
       ok: true,
       redis: false,
+      persistent: false,
       stored: events.length,
       total: store.length
     };
@@ -454,6 +486,7 @@ export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promi
   const latestPayload = {
     ok: true,
     storage: "redis-list",
+    persistent: true,
     receivedAt: Date.now(),
     count: events.length,
     actionsPreviewCount: Math.min(events.length, 25),
@@ -469,6 +502,7 @@ export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promi
   return {
     ok: true,
     redis: true,
+    persistent: true,
     stored: events.length,
     total: await getTradeEventCount()
   };
@@ -477,6 +511,7 @@ export async function appendTradeEvents(input: TradeEvent[] | TradeEvent): Promi
 export async function appendTradeEvent(event: TradeEvent): Promise<{
   ok: boolean;
   redis: boolean;
+  persistent: boolean;
   stored: number;
   total: number;
 }> {
@@ -486,6 +521,7 @@ export async function appendTradeEvent(event: TradeEvent): Promise<{
 export async function clearTradeEvents(): Promise<{
   ok: boolean;
   redis: boolean;
+  persistent: boolean;
   deleted: number;
   keys: string[];
 }> {
@@ -500,6 +536,7 @@ export async function clearTradeEvents(): Promise<{
     return {
       ok: true,
       redis: false,
+      persistent: false,
       deleted,
       keys: []
     };
@@ -510,6 +547,7 @@ export async function clearTradeEvents(): Promise<{
   return {
     ok: true,
     redis: true,
+    persistent: true,
     deleted: Number(deleted || 0),
     keys
   };
@@ -518,6 +556,7 @@ export async function clearTradeEvents(): Promise<{
 export async function resetTradeEvents(): Promise<{
   ok: boolean;
   redis: boolean;
+  persistent: boolean;
   deleted: number;
   keys: string[];
 }> {
@@ -527,6 +566,7 @@ export async function resetTradeEvents(): Promise<{
 export async function replaceTradeEvents(input: TradeEvent[] | TradeEvent): Promise<{
   ok: boolean;
   redis: boolean;
+  persistent: boolean;
   stored: number;
   total: number;
 }> {
@@ -536,14 +576,18 @@ export async function replaceTradeEvents(input: TradeEvent[] | TradeEvent): Prom
 
 export async function getRedisStatus(): Promise<{
   redis: boolean;
+  persistent: boolean;
   count: number;
   storage: string;
   maxStoredActions: number;
 }> {
+  const redis = hasRedis();
+
   return {
-    redis: hasRedis(),
+    redis,
+    persistent: redis,
     count: await getTradeEventCount(),
-    storage: hasRedis() ? "redis-list" : "memory",
+    storage: redis ? "redis-list" : "memory",
     maxStoredActions: MAX_STORED_ACTIONS
   };
 }
