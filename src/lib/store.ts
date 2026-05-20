@@ -22,6 +22,7 @@ export type SaveTradeEventResult = {
 
   eventId?: string | null;
   error?: string | null;
+  count?: number | null;
 };
 
 export type SaveTradeEventsResult = {
@@ -38,6 +39,7 @@ export type SaveTradeEventsResult = {
 
   eventId?: string | null;
   error?: string | null;
+  count?: number | null;
 };
 
 export type ClearTradeEventsResult = {
