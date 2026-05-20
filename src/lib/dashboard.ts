@@ -39,6 +39,13 @@ export type DashboardFilters = {
 
 export type Overview = {
   entries: number;
+  events: number;
+  entryEvents: number;
+  exitEvents: number;
+  rejects: number;
+  snapshots: number;
+  holds: number;
+
   closed: number;
   open: number;
   winrate: number;
@@ -375,7 +382,7 @@ function bool(value: unknown): boolean {
   if (typeof value === "boolean") return value;
 
   const v = lower(value);
-  return ["true", "1", "yes", "y"].includes(v);
+  return ["true", "1", "yes", "y", "on"].includes(v);
 }
 
 function round(value: number, decimals = 4): number {
@@ -441,10 +448,19 @@ function normalizeEventType(event: TradeEvent): string {
   );
 
   if (raw.includes("ENTRY")) return "ENTRY";
+  if (raw.includes("ENTER")) return "ENTRY";
+  if (raw.includes("OPEN_TRADE")) return "ENTRY";
+  if (raw === "OPEN") return "ENTRY";
+
   if (raw.includes("EXIT")) return "EXIT";
+  if (raw.includes("CLOSE")) return "EXIT";
+  if (raw.includes("CLOSED")) return "EXIT";
+
   if (raw.includes("REJECT")) return "REJECT";
   if (raw.includes("WAIT")) return "REJECT";
   if (raw.includes("SKIP")) return "REJECT";
+  if (raw.includes("FILTER_FAIL")) return "REJECT";
+
   if (raw.includes("SNAPSHOT")) return "SNAPSHOT";
   if (raw.includes("HOLD")) return "HOLD";
 
@@ -1604,6 +1620,15 @@ function buildOverview(
 ): Overview {
   const metrics = summarizeTrades(closedTrades);
 
+  const eventTypes = events.map(normalizeEventType);
+
+  const totalEvents = events.length;
+  const entryEvents = eventTypes.filter(type => type === "ENTRY").length;
+  const exitEvents = eventTypes.filter(type => type === "EXIT").length;
+  const rejects = eventTypes.filter(type => type === "REJECT").length;
+  const snapshots = eventTypes.filter(type => type === "SNAPSHOT").length;
+  const holds = eventTypes.filter(type => type === "HOLD").length;
+
   const closedIds = new Set(
     closedTrades
       .map(trade => trade.tradeId)
@@ -1633,7 +1658,14 @@ function buildOverview(
     : [...entryIds].filter(tradeId => !closedIds.has(tradeId)).length;
 
   return {
-    entries: entryIds.size,
+    entries: totalEvents,
+    events: totalEvents,
+    entryEvents,
+    exitEvents,
+    rejects,
+    snapshots,
+    holds,
+
     closed: metrics.closed,
     open,
 
@@ -2560,56 +2592,260 @@ function buildExclusiveGroupsForSide(
   return groups;
 }
 
-function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
-  const dimensions: Array<[string, (trade: ClosedTrade) => string]> = [
-    ["side", sideOf],
-    ["setupClass", setupClassOf],
-    ["entryReason", entryReasonOf],
-    ["grade", gradeOf],
-    ["regime", regimeOf],
-    ["flow", flowOf],
-    ["btcState", btcStateOf],
-    ["rsiZone", rsiZoneOf],
-    ["rsiEdge", rsiEdgeOf],
-    ["obBias", obBiasOf],
-    ["obRelation", obRelationOf],
-    ["spreadBucket", spreadBucketOf],
-    ["depthBucket", depthBucketOf],
-    ["outcome", outcomeOf]
+function eventDimensionValue(event: TradeEvent, dimension: string): string {
+  if (dimension === "eventType") return normalizeEventType(event);
+
+  if (dimension === "side") {
+    return normalizedSide(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.side"],
+        firstValue(event, ["side", "payload.side"])
+      )
+    );
+  }
+
+  if (dimension === "symbol") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.symbol"],
+        firstValue(event, ["symbol", "payload.symbol"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "setupClass") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.setupClass"],
+        firstValue(event, ["setupClass", "payload.setupClass", "payload.setup.setupClass"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "grade") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["identity.grade"],
+        firstValue(event, ["grade", "payload.grade", "payload.setup.grade"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "reason") {
+    return upper(firstValue(event, ["reason", "payload.reason"]), "UNKNOWN");
+  }
+
+  if (dimension === "flow") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.flow"],
+        firstValue(event, ["flow", "payload.flow", "payload.market.flow"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "btcState") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.btcState"],
+        firstValue(event, ["btcState", "payload.btcState", "payload.market.btcState"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "regime") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["market.regime"],
+        firstValue(event, ["regime", "payload.regime", "payload.market.regime"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "rsiZone") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiZone"],
+        firstValue(event, ["rsiZone", "payload.rsiZone", "payload.rsi.rsiZone"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "rsiEdge") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["rsi.rsiEdge"],
+        firstValue(event, ["rsiEdge", "payload.rsiEdge", "payload.rsi.rsiEdge"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "obBias") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obBias"],
+        firstValue(event, ["obBias", "payload.obBias", "payload.ob.bias"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "obRelation") {
+    const explicit = upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.obRelation"],
+        firstValue(event, ["obRelation", "payload.obRelation", "payload.ob.relation"])
+      ),
+      ""
+    );
+
+    if (explicit && !["BULLISH", "BEARISH"].includes(explicit)) return explicit;
+
+    const side = eventDimensionValue(event, "side");
+    const obBias = eventDimensionValue(event, "obBias");
+
+    return deriveObRelation(side, obBias, explicit || obBias);
+  }
+
+  if (dimension === "spreadBucket") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.spreadBucket"],
+        firstValue(event, ["spreadBucket", "payload.spreadBucket", "payload.ob.spreadBucket"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  if (dimension === "depthBucket") {
+    return upper(
+      eventSnapshotFirstValue(
+        event,
+        ["orderbook.depthBucket"],
+        firstValue(event, ["depthBucket", "payload.depthBucket", "payload.ob.depthBucket"])
+      ),
+      "UNKNOWN"
+    );
+  }
+
+  return "UNKNOWN";
+}
+
+function tradeDimensionValue(trade: ClosedTrade, dimension: string): string {
+  if (dimension === "eventType") return "EXIT";
+  if (dimension === "symbol") return symbolOf(trade);
+  if (dimension === "side") return sideOf(trade);
+  if (dimension === "setupClass") return setupClassOf(trade);
+  if (dimension === "grade") return gradeOf(trade);
+  if (dimension === "reason") return exitReasonOf(trade);
+  if (dimension === "regime") return regimeOf(trade);
+  if (dimension === "flow") return flowOf(trade);
+  if (dimension === "btcState") return btcStateOf(trade);
+  if (dimension === "rsiZone") return rsiZoneOf(trade);
+  if (dimension === "rsiEdge") return rsiEdgeOf(trade);
+  if (dimension === "obBias") return obBiasOf(trade);
+  if (dimension === "obRelation") return obRelationOf(trade);
+  if (dimension === "spreadBucket") return spreadBucketOf(trade);
+  if (dimension === "depthBucket") return depthBucketOf(trade);
+  if (dimension === "outcome") return outcomeOf(trade);
+
+  return "UNKNOWN";
+}
+
+function buildBreakdown(events: TradeEvent[], trades: ClosedTrade[]): BreakdownRow[] {
+  const dimensions = [
+    "eventType",
+    "symbol",
+    "side",
+    "setupClass",
+    "reason",
+    "grade",
+    "regime",
+    "flow",
+    "btcState",
+    "rsiZone",
+    "rsiEdge",
+    "obBias",
+    "obRelation",
+    "spreadBucket",
+    "depthBucket",
+    "outcome"
   ];
 
   const rows: BreakdownRow[] = [];
 
-  for (const [dimension, getter] of dimensions) {
-    const map = new Map<string, ClosedTrade[]>();
+  for (const dimension of dimensions) {
+    const eventMap = new Map<string, TradeEvent[]>();
+    const tradeMap = new Map<string, ClosedTrade[]>();
 
-    for (const trade of trades) {
-      const value = getter(trade) || "UNKNOWN";
+    for (const event of events) {
+      if (dimension === "outcome") continue;
 
-      if (!map.has(value)) {
-        map.set(value, []);
+      const value = eventDimensionValue(event, dimension) || "UNKNOWN";
+
+      if (!eventMap.has(value)) {
+        eventMap.set(value, []);
       }
 
-      map.get(value)!.push(trade);
+      eventMap.get(value)!.push(event);
     }
 
-    for (const [value, group] of map.entries()) {
-      const metrics = summarizeTrades(group);
+    for (const trade of trades) {
+      const value = tradeDimensionValue(trade, dimension) || "UNKNOWN";
+
+      if (!tradeMap.has(value)) {
+        tradeMap.set(value, []);
+      }
+
+      tradeMap.get(value)!.push(trade);
+    }
+
+    const values = new Set([
+      ...eventMap.keys(),
+      ...tradeMap.keys()
+    ]);
+
+    for (const value of values) {
+      const eventGroup = eventMap.get(value) || [];
+      const tradeGroup = tradeMap.get(value) || [];
+      const metrics = summarizeTrades(tradeGroup);
+
+      const eventTypes = eventGroup.map(normalizeEventType);
 
       rows.push({
         dimension,
         value,
 
-        count: group.length,
-        events: group.length,
+        count: eventGroup.length || tradeGroup.length,
+        events: eventGroup.length,
         trades: metrics.trades,
         closed: metrics.closed,
 
-        entries: group.length,
-        exits: group.length,
-        rejects: 0,
-        snapshots: 0,
-        holds: 0,
+        entries: eventTypes.filter(type => type === "ENTRY").length,
+        exits: eventTypes.filter(type => type === "EXIT").length,
+        rejects: eventTypes.filter(type => type === "REJECT").length,
+        snapshots: eventTypes.filter(type => type === "SNAPSHOT").length,
+        holds: eventTypes.filter(type => type === "HOLD").length,
 
         wins: metrics.wins,
         losses: metrics.losses,
@@ -2627,22 +2863,32 @@ function buildBreakdown(trades: ClosedTrade[]): BreakdownRow[] {
         directSlPct: metrics.directSlPct,
         nearTpPct: metrics.nearTpPct,
 
-        examples: group
+        examples: eventGroup
           .slice(-8)
-          .map(trade => `${symbolOf(trade)}_${sideOf(trade)}_${outcomeOf(trade)}`)
+          .map(event => {
+            const symbol = eventDimensionValue(event, "symbol");
+            const side = eventDimensionValue(event, "side");
+            const type = normalizeEventType(event);
+
+            return `${symbol}_${side}_${type}`;
+          })
           .join(", ")
       });
     }
   }
 
   return rows
+    .filter(row => row.events > 0 || row.trades > 0)
     .sort((a, b) => {
+      const eventDiff = b.events - a.events;
+      if (eventDiff !== 0) return eventDiff;
+
       const totalRDiff = b.totalR - a.totalR;
       if (totalRDiff !== 0) return totalRDiff;
 
       return b.trades - a.trades;
     })
-    .slice(0, 150);
+    .slice(0, 250);
 }
 
 function buildRecentTrades(events: TradeEvent[]): RecentTradeRow[] {
@@ -2832,7 +3078,7 @@ export async function getDashboardData(filters: DashboardFilters): Promise<Dashb
   );
 
   return {
-    overview: buildOverview(allEvents, filteredClosedTrades, filters),
+    overview: buildOverview(filteredRawEvents, filteredClosedTrades, filters),
     options: buildOptions(allEvents),
     cohorts: buildCohorts(filteredClosedTrades, filters),
 
@@ -2848,7 +3094,7 @@ export async function getDashboardData(filters: DashboardFilters): Promise<Dashb
       "SHORT"
     ),
 
-    breakdown: buildBreakdown(filteredClosedTrades),
+    breakdown: buildBreakdown(filteredRawEvents, filteredClosedTrades),
     recentTrades: buildRecentTrades(filteredRawEvents),
     rawEvents: filteredRawEvents
   };
