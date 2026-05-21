@@ -1,26 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import {
+  saveTradeEvents,
+  listTradeEvents,
+  getTradeEventCount,
+  hasRedis,
+  MAX_STORED_ACTIONS
+} from "@/lib/store";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const WEBHOOK_SECRET =
   process.env.ANALYSIS_WEBHOOK_SECRET ||
   process.env.WEBHOOK_SECRET ||
   "090117";
-
-const MAX_STORED_ACTIONS = 5000;
-
-const LATEST_KEYS = [
-  "tradesystem:analysis:latest",
-  "analysis:latest",
-  "ts:latest"
-];
-
-const ACTION_KEYS = [
-  "tradesystem:analysis:actions",
-  "analysis:actions",
-  "ts:actions"
-];
 
 type WebhookMeta = {
   runId: string | null;
@@ -31,117 +26,6 @@ type WebhookMeta = {
 
 type TradeAction = Record<string, any>;
 
-function getRedisUrl(): string {
-  return (
-    process.env.KV_REST_API_URL ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    ""
-  );
-}
-
-function getRedisToken(): string {
-  return (
-    process.env.KV_REST_API_TOKEN ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    ""
-  );
-}
-
-function hasRedis(): boolean {
-  return Boolean(getRedisUrl() && getRedisToken());
-}
-
-async function redisCommand(command: unknown[]): Promise<any> {
-  const url = getRedisUrl();
-  const token = getRedisToken();
-
-  if (!url || !token) {
-    throw new Error("redis_env_missing");
-  }
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(command)
-  });
-
-  const text = await res.text();
-
-  let json: any = null;
-
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = null;
-  }
-
-  if (!res.ok || json?.error) {
-    throw new Error(json?.error || text || `redis_error_${res.status}`);
-  }
-
-  return json?.result;
-}
-
-function safeJsonParse(value: unknown): any {
-  if (!value) return null;
-  if (typeof value !== "string") return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-async function redisGetJson<T>(key: string, fallback: T): Promise<T> {
-  const raw = await redisCommand(["GET", key]).catch(() => null);
-  const parsed = safeJsonParse(raw);
-
-  return parsed ?? fallback;
-}
-
-async function redisGetFirstJson<T>(keys: string[], fallback: T): Promise<T> {
-  for (const key of keys) {
-    const value = await redisGetJson<T | null>(key, null);
-
-    if (value !== null && value !== undefined) {
-      return value as T;
-    }
-  }
-
-  return fallback;
-}
-
-async function redisSetJson(key: string, value: unknown): Promise<any> {
-  return redisCommand(["SET", key, JSON.stringify(value)]);
-}
-
-function extractActions(body: any): TradeAction[] {
-  if (Array.isArray(body)) return body;
-  if (Array.isArray(body?.actions)) return body.actions;
-  if (Array.isArray(body?.data)) return body.data;
-  if (Array.isArray(body?.payload?.actions)) return body.payload.actions;
-
-  // Losse ENTRY/EXIT payload vanuit tradeSystem.js
-  if (body?.action || body?.eventType) return [body];
-
-  return [];
-}
-
-function normalizeAction(action: TradeAction, meta: WebhookMeta): TradeAction {
-  return {
-    ...action,
-    receivedAt: Date.now(),
-    runId: meta.runId || action?.runId || null,
-    strategyVersion: meta.strategyVersion || action?.strategyVersion || null,
-    btcState: meta.btcState || action?.btcState || null,
-    discoveryMode: meta.discoveryMode ?? action?.discoveryMode ?? null
-  };
-}
-
 function checkSecret(req: NextRequest): boolean {
   const urlSecret = req.nextUrl.searchParams.get("secret");
   const headerSecret = req.headers.get("x-webhook-secret");
@@ -149,16 +33,220 @@ function checkSecret(req: NextRequest): boolean {
   return urlSecret === WEBHOOK_SECRET || headerSecret === WEBHOOK_SECRET;
 }
 
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function asArray(value: unknown): TradeAction[] {
-  return Array.isArray(value) ? value : [];
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function extractActions(body: any): TradeAction[] {
+  if (Array.isArray(body)) return body.filter(isRecord);
+
+  if (Array.isArray(body?.actions)) return body.actions.filter(isRecord);
+  if (Array.isArray(body?.events)) return body.events.filter(isRecord);
+  if (Array.isArray(body?.data)) return body.data.filter(isRecord);
+  if (Array.isArray(body?.trades)) return body.trades.filter(isRecord);
+
+  if (Array.isArray(body?.payload?.actions)) {
+    return body.payload.actions.filter(isRecord);
+  }
+
+  if (Array.isArray(body?.payload?.events)) {
+    return body.payload.events.filter(isRecord);
+  }
+
+  if (Array.isArray(body?.payload?.data)) {
+    return body.payload.data.filter(isRecord);
+  }
+
+  if (Array.isArray(body?.payload?.trades)) {
+    return body.payload.trades.filter(isRecord);
+  }
+
+  if (isRecord(body?.payload) && looksLikeTradeEvent(body.payload)) {
+    return [body.payload];
+  }
+
+  if (isRecord(body) && looksLikeTradeEvent(body)) {
+    return [body];
+  }
+
+  return [];
+}
+
+function looksLikeTradeEvent(value: Record<string, any>): boolean {
+  return Boolean(
+    value.eventId ||
+      value.eventType ||
+      value.action ||
+      value.tradeId ||
+      value.signalId ||
+      value.symbol ||
+      value.rawBitgetSymbol ||
+      value.contractSymbol ||
+      value.filterSnapshot ||
+      value.exitR !== undefined ||
+      value.pnlPct !== undefined
+  );
+}
+
+function normalizeEventType(rawEventType: unknown, rawAction: unknown): string {
+  const eventType = String(rawEventType || "").trim().toUpperCase();
+  const action = String(rawAction || "").trim().toUpperCase();
+  const value = eventType || action || "SNAPSHOT";
+
+  if (value.includes("ENTRY")) return "ENTRY";
+  if (value.includes("ENTER")) return "ENTRY";
+  if (value.includes("OPEN_TRADE")) return "ENTRY";
+  if (value === "OPEN") return "ENTRY";
+
+  if (value.includes("EXIT")) return "EXIT";
+  if (value.includes("CLOSE")) return "EXIT";
+  if (value.includes("CLOSED")) return "EXIT";
+
+  if (value.includes("REJECT")) return "REJECT";
+  if (value.includes("WAIT")) return "REJECT";
+  if (value.includes("SKIP")) return "REJECT";
+  if (value.includes("FILTER_FAIL")) return "REJECT";
+
+  if (value.includes("SNAPSHOT")) return "SNAPSHOT";
+  if (value.includes("HOLD")) return "HOLD";
+
+  return value;
+}
+
+function normalizeSide(value: unknown): string | null {
+  const raw = String(value || "").trim().toUpperCase();
+
+  if (!raw) return null;
+
+  if (["BULL", "LONG", "BUY", "BULLISH"].includes(raw)) return "LONG";
+  if (["BEAR", "SHORT", "SELL", "BEARISH"].includes(raw)) return "SHORT";
+
+  return raw;
+}
+
+function normalizeBaseSymbol(value: unknown): string | null {
+  const symbol = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/_UMCBL$/, "")
+    .replace(/_DMCBL$/, "")
+    .replace(/_CMCBL$/, "")
+    .replace(/-UMCBL$/, "")
+    .replace(/-DMCBL$/, "")
+    .replace(/-CMCBL$/, "")
+    .replace(/USDT$/, "")
+    .replace(/USDC$/, "")
+    .replace(/USD$/, "");
+
+  return symbol || null;
+}
+
+function getMeta(body: any): WebhookMeta {
+  return {
+    runId: body?.runId || body?.meta?.runId || body?.payload?.runId || null,
+    btcState:
+      body?.btcState ||
+      body?.meta?.btcState ||
+      body?.payload?.btcState ||
+      null,
+    strategyVersion:
+      body?.strategyVersion ||
+      body?.meta?.strategyVersion ||
+      body?.payload?.strategyVersion ||
+      null,
+    discoveryMode:
+      body?.discoveryMode ??
+      body?.meta?.discoveryMode ??
+      body?.payload?.discoveryMode ??
+      null
+  };
+}
+
+function normalizeAction(action: TradeAction, meta: WebhookMeta): TradeAction {
+  const eventType = normalizeEventType(action.eventType, action.action);
+  const now = Date.now();
+
+  const symbol =
+    normalizeBaseSymbol(
+      action.symbol ||
+        action.rawBitgetSymbol ||
+        action.contractSymbol ||
+        action?.payload?.symbol ||
+        action?.payload?.rawBitgetSymbol ||
+        action?.payload?.contractSymbol
+    ) || null;
+
+  const side = normalizeSide(action.side || action?.payload?.side);
+
+  const tradeId =
+    action.tradeId ||
+    action.id ||
+    action.signalId ||
+    action?.payload?.tradeId ||
+    action?.payload?.id ||
+    action?.payload?.signalId ||
+    null;
+
+  const eventId =
+    action.eventId ||
+    action?.payload?.eventId ||
+    [
+      "ts",
+      meta.runId || action.runId || "run_unknown",
+      eventType,
+      symbol || "UNKNOWN",
+      side || "UNKNOWN",
+      tradeId || now
+    ]
+      .join("_")
+      .replace(/[^a-z0-9_-]+/gi, "_")
+      .slice(0, 260);
+
+  return {
+    ...action,
+
+    eventId,
+    eventType,
+    action: eventType,
+
+    tradeId,
+    symbol,
+    side,
+
+    receivedAt: now,
+    storedAt: now,
+
+    runId: meta.runId || action.runId || action?.payload?.runId || null,
+    strategyVersion:
+      meta.strategyVersion ||
+      action.strategyVersion ||
+      action?.payload?.strategyVersion ||
+      null,
+    btcState:
+      meta.btcState ||
+      action.btcState ||
+      action?.payload?.btcState ||
+      null,
+    discoveryMode:
+      meta.discoveryMode ??
+      action.discoveryMode ??
+      action?.payload?.discoveryMode ??
+      null
+  };
 }
 
 function getActionType(row: TradeAction): string {
-  return String(row?.action || row?.eventType || "UNKNOWN").toUpperCase();
+  return normalizeEventType(row?.eventType, row?.action);
 }
 
 function getNumber(value: unknown, fallback = 0): number {
-  const n = Number(value);
+  if (value === null || value === undefined || value === "") return fallback;
+
+  const n = Number(String(value).replace("%", "").replace(",", ".").trim());
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -173,12 +261,11 @@ function countBy(
   }, {});
 }
 
-function buildFrontendStats(actions: TradeAction[], latest: any) {
-  const rows = actions.length ? actions : asArray(latest?.actions);
-
+function buildFrontendStats(rows: TradeAction[]) {
   const entries = rows.filter(row => getActionType(row) === "ENTRY");
   const exits = rows.filter(row => getActionType(row) === "EXIT");
-  const waits = rows.filter(row => getActionType(row) === "WAIT");
+  const rejects = rows.filter(row => getActionType(row) === "REJECT");
+  const snapshots = rows.filter(row => getActionType(row) === "SNAPSHOT");
   const holds = rows.filter(row => getActionType(row) === "HOLD");
 
   const wins = exits.filter(row => getNumber(row?.exitR) > 0).length;
@@ -190,50 +277,61 @@ function buildFrontendStats(actions: TradeAction[], latest: any) {
 
   return {
     totalActions: rows.length,
-    latestBatchCount: asArray(latest?.actions).length,
 
     entries: entries.length,
     exits: exits.length,
-    waits: waits.length,
+    rejects: rejects.length,
+    snapshots: snapshots.length,
     holds: holds.length,
 
     wins,
     losses,
     completed,
-    winratePct: completed > 0 ? Number(((wins / completed) * 100).toFixed(1)) : 0,
+
+    winratePct:
+      completed > 0 ? Number(((wins / completed) * 100).toFixed(1)) : 0,
 
     totalR: Number(totalR.toFixed(3)),
     avgR: exits.length > 0 ? Number((totalR / exits.length).toFixed(3)) : 0,
 
     totalPnlPct: Number(totalPnlPct.toFixed(3)),
-    avgPnlPct: exits.length > 0 ? Number((totalPnlPct / exits.length).toFixed(3)) : 0,
+    avgPnlPct:
+      exits.length > 0 ? Number((totalPnlPct / exits.length).toFixed(3)) : 0,
 
     actionCounts: countBy(rows, row => getActionType(row)),
+
     reasonCounts: countBy(rows, row =>
-      String(row?.reason || "NO_REASON").toUpperCase()
-    ),
-    setupClassCounts: countBy(entries, row =>
-      String(row?.setupClass || "UNKNOWN").toUpperCase()
-    ),
-    sideCounts: countBy(rows, row =>
-      String(row?.side || "UNKNOWN").toUpperCase()
-    ),
-    btcStateCounts: countBy(rows, row =>
-      String(row?.btcState || "UNKNOWN").toUpperCase()
+      String(row?.reason || row?.exitReason || row?.entryReason || "NO_REASON").toUpperCase()
     ),
 
-    lastReceivedAt: latest?.receivedAt || null,
+    setupClassCounts: countBy(rows, row =>
+      String(row?.setupClass || row?.payload?.setupClass || "UNKNOWN").toUpperCase()
+    ),
+
+    sideCounts: countBy(rows, row =>
+      String(row?.side || row?.payload?.side || "UNKNOWN").toUpperCase()
+    ),
+
+    symbolCounts: countBy(rows, row =>
+      String(row?.symbol || row?.payload?.symbol || "UNKNOWN").toUpperCase()
+    ),
+
+    btcStateCounts: countBy(rows, row =>
+      String(row?.btcState || row?.payload?.btcState || "UNKNOWN").toUpperCase()
+    ),
+
+    lastReceivedAt: rows[rows.length - 1]?.receivedAt || null,
     strategyVersion:
-      latest?.meta?.strategyVersion ||
       rows[rows.length - 1]?.strategyVersion ||
+      rows[rows.length - 1]?.payload?.strategyVersion ||
       null,
     runId:
-      latest?.meta?.runId ||
       rows[rows.length - 1]?.runId ||
+      rows[rows.length - 1]?.payload?.runId ||
       null,
     btcState:
-      latest?.meta?.btcState ||
       rows[rows.length - 1]?.btcState ||
+      rows[rows.length - 1]?.payload?.btcState ||
       null
   };
 }
@@ -246,17 +344,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  if (!hasRedis()) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "redis_env_missing",
-        route: "app-api-webhooks-tradesystem-online"
-      },
-      { status: 500 }
-    );
-  }
-
   const limit = Math.max(
     1,
     Math.min(
@@ -265,32 +352,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     )
   );
 
-  const [latest, storedActions] = await Promise.all([
-    redisGetFirstJson<any | null>(LATEST_KEYS, null),
-    redisGetFirstJson<TradeAction[]>(ACTION_KEYS, [])
-  ]);
-
-  const latestActions = asArray(latest?.actions);
-  const storedRows = asArray(storedActions);
-
-  const actions =
-    storedRows.length > 0
-      ? storedRows.slice(-limit)
-      : latestActions.slice(-limit);
-
-  const stats = buildFrontendStats(actions, latest);
+  const events = await listTradeEvents();
+  const sliced = events.slice(-limit);
+  const count = await getTradeEventCount();
 
   return NextResponse.json(
     {
       ok: true,
       route: "app-api-webhooks-tradesystem-online",
-      redis: true,
+      storage: "store",
+      redis: hasRedis(),
 
-      count: actions.length,
-      latest,
-      actions,
-      stats,
+      count,
+      returned: sliced.length,
+      actions: sliced,
+      stats: buildFrontendStats(sliced),
 
+      maxStoredActions: MAX_STORED_ACTIONS,
       ts: Date.now()
     },
     {
@@ -309,17 +387,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  if (!hasRedis()) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "redis_env_missing",
-        route: "app-api-webhooks-tradesystem-online"
-      },
-      { status: 500 }
-    );
-  }
-
   const body = await req.json().catch(() => null);
 
   if (!body) {
@@ -329,48 +396,57 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const actions = extractActions(body);
+  const rawActions = extractActions(body);
+  const meta = getMeta(body);
 
-  const meta: WebhookMeta = {
-    runId: body?.runId || body?.meta?.runId || null,
-    btcState: body?.btcState || body?.meta?.btcState || null,
-    strategyVersion: body?.strategyVersion || body?.meta?.strategyVersion || null,
-    discoveryMode: body?.discoveryMode ?? body?.meta?.discoveryMode ?? null
-  };
+  if (!rawActions.length) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "no_actions_extracted",
+        rawKeys: isRecord(body) ? Object.keys(body) : [],
+        payloadKeys: isRecord(body?.payload) ? Object.keys(body.payload) : [],
+        route: "app-api-webhooks-tradesystem-online",
+        ts: Date.now()
+      },
+      { status: 400 }
+    );
+  }
 
-  const normalizedActions = actions.map((action: TradeAction) =>
+  const normalizedActions = rawActions.map(action =>
     normalizeAction(action, meta)
   );
 
-  const latestPayload = {
-    ok: true,
-    route: "app-api-webhooks-tradesystem-online",
-    receivedAt: Date.now(),
-    count: normalizedActions.length,
-    meta,
-    actions: normalizedActions,
-    rawKeys: Object.keys(body || {})
-  };
+  const result = await saveTradeEvents(normalizedActions);
+  const events = await listTradeEvents();
+  const latest = events.slice(-Math.min(25, MAX_STORED_ACTIONS));
 
-  const previousActions = await redisGetJson<TradeAction[]>(ACTION_KEYS[0], []);
+  return NextResponse.json(
+    {
+      ok: result.ok,
+      route: "app-api-webhooks-tradesystem-online",
+      storage: "store",
 
-  const mergedActions = [
-    ...previousActions,
-    ...normalizedActions
-  ].slice(-MAX_STORED_ACTIONS);
+      received: normalizedActions.length,
+      stored: result.stored,
+      deduped: result.deduped,
+      total: result.total,
 
-  await Promise.all([
-    ...LATEST_KEYS.map((key: string) => redisSetJson(key, latestPayload)),
-    ...ACTION_KEYS.map((key: string) => redisSetJson(key, mergedActions))
-  ]);
+      persistent: result.persistent,
+      redis: result.redis,
+      key: result.key,
 
-  return NextResponse.json({
-    ok: true,
-    route: "app-api-webhooks-tradesystem-online",
-    received: normalizedActions.length,
-    storedTotal: mergedActions.length,
-    persistent: true,
-    redis: true,
-    ts: Date.now()
-  });
+      stats: buildFrontendStats(events),
+      latest,
+
+      rawKeys: isRecord(body) ? Object.keys(body) : [],
+      ts: Date.now()
+    },
+    {
+      status: result.ok ? 200 : 500,
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate"
+      }
+    }
+  );
 }
