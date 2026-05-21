@@ -10,14 +10,16 @@ export type TradeEvent = Record<string, any> & {
 
 export type SaveTradeEventResult = {
   ok: boolean;
-  redis: boolean;
+
+  // Optioneel gehouden zodat bestaande repositories.ts catch-resultaten blijven compileren.
+  redis?: boolean;
   persistent: boolean;
 
   stored: boolean;
   deduped: boolean;
 
-  added: number;
-  total: number;
+  added?: number;
+  total?: number;
   key: string;
 
   eventId?: string | null;
@@ -53,12 +55,34 @@ export type ClearTradeEventsResult = {
 
 type AnyRecord = Record<string, any>;
 
-export const MAX_STORED_ACTIONS = Number(process.env.MAX_STORED_ACTIONS || 5000);
+export const MAX_STORED_ACTIONS = Number(
+  process.env.MAX_STORED_ACTIONS || 5000
+);
 
 export const PRIMARY_LIST_KEY =
   process.env.TRADE_EVENTS_REDIS_LIST_KEY || "tradesystem:analysis:events";
 
-const TRADE_EVENT_LIST_KEYS = Array.from(
+/**
+ * Webhook route gebruikt deze JSON keys:
+ * - tradesystem:analysis:actions
+ * - analysis:actions
+ * - ts:actions
+ *
+ * Dashboard/store moet deze dus altijd lezen.
+ */
+export const JSON_ACTION_KEYS = [
+  "tradesystem:analysis:actions",
+  "analysis:actions",
+  "ts:actions"
+];
+
+export const LATEST_KEYS = [
+  "tradesystem:analysis:latest",
+  "analysis:latest",
+  "ts:latest"
+];
+
+export const TRADE_EVENT_LIST_KEYS = Array.from(
   new Set([
     PRIMARY_LIST_KEY,
     "tradesystem:analysis:events",
@@ -68,17 +92,12 @@ const TRADE_EVENT_LIST_KEYS = Array.from(
   ])
 );
 
-const JSON_ACTION_KEYS = [
-  "tradesystem:analysis:actions",
-  "analysis:actions",
-  "ts:actions"
-];
-
-const LATEST_KEYS = [
-  "tradesystem:analysis:latest",
-  "analysis:latest",
-  "ts:latest"
-];
+const READ_JSON_KEYS = Array.from(
+  new Set([
+    ...JSON_ACTION_KEYS,
+    ...LATEST_KEYS
+  ])
+);
 
 const CLEAR_KEYS = Array.from(
   new Set([
@@ -402,7 +421,10 @@ function fallbackEventId(body: AnyRecord, eventType: string): string {
     ])
   );
 
-  const runId = text(firstValue(body, ["runId", "payload.runId"]), "run_unknown");
+  const runId = text(
+    firstValue(body, ["runId", "payload.runId"]),
+    "run_unknown"
+  );
 
   const ts = text(
     firstValue(body, [
@@ -592,6 +614,40 @@ async function readEventsFromJsonKey(key: string): Promise<TradeEvent[]> {
     .filter((event): event is TradeEvent => Boolean(event));
 }
 
+async function setJsonKey(key: string, value: unknown): Promise<void> {
+  await redisCommand(["SET", key, JSON.stringify(value)]).catch(() => null);
+}
+
+async function getMergedRedisEventsWithIncoming(
+  incoming: TradeEvent[]
+): Promise<TradeEvent[]> {
+  const existing = await listTradeEvents();
+  return dedupeEvents([...existing, ...incoming]);
+}
+
+async function mirrorJsonActionKeys(events: TradeEvent[]): Promise<void> {
+  await Promise.all(
+    JSON_ACTION_KEYS.map(key => setJsonKey(key, events))
+  );
+}
+
+async function mirrorLatestKeys(incoming: TradeEvent[]): Promise<void> {
+  const latestPayload = {
+    ok: true,
+    route: "store-saveTradeEvents",
+    storage: "redis-list-json-mirror",
+    key: PRIMARY_LIST_KEY,
+    receivedAt: Date.now(),
+    count: incoming.length,
+    actions: incoming,
+    rawKeys: ["store"]
+  };
+
+  await Promise.all(
+    LATEST_KEYS.map(key => setJsonKey(key, latestPayload))
+  );
+}
+
 export async function listTradeEvents(): Promise<TradeEvent[]> {
   if (!hasRedis()) {
     return dedupeEvents(memoryEvents());
@@ -599,10 +655,13 @@ export async function listTradeEvents(): Promise<TradeEvent[]> {
 
   const [listResults, jsonResults] = await Promise.all([
     Promise.all(TRADE_EVENT_LIST_KEYS.map(readEventsFromListKey)),
-    Promise.all(JSON_ACTION_KEYS.map(readEventsFromJsonKey))
+    Promise.all(READ_JSON_KEYS.map(readEventsFromJsonKey))
   ]);
 
-  return dedupeEvents([...listResults.flat(), ...jsonResults.flat()]);
+  return dedupeEvents([
+    ...listResults.flat(),
+    ...jsonResults.flat()
+  ]);
 }
 
 export async function getTradeEvents(): Promise<TradeEvent[]> {
@@ -614,7 +673,9 @@ export async function getTradeEventCount(): Promise<number> {
   return events.length;
 }
 
-export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEventsResult> {
+export async function appendTradeEvents(
+  events: unknown[]
+): Promise<SaveTradeEventsResult> {
   const normalized = events
     .map((event, index) => normalizeStoredEvent(event, index))
     .filter((event): event is TradeEvent => Boolean(event));
@@ -630,7 +691,8 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
       total: await getTradeEventCount(),
       key: hasRedis() ? PRIMARY_LIST_KEY : "memory",
       eventId: null,
-      error: null
+      error: null,
+      count: 0
     };
   }
 
@@ -662,8 +724,23 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
       total: merged.length,
       key: "memory",
       eventId: normalized[normalized.length - 1]?.eventId || null,
-      error: null
+      error: null,
+      count: normalized.length
     };
+  }
+
+  const beforeEvents = await listTradeEvents();
+  const beforeKeys = new Set(beforeEvents.map(eventDedupeKey));
+
+  let stored = 0;
+  let deduped = 0;
+
+  for (const event of normalized) {
+    if (beforeKeys.has(eventDedupeKey(event))) {
+      deduped += 1;
+    } else {
+      stored += 1;
+    }
   }
 
   const serialized = normalized.map(event => JSON.stringify(event));
@@ -671,38 +748,31 @@ export async function appendTradeEvents(events: unknown[]): Promise<SaveTradeEve
   await redisCommand(["RPUSH", PRIMARY_LIST_KEY, ...serialized]);
   await redisCommand(["LTRIM", PRIMARY_LIST_KEY, -MAX_STORED_ACTIONS, -1]);
 
-  const latestPayload = {
-    ok: true,
-    storage: "redis-list",
-    key: PRIMARY_LIST_KEY,
-    count: normalized.length,
-    actions: normalized,
-    receivedAt: Date.now()
-  };
+  const merged = await getMergedRedisEventsWithIncoming(normalized);
 
-  await Promise.all(
-    LATEST_KEYS.map(key =>
-      redisCommand(["SET", key, JSON.stringify(latestPayload)]).catch(() => null)
-    )
-  );
-
-  const total = await getTradeEventCount();
+  await Promise.all([
+    mirrorJsonActionKeys(merged),
+    mirrorLatestKeys(normalized)
+  ]);
 
   return {
     ok: true,
     redis: true,
     persistent: true,
-    stored: normalized.length,
-    deduped: 0,
+    stored,
+    deduped,
     added: normalized.length,
-    total,
+    total: merged.length,
     key: PRIMARY_LIST_KEY,
     eventId: normalized[normalized.length - 1]?.eventId || null,
-    error: null
+    error: null,
+    count: normalized.length
   };
 }
 
-export async function appendTradeEvent(event: unknown): Promise<SaveTradeEventResult> {
+export async function appendTradeEvent(
+  event: unknown
+): Promise<SaveTradeEventResult> {
   const normalized = normalizeStoredEvent(event);
 
   if (!normalized) {
@@ -716,7 +786,8 @@ export async function appendTradeEvent(event: unknown): Promise<SaveTradeEventRe
       total: await getTradeEventCount(),
       key: hasRedis() ? PRIMARY_LIST_KEY : "memory",
       eventId: null,
-      error: "invalid_event"
+      error: "invalid_event",
+      count: 0
     };
   }
 
@@ -735,11 +806,14 @@ export async function appendTradeEvent(event: unknown): Promise<SaveTradeEventRe
     key: result.key,
 
     eventId: normalized.eventId,
-    error: result.error || null
+    error: result.error || null,
+    count: result.count ?? 1
   };
 }
 
-export async function replaceTradeEvents(events: unknown[]): Promise<SaveTradeEventsResult> {
+export async function replaceTradeEvents(
+  events: unknown[]
+): Promise<SaveTradeEventsResult> {
   await clearTradeEvents();
   return appendTradeEvents(events);
 }
