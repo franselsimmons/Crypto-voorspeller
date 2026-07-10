@@ -2,6 +2,8 @@ import { cfg } from "../config.js";
 import { getCandles, closedOnly } from "./bitgetClient.js";
 import { emaPine } from "../indicator/indicators.js";
 
+const MIN_HTF_BARS = 60; // EMA(50)-transient voldoende gedempt; anders bias 0
+
 /**
  * Pine-equivalent van request.security(..., [ema[1], ema[1], close[1]], lookahead_on):
  * voor een 15m-bar met openTime t geldt de 4H-bar met openTime floor4h(t) − 4h
@@ -10,7 +12,7 @@ import { emaPine } from "../indicator/indicators.js";
 export async function getHtfSeries(symbol) {
   const c = cfg();
   const candles = closedOnly(await getCandles(symbol, "4H", c.htfCandleLimit), c.htfMs);
-  if (candles.length < c.emaWarmup && candles.length < 60) return null;
+  if (candles.length < MIN_HTF_BARS) return null;
   const closes = candles.map((x) => x.close);
   const emaF = emaPine(closes, 21);
   const emaS = emaPine(closes, 50);
