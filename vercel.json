@@ -1,9 +1,13 @@
 {
-  "framework": "nextjs",
-  "regions": ["fra1"],
-  "functions": {
-    "src/app/api/webhooks/tradesystem/route.ts": {
-      "maxDuration": 10
-    }
-  }
+  "crons": [
+    { "path": "/api/cron/universe", "schedule": "7 * * * *" },
+    { "path": "/api/cron/scan?shard=0", "schedule": "1,16,31,46 * * * *" },
+    { "path": "/api/cron/scan?shard=1", "schedule": "1,16,31,46 * * * *" },
+    { "path": "/api/cron/scan?shard=2", "schedule": "1,16,31,46 * * * *" },
+    { "path": "/api/cron/scan?shard=3", "schedule": "1,16,31,46 * * * *" },
+    { "path": "/api/cron/scan?shard=4", "schedule": "1,16,31,46 * * * *" },
+    { "path": "/api/cron/scan-finalize", "schedule": "4,19,34,49 * * * *" },
+    { "path": "/api/cron/monitor", "schedule": "6,21,36,51 * * * *" },
+    { "path": "/api/cron/daily-digest", "schedule": "6 0 * * *" }
+  ]
 }
