@@ -1,0 +1,33 @@
+const NS = "ARS";
+export const K = {
+  universe: () => `${NS}:UNIVERSE:LATEST`,
+  contracts: () => `${NS}:CONTRACTS`,
+  scanCycle: (c) => `${NS}:SCAN:CYCLE:${c}`,
+  scanShard: (c, s) => `${NS}:SCAN:SHARD:${c}:${s}`,
+  lock: (name) => `${NS}:LOCK:${name}`,
+  signal: (id) => `${NS}:SIGNAL:${id}`,
+  byTime: () => `${NS}:SIGNALS:BY_TIME`,
+  open: () => `${NS}:SIGNALS:OPEN`,
+  closed: () => `${NS}:SIGNALS:CLOSED`,
+  position: (id) => `${NS}:POSITION:${id}`,
+  cooldown: (sym, side) => `${NS}:CD:${sym}:${side}`,
+  fingerprint: (fp) => `${NS}:FPRINT:${fp}`,
+  family: (ns, fid) => `${NS}:FAMILY:${ns}:${fid}`,
+  familyStatusLog: () => `${NS}:FAMILY:STATUSLOG`,
+  discordDedupe: (id, ch) => `${NS}:DISCORD:DEDUPE:${id}:${ch}`,
+  discordLogs: () => `${NS}:DISCORD:LOGS`,
+  daily: (d) => `${NS}:DAILY:${d}`,
+  dailyIndex: () => `${NS}:DAILY:INDEX`,
+  hashHead: () => `${NS}:HASH:HEAD`,
+  hashDay: (d) => `${NS}:HASH:DAY:${d}`,
+  pubCount: (d) => `${NS}:PUBCOUNT:${d}`,
+  run: (kind) => `${NS}:RUN:${kind}`,
+  runHist: (kind) => `${NS}:RUNS:${kind}`,
+  waitlist: () => `${NS}:WAITLIST`,
+  rate: (bucket) => `${NS}:RATE:${bucket}`,
+};
+export const TTL = {
+  universe: 7200, contracts: 86400, shard: 3600, cycle: 3600,
+  cooldown: 86400, fingerprint: 7 * 86400, dedupe: 7 * 86400,
+  hashDay: 8 * 86400, pubCount: 2 * 86400, position: 7 * 86400,
+};
