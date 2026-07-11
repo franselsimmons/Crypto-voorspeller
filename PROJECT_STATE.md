@@ -15,27 +15,32 @@
 - src/discord/: templates.js (v2) · discord.js
 - app/api/cron/: universe · scan · scan-finalize · monitor · daily-digest
 
-## Definitief (FASE 7 · batch 1)
-- src/site/queries.js — NIEUW: gedeelde dataleeslaag voor pagina's én publieke API
+## Definitief (FASE 7 · compleet)
+- src/site/queries.js · src/site/format.js (NIEUW, gedeelde formatters)
 - app/api/public/: overview · signals · signals/[signalId] · families · status · daily · export
 - app/api/waitlist/route.js
 - app/layout.js · app/globals.css · app/page.js
-- components/WaitlistForm.js (enige client-component tot nu toe)
+- app/track-record/page.js · app/families/page.js · app/methodology/page.js
+- app/signal/[signalId]/page.js · app/status/page.js · app/pricing/page.js
+- components/WaitlistForm.js (enige client-component)
 
-## Aannames (kort)
-- Sitecopy in het Engels (internationale doelgroep; embeds waren al Engelstalig).
-- Homepage: ISR 60s met Redis-fallback zodat build en outages de site niet breken.
+## Aannames
+- Sitecopy Engels; backend-commentaar Nederlands.
+- Track-record filters via GET-form (nul client-JS); paginering First/Next (offset-cursor, zie A8).
+- Statuspagina leest laatste Discord-logrecord rechtstreeks uit Redis (gedocumenteerde
+  uitzondering op de queries.js-laag, om hervers levering van dat bestand te vermijden).
 
 ## Correctielog
 1. src/discord/templates.js — v1 afgekapt; v2 volledig.
-2. src/market/htfContext.js — ongeldige `cfg().emaWarmup`-referentie → MIN_HTF_BARS=60.
-3. vercel.json — `"framework": "nextjs"` (deploy-fout output directory).
+2. src/market/htfContext.js — ongeldige cfg().emaWarmup → MIN_HTF_BARS=60.
+3. vercel.json — "framework": "nextjs" (deploy-fout output directory).
 
 ## Nog te leveren
-- FASE 7 batch 2: pagina's track-record (filters+paginering), families, methodology,
-  signal/[signalId], status, pricing
 - FASE 8: admin (login, API's, pagina's)
-- FASE 9: billing-interface (modulair, uit)
+- FASE 9: billing-interface (modulair, uit tot PAID_LAUNCH_ENABLED)
 - Docs: REDIS_SCHEMA · STATISTICAL_METHOD · INDICATOR_PARITY · PERFORMANCE_BUDGET ·
   PINE_NODE_PARITY · README
 - Tests: indicator · timing · positionEngine · statistiek · infra · parity-fixtures
+
+## Deploy-status
+Volledige publieke site + backend operationeel. Admin (FASE 8) en tests/docs volgen.
