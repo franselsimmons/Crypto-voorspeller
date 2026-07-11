@@ -36,16 +36,19 @@
 - src/billing/: billingConfig.js · provider.js · stripeProvider.js · discordRoles.js
 - app/api/billing/: checkout · webhook · portal
 
-## Definitief (documentatie · compleet)
+## Definitief (documentatie)
 - docs/REDIS_SCHEMA.md · docs/PERFORMANCE_BUDGET.md · docs/INDICATOR_PARITY.md
 - docs/STATISTICAL_METHOD.md · docs/PINE_NODE_PARITY.md · README.md
 
-## Beslissingen docs batch 2
-- Interne docs Nederlands (consistent met batch 1); sitecopy blijft Engels.
-- Pine-fixtures kunnen niet worden meegeleverd (TradingView-datalicentie):
-  PINE_NODE_PARITY.md definieert het volledige protocol + export-blok; de
-  parity-testsuite (volgende batch) skipt met melding zolang tests/fixtures/ leeg is.
-- README stap 14 bevat het externe-scheduler-alternatief voor Hobby-plan (D7).
+## Definitief (tests · batch 1 — pure logica, geen Redis/netwerk nodig)
+- tests/utils.test.js — math/time/hash/prng + mapLimit (concurrency-bound, foutisolatie)
+- tests/indicators.test.js — EMA/RMA/ATR/RSI/ER/extremen/cross + **PIN A1** (percentrank ≤)
+- tests/structure.test.js — pivots + **PIN A2** (strikte ongelijkheid), BOS, CHoCH,
+  sweep, failed break
+- tests/outcome.test.js — timingpin (signaalcandle uitgesloten), SL/BE/FULL/timeout,
+  ambiguïteit conservatief, **PIN D5** (timeout-ná-TP1 = +0.50R), SHORT-spiegel, categoryOf
+- tests/statistics.test.js — outcomeValues, bootstrap-determinisme, sterke/zwakke
+  familie, **shrinkage-guard** (3/3 winst → LCB < 0), parentProbs, BH-FDR
 
 ## Correctielog
 1. src/discord/templates.js — v1 afgekapt; v2 volledig.
@@ -55,9 +58,13 @@
 5. .env.example v2 — billing-variabelen.
 
 ## Nog te leveren
-1. Tests + fixtures-harnas: tests/{indicator,timing,outcome,statistics,infra,parity}.test.js
-   + tests/fixtures/README + evt. synthetische fixture (mogelijk gesplitst in twee)
+1. Tests batch 2: tests/timing.test.js (candle-close/HTF-mapping/future-leak) ·
+   tests/engine.test.js (analyzeWindow op synthetische candles, warmup-guard) ·
+   tests/parity.test.js (fixture-harnas, skipt zonder fixtures) ·
+   tests/infra.test.js (locks/dedupe, skipt zonder Redis-env) · tests/fixtures/README.md
 2. FASE 10: eindaudit tegen Definition of Done + definitieve PROJECT_STATE
 
-## Deploy-status
-Volledig platform + volledige documentatie. Resteert: testsuite en eindaudit.
+## Status
+`npm test` draait batch 1 volledig zelfstandig (36 assertiegroepen over 5 suites).
+Audit-pins A1/A2/D5 zijn nu in code vastgelegd; TV-fixtures blijven nodig voor de
+externe Pine-pariteit (A1/A2 tegen echt Pine-gedrag).
