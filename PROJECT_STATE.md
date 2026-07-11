@@ -36,31 +36,28 @@
 - src/billing/: billingConfig.js · provider.js · stripeProvider.js · discordRoles.js
 - app/api/billing/: checkout · webhook · portal
 
-## Beslissingen FASE 9
-- Billing volledig zelfstandig: eigen billingConfig, geen import van src/config.js
-  ("nooit afhankelijk van scannerlogica" letterlijk afgedwongen).
-- BILLING_PROVIDER=none|stripe; Stripe via kale REST + HMAC-webhookverificatie (geen SDK).
-- Webhook-idempotentie: verwerken → dan pas ARS:BILL:EVENT markeren; falen → 500 → Stripe-retry.
-- Rolbeheer: 204 én 404 tellen als geslaagd (lid weg = functioneel klaar); rol-falen gooit
-  → retry. past_due behoudt rol; canceled/unpaid/incomplete_expired trekt in.
-- Checkout koppelt Discord-ID via client_reference_id + subscription-metadata.
-
-## Documentatie geleverd (1/2)
+## Definitief (documentatie · compleet)
 - docs/REDIS_SCHEMA.md · docs/PERFORMANCE_BUDGET.md · docs/INDICATOR_PARITY.md
+- docs/STATISTICAL_METHOD.md · docs/PINE_NODE_PARITY.md · README.md
+
+## Beslissingen docs batch 2
+- Interne docs Nederlands (consistent met batch 1); sitecopy blijft Engels.
+- Pine-fixtures kunnen niet worden meegeleverd (TradingView-datalicentie):
+  PINE_NODE_PARITY.md definieert het volledige protocol + export-blok; de
+  parity-testsuite (volgende batch) skipt met melding zolang tests/fixtures/ leeg is.
+- README stap 14 bevat het externe-scheduler-alternatief voor Hobby-plan (D7).
 
 ## Correctielog
 1. src/discord/templates.js — v1 afgekapt; v2 volledig.
 2. src/market/htfContext.js — ongeldige cfg().emaWarmup → MIN_HTF_BARS=60.
 3. vercel.json — "framework": "nextjs" (deploy-fout output directory).
-4. src/storage/keys.js v2 — billing-keys + TTL.billEvent toegevoegd.
-5. .env.example v2 — billing-variabelen toegevoegd.
+4. src/storage/keys.js v2 — billing-keys + TTL.billEvent.
+5. .env.example v2 — billing-variabelen.
 
 ## Nog te leveren
-1. Docs batch 2: STATISTICAL_METHOD.md · PINE_NODE_PARITY.md · README.md
-2. Tests + fixtures (indicator · timing · positionEngine · statistiek · infra · parity)
-   — mogelijk gesplitst in twee leveringen
-3. FASE 10: eindaudit tegen Definition of Done + definitieve PROJECT_STATE
+1. Tests + fixtures-harnas: tests/{indicator,timing,outcome,statistics,infra,parity}.test.js
+   + tests/fixtures/README + evt. synthetische fixture (mogelijk gesplitst in twee)
+2. FASE 10: eindaudit tegen Definition of Done + definitieve PROJECT_STATE
 
-## Open punt bij launch (naast auditpunten)
-- A9: pricing-pagina → checkoutknop + nette Discord-ID-inname-UI zodra
-  PAID_LAUNCH_ENABLED=true (route bestaat al; alleen frontend-koppeling).
+## Deploy-status
+Volledig platform + volledige documentatie. Resteert: testsuite en eindaudit.
