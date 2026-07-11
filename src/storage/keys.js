@@ -25,9 +25,13 @@ export const K = {
   runHist: (kind) => `${NS}:RUNS:${kind}`,
   waitlist: () => `${NS}:WAITLIST`,
   rate: (bucket) => `${NS}:RATE:${bucket}`,
+  billCustomer: (customerId) => `${NS}:BILL:CUST:${customerId}`,
+  billDiscord: (discordId) => `${NS}:BILL:DISCORD:${discordId}`,
+  billEvent: (eventId) => `${NS}:BILL:EVENT:${eventId}`,
 };
 export const TTL = {
   universe: 7200, contracts: 86400, shard: 3600, cycle: 3600,
   cooldown: 86400, fingerprint: 7 * 86400, dedupe: 7 * 86400,
   hashDay: 8 * 86400, pubCount: 2 * 86400, position: 7 * 86400,
+  billEvent: 30 * 86400,
 };
