@@ -24,22 +24,28 @@
   app/status/ · app/pricing/ (page.js)
 - components/WaitlistForm.js
 
-## Definitief (FASE 8 · batch 1 — admin-backend)
+## Definitief (FASE 8 · admin compleet)
+Batch 1 (backend):
 - app/api/auth/admin/login/route.js · app/api/auth/admin/logout/route.js
-- src/site/adminRoute.js (auth-wrapper) · src/site/adminQueries.js (admin-dataleeslaag)
+- src/site/adminRoute.js · src/site/adminQueries.js
 - app/api/admin/: overview · scanner · signals · positions · families · discord ·
   run-universe · run-scan · run-monitor · run-digest · export
+Batch 2 (UI):
+- src/security/adminSession.js
+- components/AdminLoginForm.js · components/AdminRunButton.js
+- app/admin/login/page.js
+- app/admin/(panel)/: layout.js · page.js · scanner/ · signals/ · positions/ ·
+  families/ · discord/ · settings/ · tools/ (page.js)
 
 ## Beslissingen FASE 8
-- Sessie: HttpOnly-cookie `ars_admin` = SHA-256(ars-admin:ADMIN_SECRET), SameSite=Strict,
-  7 dagen; login rate-limited (10/uur/IP). Bearer ADMIN_SECRET blijft werken (checkAdmin).
-- Handmatige runs via GET: veilig omdat elk pad dezelfde locks, cycle-idempotentie en
-  signalId/fingerprint-dedupe gebruikt als de crons → geen dubbele signalen.
-- run-digest: server-side self-fetch naar de cron-route met CRON_SECRET (zelfde codepad,
-  lock en dedupe). Afhankelijkheid: APP_URL moet correct staan.
-- run-scan zonder shard-param draait alle shards (2 parallel) + finalize; met ?shard=N één shard.
-- Resetfuncties bewust NIET geïmplementeerd (spec staat dit alleen toe achter extra
-  env-flag; veiligste invulling is afwezigheid). Herzien indien nodig in FASE 10.
+- Route group app/admin/(panel)/ i.p.v. app/admin/layout.js: /admin/login valt buiten de
+  auth-guard, anders redirect-loop. URL's ongewijzigd (/admin, /admin/scanner, …).
+- requireAdmin() in ELKE pagina naast de layout-check: App Router-layouts re-renderen
+  niet bij client-side navigatie; per-page check is defense in depth.
+- Login via volledige navigatie (window.location) zodat de server de nieuwe cookie ziet.
+- Admin-pagina's lezen direct uit adminQueries (geen HTTP-selfcalls); de admin-API's
+  bestaan voor programmatische toegang en de run-knoppen.
+- Resetfuncties bewust afwezig (veiligste invulling); herzien in FASE 10 indien nodig.
 
 ## Correctielog
 1. src/discord/templates.js — v1 afgekapt; v2 volledig.
@@ -47,14 +53,12 @@
 3. vercel.json — "framework": "nextjs" (deploy-fout output directory).
 
 ## Nog te leveren
-- FASE 8 batch 2: app/admin/login/page.js · app/admin/layout.js · admin-pagina's
-  (overview, scanner, signals, positions, families, discord, settings, tools) ·
-  components/AdminRunButton.js · src/security/adminSession.js
-- FASE 9: billing-interface (modulair, uit tot PAID_LAUNCH_ENABLED)
-- Docs: REDIS_SCHEMA · STATISTICAL_METHOD · INDICATOR_PARITY · PERFORMANCE_BUDGET ·
+- FASE 9: billing-provider-interface + routes (uitgeschakeld tot PAID_LAUNCH_ENABLED)
+- Docs: REDIS_SCHEMA · PERFORMANCE_BUDGET · INDICATOR_PARITY · STATISTICAL_METHOD ·
   PINE_NODE_PARITY · README
 - Tests: indicator · timing · positionEngine · statistiek · infra · parity-fixtures
+- FASE 10: volledige audit
 
 ## Deploy-status
-Publieke site + backend + admin-API's operationeel. Admin-UI volgt in batch 2;
-tot die tijd: login via curl/fetch (cookie) of Bearer-header, JSON direct in browser.
+Volledig platform operationeel: publieke site, backend, admin-UI op /admin
+(login op /admin/login). Billing, docs en tests volgen.
