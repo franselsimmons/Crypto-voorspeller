@@ -1,6 +1,6 @@
 # PROJECT_STATE
 
-## Definitief (FASE 1–6 · backend compleet)
+## Definitief (FASE 1–6 · backend)
 - package.json · .env.example · vercel.json (v2)
 - src/config.js
 - src/utils/: math.js · time.js · hash.js · prng.js · pool.js
@@ -15,21 +15,27 @@
 - src/discord/: templates.js (v2) · discord.js
 - app/api/cron/: universe · scan · scan-finalize · monitor · daily-digest
 
+## Definitief (FASE 7 · batch 1)
+- src/site/queries.js — NIEUW: gedeelde dataleeslaag voor pagina's én publieke API
+- app/api/public/: overview · signals · signals/[signalId] · families · status · daily · export
+- app/api/waitlist/route.js
+- app/layout.js · app/globals.css · app/page.js
+- components/WaitlistForm.js (enige client-component tot nu toe)
+
+## Aannames (kort)
+- Sitecopy in het Engels (internationale doelgroep; embeds waren al Engelstalig).
+- Homepage: ISR 60s met Redis-fallback zodat build en outages de site niet breken.
+
 ## Correctielog
-1. src/discord/templates.js — v1 afgekapt tijdens levering; v2 = volledige hervering.
-2. src/market/htfContext.js — v1 verwees naar niet-bestaand `cfg().emaWarmup`; v2 gebruikt MIN_HTF_BARS=60.
-3. vercel.json — v2: `"framework": "nextjs"` toegevoegd. Vercel-project stond op preset
-   "Other" en verwachtte een statische `public`-outputmap; build slaagde maar deploy
-   faalde. Dashboard-fix: Settings → Framework Preset → Next.js.
+1. src/discord/templates.js — v1 afgekapt; v2 volledig.
+2. src/market/htfContext.js — ongeldige `cfg().emaWarmup`-referentie → MIN_HTF_BARS=60.
+3. vercel.json — `"framework": "nextjs"` (deploy-fout output directory).
 
 ## Nog te leveren
-- FASE 7: publieke API-routes + website (home, track-record, families, methodology,
-  signal/[id], status, pricing, waitlist) + layout/styles
-- FASE 8: admin (login, dashboard-API's, pagina's)
-- FASE 9: billing-interface (modulair, uit tot PAID_LAUNCH_ENABLED)
+- FASE 7 batch 2: pagina's track-record (filters+paginering), families, methodology,
+  signal/[signalId], status, pricing
+- FASE 8: admin (login, API's, pagina's)
+- FASE 9: billing-interface (modulair, uit)
 - Docs: REDIS_SCHEMA · STATISTICAL_METHOD · INDICATOR_PARITY · PERFORMANCE_BUDGET ·
   PINE_NODE_PARITY · README
 - Tests: indicator · timing · positionEngine · statistiek · infra · parity-fixtures
-
-## Deploy-status
-Backend volledig operationeel na framework-fix. Root-URL geeft 404 tot FASE 7 (verwacht).
