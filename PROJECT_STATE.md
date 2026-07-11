@@ -1,10 +1,10 @@
 # PROJECT_STATE
 
 ## Definitief (FASE 1–6 · backend)
-- package.json · .env.example · vercel.json (v2)
+- package.json · .env.example (v2) · vercel.json (v2)
 - src/config.js
 - src/utils/: math.js · time.js · hash.js · prng.js · pool.js
-- src/storage/: redis.js · keys.js · hashChain.js
+- src/storage/: redis.js · keys.js (v2) · hashChain.js
 - src/security/: locks.js · auth.js
 - src/observability/: log.js · runs.js
 - src/market/: bitgetClient.js · contracts.js · htfContext.js (v2)
@@ -24,41 +24,43 @@
   app/status/ · app/pricing/ (page.js)
 - components/WaitlistForm.js
 
-## Definitief (FASE 8 · admin compleet)
-Batch 1 (backend):
-- app/api/auth/admin/login/route.js · app/api/auth/admin/logout/route.js
-- src/site/adminRoute.js · src/site/adminQueries.js
+## Definitief (FASE 8 · admin)
+- app/api/auth/admin/: login · logout
+- src/site/adminRoute.js · src/site/adminQueries.js · src/security/adminSession.js
 - app/api/admin/: overview · scanner · signals · positions · families · discord ·
   run-universe · run-scan · run-monitor · run-digest · export
-Batch 2 (UI):
-- src/security/adminSession.js
 - components/AdminLoginForm.js · components/AdminRunButton.js
-- app/admin/login/page.js
-- app/admin/(panel)/: layout.js · page.js · scanner/ · signals/ · positions/ ·
-  families/ · discord/ · settings/ · tools/ (page.js)
+- app/admin/login/page.js · app/admin/(panel)/: layout + 8 pagina's
 
-## Beslissingen FASE 8
-- Route group app/admin/(panel)/ i.p.v. app/admin/layout.js: /admin/login valt buiten de
-  auth-guard, anders redirect-loop. URL's ongewijzigd (/admin, /admin/scanner, …).
-- requireAdmin() in ELKE pagina naast de layout-check: App Router-layouts re-renderen
-  niet bij client-side navigatie; per-page check is defense in depth.
-- Login via volledige navigatie (window.location) zodat de server de nieuwe cookie ziet.
-- Admin-pagina's lezen direct uit adminQueries (geen HTTP-selfcalls); de admin-API's
-  bestaan voor programmatische toegang en de run-knoppen.
-- Resetfuncties bewust afwezig (veiligste invulling); herzien in FASE 10 indien nodig.
+## Definitief (FASE 9 · billing, modulair, standaard uit)
+- src/billing/: billingConfig.js · provider.js · stripeProvider.js · discordRoles.js
+- app/api/billing/: checkout · webhook · portal
+
+## Beslissingen FASE 9
+- Billing volledig zelfstandig: eigen billingConfig, geen import van src/config.js
+  ("nooit afhankelijk van scannerlogica" letterlijk afgedwongen).
+- BILLING_PROVIDER=none|stripe; Stripe via kale REST + HMAC-webhookverificatie (geen SDK).
+- Webhook-idempotentie: verwerken → dan pas ARS:BILL:EVENT markeren; falen → 500 → Stripe-retry.
+- Rolbeheer: 204 én 404 tellen als geslaagd (lid weg = functioneel klaar); rol-falen gooit
+  → retry. past_due behoudt rol; canceled/unpaid/incomplete_expired trekt in.
+- Checkout koppelt Discord-ID via client_reference_id + subscription-metadata.
+
+## Documentatie geleverd (1/2)
+- docs/REDIS_SCHEMA.md · docs/PERFORMANCE_BUDGET.md · docs/INDICATOR_PARITY.md
 
 ## Correctielog
 1. src/discord/templates.js — v1 afgekapt; v2 volledig.
 2. src/market/htfContext.js — ongeldige cfg().emaWarmup → MIN_HTF_BARS=60.
 3. vercel.json — "framework": "nextjs" (deploy-fout output directory).
+4. src/storage/keys.js v2 — billing-keys + TTL.billEvent toegevoegd.
+5. .env.example v2 — billing-variabelen toegevoegd.
 
 ## Nog te leveren
-- FASE 9: billing-provider-interface + routes (uitgeschakeld tot PAID_LAUNCH_ENABLED)
-- Docs: REDIS_SCHEMA · PERFORMANCE_BUDGET · INDICATOR_PARITY · STATISTICAL_METHOD ·
-  PINE_NODE_PARITY · README
-- Tests: indicator · timing · positionEngine · statistiek · infra · parity-fixtures
-- FASE 10: volledige audit
+1. Docs batch 2: STATISTICAL_METHOD.md · PINE_NODE_PARITY.md · README.md
+2. Tests + fixtures (indicator · timing · positionEngine · statistiek · infra · parity)
+   — mogelijk gesplitst in twee leveringen
+3. FASE 10: eindaudit tegen Definition of Done + definitieve PROJECT_STATE
 
-## Deploy-status
-Volledig platform operationeel: publieke site, backend, admin-UI op /admin
-(login op /admin/login). Billing, docs en tests volgen.
+## Open punt bij launch (naast auditpunten)
+- A9: pricing-pagina → checkoutknop + nette Discord-ID-inname-UI zodra
+  PAID_LAUNCH_ENABLED=true (route bestaat al; alleen frontend-koppeling).
