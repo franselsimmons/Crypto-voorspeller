@@ -1,5 +1,5 @@
 import { cfg, familyId } from "../config.js";
-import { jget, rcmd, rpipe } from "../storage/redis.js";
+import { rcmd, rpipe } from "../storage/redis.js";
 import { K, TTL } from "../storage/keys.js";
 import { acquireLock, releaseLock } from "../security/locks.js";
 import { sha256Hex } from "../utils/hash.js";
@@ -9,6 +9,8 @@ import { loadFamilies, bumpSeen } from "../verification/familyEngine.js";
 import { publishSignal } from "../discord/discord.js";
 import { utcDate, iso } from "../utils/time.js";
 import { log } from "../observability/log.js";
+
+const FORCE_AFTER_MS = 12 * 60 * 1000; // na 12 min desnoods met minder shards afronden
 
 function makeSignalId(c, cand) {
   const raw = [c.indicatorVersion, c.parameterHash, cand.symbol, cand.direction, cand.setupType, cand.class, cand.entryOpenTime].join("|");
@@ -29,23 +31,38 @@ function publishOrder(a, b, fams) {
   return (b.plan.roomToStructureR ?? 0) - (a.plan.roomToStructureR ?? 0);
 }
 
-export async function finalizeCycle(cycleId) {
+/**
+ * F6-fix: readiness wordt bepaald door de aanwezigheid van de shard-RESULTATEN
+ * zelf (EXISTS op de blobs) in plaats van de completedShardCount-teller, die in
+ * productie onbetrouwbaar bleek (blobs 5/5 aanwezig terwijl teller 1 toonde).
+ * counterValue blijft als diagnose-veld zichtbaar in elk run-resultaat.
+ */
+async function finalizeOne(cycleId) {
   const c = cfg();
   const token = await acquireLock(`finalize:${cycleId}`, 60000);
-  if (!token) return { status: "SKIPPED_LOCKED", cycleId };
+  if (!token) return { status: "SKIPPED_LOCKED", cycleId, cycleIso: iso(cycleId) };
   try {
     const cyc = await rcmd("HGETALL", K.scanCycle(cycleId));
     const meta = {};
     for (let i = 0; i < (cyc?.length || 0); i += 2) meta[cyc[i]] = cyc[i + 1];
-    if (meta.status === "FINALIZED") return { status: "SKIPPED_DUPLICATE", cycleId };
-    const expected = Number(meta.expectedShardCount || c.scanShards);
-    const completed = Number(meta.completedShardCount || 0);
-    const cycleAge = Date.now() - cycleId;
-    if (completed < expected && cycleAge < 10 * 60 * 1000) {
-      return { status: "WAITING", cycleId, completed, expected };
+    if (meta.status === "FINALIZED") {
+      return { status: "SKIPPED_DUPLICATE", cycleId, cycleIso: iso(cycleId) };
     }
 
+    const expected = Number(meta.expectedShardCount || c.scanShards);
+    const counterValue = meta.completedShardCount != null ? Number(meta.completedShardCount) : null;
     const shardKeys = Array.from({ length: expected }, (_, i) => K.scanShard(cycleId, i));
+    const existsFlags = await rpipe(shardKeys.map((k) => ["EXISTS", k]));
+    const present = existsFlags.reduce((s, v) => s + Number(v || 0), 0);
+    const cycleAge = Date.now() - cycleId;
+
+    if (present === 0) {
+      return { status: "NO_SHARDS", cycleId, cycleIso: iso(cycleId), present, expected, counterValue };
+    }
+    if (present < expected && cycleAge < FORCE_AFTER_MS) {
+      return { status: "WAITING", cycleId, cycleIso: iso(cycleId), present, expected, counterValue };
+    }
+
     const shardRaw = await rpipe(shardKeys.map((k) => ["GET", k]));
     const candidates = shardRaw.filter(Boolean).flatMap((s) => JSON.parse(s).candidates || []);
 
@@ -120,9 +137,34 @@ export async function finalizeCycle(cycleId) {
       ["HSET", K.scanCycle(cycleId), "status", "FINALIZED", "completedAt", Date.now()],
       ["EXPIRE", K.scanCycle(cycleId), TTL.cycle],
     ]);
-    log("info", "finalize", "done", { cycleId, candidates: candidates.length, created: created.length, published });
-    return { status: completed < expected ? "PARTIAL" : "SUCCESS", cycleId, candidates: candidates.length, created: created.length, published };
+    const status = present < expected ? "PARTIAL" : "SUCCESS";
+    log("info", "finalize", "done", { cycleId, present, expected, counterValue, candidates: candidates.length, created: created.length, published });
+    return {
+      status, cycleId, cycleIso: iso(cycleId), present, expected, counterValue,
+      candidates: candidates.length, created: created.length, published,
+    };
   } finally {
     await releaseLock(`finalize:${cycleId}`, token);
   }
+}
+
+/**
+ * Sweep: rond naast de huidige cyclus ook de twee vorige af (herkansing voor
+ * late shards; blobs leven 1 uur, dus 3 cycli terug is ruim binnen de TTL).
+ * Zelfde exportnaam als v1 — routes en admin hoeven niet te wijzigen.
+ */
+export async function finalizeCycle(cycleId) {
+  const c = cfg();
+  const targets = [cycleId - 2 * c.tfMs, cycleId - c.tfMs, cycleId];
+  const swept = [];
+  for (const cy of targets) {
+    try {
+      swept.push(await finalizeOne(cy));
+    } catch (err) {
+      swept.push({ status: "FAILED", cycleId: cy, cycleIso: iso(cy), error: String(err?.message || err) });
+    }
+  }
+  const nonWaiting = [...swept].reverse().find((s) => s.status === "SUCCESS" || s.status === "PARTIAL");
+  const head = swept[swept.length - 1];
+  return { status: (nonWaiting || head).status, cycleId, swept };
 }
