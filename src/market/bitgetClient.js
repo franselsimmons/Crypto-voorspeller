@@ -12,7 +12,11 @@ async function apiGet(path, params = {}) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       apiCalls++;
-      const res = await fetch(url, { signal: AbortSignal.timeout(9000) });
+      // F8: cache "no-store" — Next.js cachet identieke GET-fetches standaard in een
+      // persistente Data Cache (overleeft requests én deploys). Daardoor draaide de
+      // scanner 9 dagen op bevroren candles van de allereerste fetch (12 juli).
+      // Marktdata mag NOOIT uit een cache komen.
+      const res = await fetch(url, { signal: AbortSignal.timeout(9000), cache: "no-store" });
       if (res.status === 429 || res.status >= 500) {
         lastErr = new Error(`HTTP ${res.status} op ${path}`);
         await sleep(300 * attempt + Math.random() * 200);
