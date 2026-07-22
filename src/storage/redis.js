@@ -1,129 +1,44 @@
-import { cfg } from "../config.js";
-
-function getRedisConfig() {
-  const c = cfg();
-
-  const redisUrl = (
-    c.redisUrl ||
-    process.env.UPSTASH_REDIS_REST_URL ||
-    process.env.KV_REST_API_URL ||
-    ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
-
-  const redisToken = (
-    c.redisToken ||
-    process.env.UPSTASH_REDIS_REST_TOKEN ||
-    process.env.KV_REST_API_TOKEN ||
-    ""
-  ).trim();
-
-  const missing = [];
-
-  if (!redisUrl) {
-    missing.push(
-      "UPSTASH_REDIS_REST_URL of KV_REST_API_URL"
-    );
-  }
-
-  if (!redisToken) {
-    missing.push(
-      "UPSTASH_REDIS_REST_TOKEN of KV_REST_API_TOKEN"
-    );
-  }
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Ontbrekende Redis env: ${missing.join(", ")}`
-    );
-  }
-
-  return {
-    redisUrl,
-    redisToken,
-  };
-}
+import { cfg, requireEnv } from "../config.js";
 
 async function call(path, body) {
-  const { redisUrl, redisToken } = getRedisConfig();
-
-  const res = await fetch(`${redisUrl}${path}`, {
+  requireEnv(["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"]);
+  const c = cfg();
+  // F10: cache "no-store" — zelfde klasse als F8. Next.js kan fetch-antwoorden
+  // hergebruiken bij identieke aanvragen; voor databaseverkeer betekent dat oude
+  // antwoorden op herhaalde identieke vragen (bewezen: lastRun("FINALIZE") gaf
+  // 10 dagen lang het record van 11 juli terug; shard-teller at 4 van de 5 "+1"s).
+  // Database-antwoorden mogen NOOIT uit een cache komen.
+  const res = await fetch(`${c.redisUrl}${path}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${redisToken}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${c.redisToken}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    cache: "no-store",
     signal: AbortSignal.timeout(8000),
   });
-
-  if (!res.ok) {
-    throw new Error(`Redis HTTP ${res.status}`);
-  }
-
+  if (!res.ok) throw new Error(`Redis HTTP ${res.status}`);
   return res.json();
 }
 
-/** Eén commando: rcmd("SET", "k", "v") → result. */
+/** Eén commando: rcmd("SET","k","v") → result. */
 export async function rcmd(...parts) {
   const out = await call("", parts.map(String));
-
-  if (out.error) {
-    throw new Error(`Redis: ${out.error}`);
-  }
-
+  if (out.error) throw new Error(`Redis: ${out.error}`);
   return out.result;
 }
 
-/** Pipeline: rpipe([["SET", "a", "1"], ["GET", "a"]]) → [results]. */
+/** Pipeline: rpipe([["SET","a","1"],["GET","a"]]) → [results]. */
 export async function rpipe(cmds) {
-  if (!cmds.length) {
-    return [];
-  }
-
-  const out = await call(
-    "/pipeline",
-    cmds.map((command) => command.map(String))
-  );
-
-  return out.map((result) => {
-    if (result.error) {
-      throw new Error(
-        `Redis pipeline: ${result.error}`
-      );
-    }
-
-    return result.result;
+  if (!cmds.length) return [];
+  const out = await call("/pipeline", cmds.map((c) => c.map(String)));
+  return out.map((o) => {
+    if (o.error) throw new Error(`Redis pipeline: ${o.error}`);
+    return o.result;
   });
 }
 
-export async function jget(key) {
+export const jget = async (key) => {
   const raw = await rcmd("GET", key);
-
-  if (raw == null) {
-    return null;
-  }
-
-  return JSON.parse(raw);
-}
-
-export function jset(key, obj, ttlSec) {
-  const value = JSON.stringify(obj);
-
-  if (ttlSec) {
-    return rcmd(
-      "SET",
-      key,
-      value,
-      "EX",
-      ttlSec
-    );
-  }
-
-  return rcmd(
-    "SET",
-    key,
-    value
-  );
-}
+  return raw == null ? null : JSON.parse(raw);
+};
+export const jset = (key, obj, ttlSec) =>
+  ttlSec ? rcmd("SET", key, JSON.stringify(obj), "EX", ttlSec) : rcmd("SET", key, JSON.stringify(obj));
