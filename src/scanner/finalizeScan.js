@@ -32,10 +32,10 @@ function publishOrder(a, b, fams) {
 }
 
 /**
- * F6-fix: readiness wordt bepaald door de aanwezigheid van de shard-RESULTATEN
- * zelf (EXISTS op de blobs) in plaats van de completedShardCount-teller, die in
- * productie onbetrouwbaar bleek (blobs 5/5 aanwezig terwijl teller 1 toonde).
- * counterValue blijft als diagnose-veld zichtbaar in elk run-resultaat.
+ * F6: readiness op aanwezigheid van shard-blobs (EXISTS) i.p.v. de teller;
+ * counterValue blijft als diagnose-veld zichtbaar.
+ * F11: seen-tellingen per familie gebundeld tot één bumpSeen(fid, n) ná de
+ * create-loop — geen rapid-fire losse "+1"-calls meer die elkaar kunnen inhalen.
  */
 async function finalizeOne(cycleId) {
   const c = cfg();
@@ -68,6 +68,7 @@ async function finalizeOne(cycleId) {
 
     const fams = await loadFamilies();
     const created = [];
+    const seenByFamily = {};
 
     for (const cand of candidates) {
       const signalId = makeSignalId(c, cand);
@@ -113,8 +114,12 @@ async function finalizeOne(cycleId) {
         ["SET", K.cooldown(cand.symbol, cand.direction), cand.entryOpenTime, "EX", TTL.cooldown],
       ]);
       await openPosition(record);
-      await bumpSeen(fam);
+      seenByFamily[fam] = (seenByFamily[fam] || 0) + 1;
       created.push({ record, famStat });
+    }
+
+    for (const [fid, n] of Object.entries(seenByFamily)) {
+      await bumpSeen(fid, n);
     }
 
     const today = utcDate(Date.now());
@@ -150,8 +155,7 @@ async function finalizeOne(cycleId) {
 
 /**
  * Sweep: rond naast de huidige cyclus ook de twee vorige af (herkansing voor
- * late shards; blobs leven 1 uur, dus 3 cycli terug is ruim binnen de TTL).
- * Zelfde exportnaam als v1 — routes en admin hoeven niet te wijzigen.
+ * late shards; blobs leven 1 uur). Zelfde exportnaam — routes ongewijzigd.
  */
 export async function finalizeCycle(cycleId) {
   const c = cfg();
