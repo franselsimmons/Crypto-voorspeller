@@ -23,10 +23,11 @@ function emptyFamily(fid) {
 const famKey = (fid) => K.family(cfg().namespace, fid);
 
 /**
- * v2 (audit F1): bumpSeen, recordClose en recomputeAllFamilies zijn
- * read-modify-write op dezelfde JSON-records en draaien vanuit finalize én
- * monitor. Eén gedeeld lock serialiseert alle mutaties; Discord-posts gebeuren
- * bewust buiten het lock (netwerk hoort niet in een kritieke sectie).
+ * v2 (audit F1): alle familie-mutaties geserialiseerd onder één gedeeld lock;
+ * Discord-posts buiten het lock.
+ * v3 (audit F11): bumpSeen accepteert een aantal, zodat finalize per familie
+ * ÉÉN read-modify-write doet i.p.v. een snelle reeks losse "+1"-calls
+ * (rapid-fire identieke reads bleken tellingen te kunnen verliezen).
  */
 async function withFamilyLock(fn) {
   const token = await acquireLock("families", 8000, 40, 100);
@@ -45,10 +46,12 @@ export async function loadFamilies() {
   return out;
 }
 
-export async function bumpSeen(fid) {
+export async function bumpSeen(fid, count = 1) {
+  if (!Number.isInteger(count) || count < 1) return null;
   return withFamilyLock(async () => {
     const f = JSON.parse((await rcmd("GET", famKey(fid))) || "null") || emptyFamily(fid);
-    f.seen++; f.open++;
+    f.seen += count;
+    f.open += count;
     await rcmd("SET", famKey(fid), JSON.stringify(f));
     return f;
   });
