@@ -3,7 +3,7 @@ import AdminRunButton from "../../../components/AdminRunButton.js";
 
 const LINKS = [
   ["/admin", "Overview"], ["/admin/scanner", "Scanner"], ["/admin/signals", "Signals"],
-  ["/admin/positions", "Positions"], ["/admin/families", "Families"],
+  ["/admin/positions", "Positions"], ["/admin/families", "Families"], ["/admin/hrb", "HRB"],
   ["/admin/discord", "Discord"], ["/admin/settings", "Settings"], ["/admin/tools", "Tools"],
 ];
 
